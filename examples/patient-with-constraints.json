@@ -1,0 +1,80 @@
+{
+  "resourceType": "StructureDefinition",
+  "url": "http://example.org/StructureDefinition/patient-with-constraints",
+  "name": "PatientWithConstraints",
+  "title": "Patient Profile with Constraints and Bindings",
+  "status": "active",
+  "kind": "resource",
+  "abstract": false,
+  "type": "Patient",
+  "baseDefinition": "http://hl7.org/fhir/StructureDefinition/Patient",
+  "derivation": "constraint",
+  "differential": {
+    "element": [
+      {
+        "id": "Patient",
+        "path": "Patient",
+        "constraint": [
+          {
+            "key": "pat-1",
+            "severity": "error",
+            "human": "Patient must have either a name or an identifier",
+            "expression": "name.exists() or identifier.exists()"
+          }
+        ]
+      },
+      {
+        "id": "Patient.identifier",
+        "path": "Patient.identifier",
+        "short": "Patient identifier (required)",
+        "definition": "An identifier for this patient - at least one is required",
+        "min": 1,
+        "max": "*",
+        "constraint": [
+          {
+            "key": "pat-id-1",
+            "severity": "error",
+            "human": "Identifier must have either a value or a system",
+            "expression": "value.exists() or system.exists()"
+          }
+        ]
+      },
+      {
+        "id": "Patient.gender",
+        "path": "Patient.gender",
+        "short": "Administrative gender (required)",
+        "definition": "Administrative Gender - required in this profile",
+        "min": 1,
+        "max": "1",
+        "type": [
+          {
+            "code": "code"
+          }
+        ],
+        "binding": {
+          "strength": "required",
+          "description": "The gender of a person used for administrative purposes.",
+          "valueSet": "http://hl7.org/fhir/ValueSet/administrative-gender"
+        }
+      },
+      {
+        "id": "Patient.maritalStatus",
+        "path": "Patient.maritalStatus",
+        "short": "Marital status",
+        "definition": "This field contains a patient's most recent marital (civil) status.",
+        "min": 0,
+        "max": "1",
+        "type": [
+          {
+            "code": "CodeableConcept"
+          }
+        ],
+        "binding": {
+          "strength": "extensible",
+          "description": "The domestic partnership status of a person.",
+          "valueSet": "http://hl7.org/fhir/ValueSet/marital-status"
+        }
+      }
+    ]
+  }
+}

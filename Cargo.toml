@@ -1,0 +1,65 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/fhirschema-core",
+    "crates/fhirschema-converter",
+    "crates/fhirschema-validator",
+    "crates/fhirschema-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["OctoFHIR Team"]
+license = "Apache-2.0"
+repository = "https://github.com/octofhir/fhirschema"
+homepage = "https://github.com/octofhir/fhirschema"
+documentation = "https://docs.rs/fhirschema"
+keywords = ["fhir", "healthcare", "validation", "schema"]
+categories = ["data-structures", "parsing", "web-programming"]
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# CLI
+clap = { version = "4.0", features = ["derive"] }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Testing
+proptest = "1.0"
+
+# Validation dependencies
+regex = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+url = "2.0"
+indexmap = "2.0"
+
+# FHIRPath integration (octofhir ecosystem)
+# fhirpath-rs = { git = "https://github.com/octofhir/fhirpath-rs" }
+
+# UCUM integration (octofhir ecosystem)
+# ucum-rs = { git = "https://github.com/octofhir/ucum-rs" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+debug = true

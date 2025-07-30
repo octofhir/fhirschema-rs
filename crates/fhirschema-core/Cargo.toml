@@ -1,0 +1,37 @@
+[package]
+name = "fhirschema-core"
+description = "Core data structures and types for FHIRSchema"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Logging
+tracing.workspace = true
+
+[dev-dependencies]
+# Testing
+proptest.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+
+[features]
+default = []
+# Enable additional validation features
+validation = []
+# Enable extensions support
+extensions = []

@@ -1,0 +1,52 @@
+{
+  "resourceType": "StructureDefinition",
+  "url": "http://example.org/StructureDefinition/patient-with-choice-types",
+  "name": "PatientWithChoiceTypes",
+  "title": "Patient Profile with Choice Types",
+  "status": "active",
+  "kind": "resource",
+  "abstract": false,
+  "type": "Patient",
+  "baseDefinition": "http://hl7.org/fhir/StructureDefinition/Patient",
+  "derivation": "constraint",
+  "differential": {
+    "element": [
+      {
+        "id": "Patient",
+        "path": "Patient"
+      },
+      {
+        "id": "Patient.deceased[x]",
+        "path": "Patient.deceased[x]",
+        "short": "Indicates if the individual is deceased or not",
+        "definition": "Indicates if the individual is deceased or not. Choice of boolean or dateTime.",
+        "min": 0,
+        "max": "1",
+        "type": [
+          {
+            "code": "boolean"
+          },
+          {
+            "code": "dateTime"
+          }
+        ]
+      },
+      {
+        "id": "Patient.multipleBirth[x]",
+        "path": "Patient.multipleBirth[x]",
+        "short": "Whether patient is part of a multiple birth",
+        "definition": "Indicates whether the patient is part of a multiple (boolean) or indicates the actual birth order (integer).",
+        "min": 0,
+        "max": "1",
+        "type": [
+          {
+            "code": "boolean"
+          },
+          {
+            "code": "integer"
+          }
+        ]
+      }
+    ]
+  }
+}

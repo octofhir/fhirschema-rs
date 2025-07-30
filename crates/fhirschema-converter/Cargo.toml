@@ -1,0 +1,43 @@
+[package]
+name = "fhirschema-converter"
+description = "Convert FHIR StructureDefinition to FHIRSchema format"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+# Core FHIRSchema types
+fhirschema-core = { path = "../fhirschema-core" }
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# HTTP client for fetching remote StructureDefinitions
+reqwest = { workspace = true, optional = true }
+
+# Logging
+tracing.workspace = true
+
+[dev-dependencies]
+# Testing
+proptest.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[features]
+default = []
+# Enable remote StructureDefinition fetching
+remote = ["reqwest"]
+# Enable differential mode processing
+differential = []

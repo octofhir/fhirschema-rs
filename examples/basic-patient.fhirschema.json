@@ -1,0 +1,28 @@
+{
+  "url": "http://example.org/StructureDefinition/test-patient",
+  "type": "Patient",
+  "name": "TestPatient",
+  "derivation": "constraint",
+  "base": "http://hl7.org/fhir/StructureDefinition/Patient",
+  "elements": {
+    "Patient.name": {
+      "min": 1,
+      "max": "*",
+      "type": "HumanName",
+      "short": "Patient name (required)",
+      "definition": "The name of the patient - required in this profile"
+    },
+    "Patient.gender": {
+      "min": 1,
+      "max": "1",
+      "type": "code",
+      "binding": {
+        "value_set": "http://hl7.org/fhir/ValueSet/administrative-gender",
+        "strength": "required",
+        "description": "The gender of a person used for administrative purposes."
+      },
+      "short": "Administrative gender",
+      "definition": "Administrative Gender - the gender that the patient is considered to have for administration and record keeping purposes."
+    }
+  }
+}

@@ -1,0 +1,34 @@
+[package]
+name = "fhirschema-validator"
+version.workspace = true
+edition.workspace = true
+authors = ["OctoFHIR Team"]
+description = "FHIRSchema validation engine with schemata resolution and constraint evaluation"
+license.workspace = true
+repository = "https://github.com/octofhir/fhirschema"
+keywords = ["fhir", "healthcare", "validation", "schema"]
+categories = ["data-structures", "parsing"]
+
+[dependencies]
+# Core dependencies
+fhirschema-core = { path = "../fhirschema-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# FHIRPath and UCUM integration from octofhir ecosystem
+# TODO: Enable when libraries are available
+# fhirpath-rs = { git = "https://github.com/octofhir/fhirpath-rs", branch = "main" }
+# ucum-rs = { git = "https://github.com/octofhir/ucum-rs", branch = "main" }
+
+# Utility dependencies
+regex = { workspace = true }
+chrono = { workspace = true }
+url = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+pretty_assertions = "1.0"

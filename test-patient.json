@@ -1,0 +1,13 @@
+{
+  "resourceType": "Patient",
+  "id": "test-patient-123",
+  "active": true,
+  "name": [
+    {
+      "use": "official",
+      "family": "Doe",
+      "given": ["John", "William"]
+    }
+  ],
+  "gender": "male"
+}

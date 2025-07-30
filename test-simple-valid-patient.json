@@ -1,0 +1,6 @@
+{
+  "resourceType": "Patient",
+  "id": "simple-valid-patient",
+  "active": true,
+  "gender": "male"
+}
