@@ -1,0 +1,22 @@
+[package]
+name = "fhirschema-codegen"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Code generation from FHIRSchema definitions"
+license.workspace = true
+repository.workspace = true
+keywords = ["fhir", "codegen", "typescript", "rust"]
+categories = ["development-tools"]
+
+[dependencies]
+fhirschema-core = { path = "../fhirschema-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+handlebars = "4.5"
+indexmap = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.8"

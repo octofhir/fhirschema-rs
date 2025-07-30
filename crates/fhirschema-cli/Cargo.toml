@@ -21,9 +21,12 @@ human-panic = "2.0.3"
 fhirschema-core = { path = "../fhirschema-core" }
 fhirschema-converter = { path = "../fhirschema-converter", optional = true }
 fhirschema-validator = { path = "../fhirschema-validator", optional = true }
+fhirschema-repository = { path = "../fhirschema-repository", optional = true }
+fhirschema-codegen = { path = "../fhirschema-codegen", optional = true }
 
 # CLI framework
 clap.workspace = true
+clap_complete = "4.4"
 
 # Serialization
 serde.workspace = true
@@ -56,10 +59,20 @@ chrono = { version = "0.4", features = ["serde"] }
 proptest.workspace = true
 
 [features]
-default = ["converter", "validator"]
+default = ["converter", "validator", "repository", "codegen"]
 # Enable conversion functionality
 converter = ["fhirschema-converter"]
 # Enable validation functionality
 validator = ["fhirschema-validator"]
+# Enable repository functionality
+repository = ["fhirschema-repository"]
+# Enable code generation functionality
+codegen = ["fhirschema-codegen"]
+# Enable filesystem repository support
+filesystem = ["repository", "fhirschema-repository/filesystem"]
+# Enable S3 repository support
+s3 = ["repository", "fhirschema-repository/s3"]
 # Enable remote fetching capabilities
 remote = ["fhirschema-converter/remote"]
+# Enable all features
+full = ["converter", "validator", "repository", "codegen", "filesystem", "s3", "remote"]

@@ -140,8 +140,8 @@ demo-all: demo-basic demo-choice-types demo-constraints demo-references
 # Demonstrate basic StructureDefinition conversion
 demo-basic:
     @echo "🔄 Converting basic Patient profile..."
-    ./target/release/fhirschema convert -i test-structuredefinition.json -f yaml -o examples/basic-patient.fhirschema.yaml
-    ./target/release/fhirschema convert -i test-structuredefinition.json -f json -o examples/basic-patient.fhirschema.json
+    ./target/release/fhirschema convert -i tests/test-structuredefinition.json -f yaml -o examples/basic-patient.fhirschema.yaml
+    ./target/release/fhirschema convert -i tests/test-structuredefinition.json -f json -o examples/basic-patient.fhirschema.json
     @echo "✅ Basic conversion completed"
     @echo "   📄 YAML output: examples/basic-patient.fhirschema.yaml"
     @echo "   📄 JSON output: examples/basic-patient.fhirschema.json"
@@ -175,9 +175,9 @@ demo-references:
 
 # Show before/after comparison for basic example
 show-basic-comparison:
-    @echo "📋 ORIGINAL StructureDefinition (test-structuredefinition.json):"
+    @echo "📋 ORIGINAL StructureDefinition (tests/test-structuredefinition.json):"
     @echo "================================================================"
-    @cat test-structuredefinition.json | jq '.'
+    @cat tests/test-structuredefinition.json | jq '.'
     @echo ""
     @echo "📋 CONVERTED FHIRSchema (YAML):"
     @echo "==============================="
@@ -272,3 +272,84 @@ full-demo: build test demo-all
 # Quick demo with immediate comparison
 quick-demo: build demo-basic show-basic-comparison
     @echo "🚀 Quick demo completed! This shows the basic conversion from StructureDefinition to FHIRSchema."
+
+# ========================================
+# TypeScript Code Generation Examples
+# ========================================
+
+# Generate TypeScript types from R4 core schemas (using local r4-core-schemas)
+generate-typescript-r4-core: build
+    @echo "🔄 Generating TypeScript types from R4 core schemas..."
+    @if [ ! -f "r4-core-schemas/schemas.ndjson" ]; then \
+        echo "❌ R4 core schemas not found. Please ensure r4-core-schemas/schemas.ndjson exists."; \
+        exit 1; \
+    fi
+    ./target/release/fhirschema codegen generate r4-core-schemas/schemas.ndjson --target typescript --output ./generated/typescript/r4-core --overwrite --create-subdirs --include-docs
+    @echo "✅ TypeScript types generated successfully!"
+    @echo "   📁 Output directory: ./generated/typescript/r4-core/"
+    @echo "   📄 Generated files: `find ./generated/typescript/r4-core -name '*.ts' | wc -l` TypeScript files"
+    @echo ""
+    @echo "💡 Example usage in your TypeScript project:"
+    @echo "   import { Patient, Observation } from './generated/typescript/r4-core/types';"
+
+# Generate TypeScript types from downloaded R4 core package
+generate-typescript-r4-downloaded: build
+    @echo "🔄 Generating TypeScript types from downloaded R4 core package..."
+    @if [ ! -f ".output/packages/hl7.fhir.r4.core-4.0.1/converted/schemas.ndjson" ]; then \
+        echo "❌ Downloaded R4 schemas not found. Run 'just load-r4-core' first."; \
+        exit 1; \
+    fi
+    ./target/release/fhirschema codegen generate .output/packages/hl7.fhir.r4.core-4.0.1/converted/schemas.ndjson --target typescript --output ./generated/typescript/r4-downloaded --overwrite --create-subdirs --include-docs
+    @echo "✅ TypeScript types generated successfully!"
+    @echo "   📁 Output directory: ./generated/typescript/r4-downloaded/"
+    @echo "   📄 Generated files: `find ./generated/typescript/r4-downloaded -name '*.ts' | wc -l` TypeScript files"
+
+# Generate TypeScript interfaces only (no classes) from R4 core
+generate-typescript-interfaces-r4: build
+    @echo "🔄 Generating TypeScript interfaces (no classes) from R4 core schemas..."
+    @if [ ! -f "r4-core-schemas/schemas.ndjson" ]; then \
+        echo "❌ R4 core schemas not found. Please ensure r4-core-schemas/schemas.ndjson exists."; \
+        exit 1; \
+    fi
+    ./target/release/fhirschema codegen generate r4-core-schemas/schemas.ndjson --target typescript --output ./generated/typescript/r4-interfaces --overwrite --create-subdirs --include-docs --interfaces-only
+    @echo "✅ TypeScript interfaces generated successfully!"
+    @echo "   📁 Output directory: ./generated/typescript/r4-interfaces/"
+    @echo "   📄 Generated files: `find ./generated/typescript/r4-interfaces -name '*.ts' | wc -l` TypeScript files"
+    @echo ""
+    @echo "💡 These are pure interfaces without class constructors - perfect for data typing!"
+
+# Show example of generated TypeScript code
+show-typescript-example:
+    @echo "📋 Example Generated TypeScript Code:"
+    @echo "===================================="
+    @if [ -f "./generated/typescript/r4-core/types/patient.ts" ]; then \
+        echo "📄 Patient interface/class (first 30 lines):"; \
+        echo ""; \
+        head -30 ./generated/typescript/r4-core/types/patient.ts; \
+        echo ""; \
+        echo "📁 Full file: ./generated/typescript/r4-core/types/patient.ts"; \
+    elif [ -f "./generated/typescript/r4-interfaces/types/patient.ts" ]; then \
+        echo "📄 Patient interface (first 30 lines):"; \
+        echo ""; \
+        head -30 ./generated/typescript/r4-interfaces/types/patient.ts; \
+        echo ""; \
+        echo "📁 Full file: ./generated/typescript/r4-interfaces/types/patient.ts"; \
+    else \
+        echo "❌ No generated TypeScript files found."; \
+        echo "   Run 'just generate-typescript-r4-core' or 'just generate-typescript-interfaces-r4' first."; \
+    fi
+
+# Generate TypeScript types and show example
+typescript-demo: generate-typescript-r4-core show-typescript-example
+    @echo "🎉 TypeScript generation demo completed!"
+    @echo ""
+    @echo "💡 Next steps:"
+    @echo "   1. Copy the generated types to your TypeScript project"
+    @echo "   2. Import the types you need: import { Patient } from './types/patient'"
+    @echo "   3. Use them for type-safe FHIR resource handling"
+
+# Clean up generated TypeScript files
+clean-typescript:
+    rm -rf ./generated/typescript
+    @echo "🧹 Cleaned up generated TypeScript files"
+    @echo "   Removed: ./generated/typescript/ directory"

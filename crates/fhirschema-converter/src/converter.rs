@@ -217,6 +217,138 @@ impl StructureDefinitionConverter {
 
         Ok(element)
     }
+
+    /// Convert and store a StructureDefinition directly to a repository
+    #[cfg(feature = "repository")]
+    pub async fn convert_and_store<R>(
+        &self,
+        structure_definition_json: &str,
+        repository: &R,
+        version: Option<&fhirschema_repository::SchemaVersion>,
+    ) -> Result<()>
+    where
+        R: fhirschema_repository::SchemaRepository + Send + Sync,
+    {
+        // Convert to FHIRSchema
+        let schema = self.convert(structure_definition_json)?;
+
+        // Convert to FhirSchema format for repository storage
+        let fhir_schema = self.convert_schema_to_fhir_schema(schema)?;
+
+        // Store in repository
+        repository
+            .store_schema(&fhir_schema.url.clone().unwrap_or_default(), &fhir_schema, version)
+            .await
+            .map_err(|e| Error::ConversionFailed(format!("Failed to store schema in repository: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Convert multiple StructureDefinitions and store them in a repository
+    #[cfg(feature = "repository")]
+    pub async fn convert_batch_and_store<R>(
+        &self,
+        structure_definitions: Vec<&str>,
+        repository: &R,
+        version: Option<&fhirschema_repository::SchemaVersion>,
+    ) -> Result<Vec<String>>
+    where
+        R: fhirschema_repository::SchemaRepository + Send + Sync,
+    {
+        let mut stored_urls = Vec::new();
+
+        for structure_def_json in structure_definitions {
+            match self.convert_and_store(structure_def_json, repository, version).await {
+                Ok(()) => {
+                    // Extract URL from the JSON to track successful storage
+                    if let Ok(structure_def) = serde_json::from_str::<StructureDefinition>(structure_def_json) {
+                        stored_urls.push(structure_def.url);
+                    }
+                }
+                Err(e) => {
+                    // Log error but continue with other schemas
+                    eprintln!("Failed to convert and store schema: {}", e);
+                }
+            }
+        }
+
+        Ok(stored_urls)
+    }
+
+    /// Resolve base schemas from repository during conversion
+    #[cfg(feature = "repository")]
+    pub async fn convert_with_repository_resolution<R>(
+        &self,
+        structure_definition_json: &str,
+        repository: &R,
+    ) -> Result<Schema>
+    where
+        R: fhirschema_repository::SchemaRepository + Send + Sync,
+    {
+        // Parse the StructureDefinition JSON
+        let structure_def: StructureDefinition = serde_json::from_str(structure_definition_json)
+            .map_err(|e| Error::InvalidStructureDefinition(format!("Failed to parse JSON: {}", e)))?;
+
+        // Convert to FHIRSchema
+        let mut schema = self.convert_structure_definition(&structure_def)?;
+
+        // If this schema has a base, try to resolve it from the repository
+        if let Some(base_url) = &schema.base {
+            match repository.get_schema(base_url, None).await {
+                Ok(Some(base_fhir_schema)) => {
+                    // Base schema found in repository - could be used for validation or inheritance
+                    // For now, we just verify it exists
+                    println!("Base schema found in repository: {}", base_url);
+                }
+                Ok(None) => {
+                    println!("Base schema not found in repository: {}", base_url);
+                }
+                Err(e) => {
+                    println!("Error accessing repository for base schema {}: {}", base_url, e);
+                }
+            }
+        }
+
+        Ok(schema)
+    }
+
+    /// Convert internal Schema to FhirSchema format for repository storage
+    #[cfg(feature = "repository")]
+    fn convert_schema_to_fhir_schema(&self, schema: Schema) -> Result<fhirschema_core::FhirSchema> {
+        let mut fhir_schema = fhirschema_core::FhirSchema {
+            url: Some(schema.url.clone()),
+            name: Some(schema.name.clone()),
+            description: None, // Could be extracted from schema if available
+            derivation: Some(schema.derivation.clone()),
+            base_definition: schema.base.clone(),
+            elements: Vec::new(),
+            ..Default::default()
+        };
+
+        // Convert elements
+        if let Some(elements) = schema.elements {
+            for (path, element) in elements {
+                let element_def = fhirschema_core::ElementDefinition {
+                    path: path.clone(),
+                    element_type: element.element_type,
+                    min: element.min,
+                    max: element.max,
+                    short: element.short,
+                    definition: element.definition,
+                    comment: element.comment,
+                    requirements: element.requirements,
+                    alias: element.alias,
+                    fixed: element.fixed,
+                    pattern: element.pattern,
+                    example: element.example,
+                    ..Default::default()
+                };
+                fhir_schema.elements.push(element_def);
+            }
+        }
+
+        Ok(fhir_schema)
+    }
 }
 
 impl Default for StructureDefinitionConverter {

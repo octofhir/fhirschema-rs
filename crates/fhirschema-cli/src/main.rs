@@ -9,7 +9,7 @@ use tracing_subscriber;
 
 mod commands;
 
-use commands::{convert::ConvertCommand, validate::ValidateCommand, download::DownloadCommand};
+use commands::{convert::ConvertCommand, validate::ValidateCommand, download::DownloadCommand, completion::CompletionCommand, /* repository::RepositoryCommand, */ codegen::CodegenCommand};
 
 #[derive(Parser)]
 #[command(name = "fhirschema")]
@@ -32,6 +32,12 @@ enum Commands {
     Validate(ValidateCommand),
     /// Download StructureDefinitions from FHIR registry
     Download(DownloadCommand),
+    /// Generate shell completion scripts
+    Completion(CompletionCommand),
+    /// Manage FHIRSchema repositories
+    // Repository(RepositoryCommand),
+    /// Generate code from FHIRSchema definitions
+    Codegen(CodegenCommand),
 }
 
 #[tokio::main]
@@ -52,5 +58,8 @@ async fn main() -> Result<()> {
         Commands::Convert(cmd) => cmd.execute(),
         Commands::Validate(cmd) => cmd.execute(),
         Commands::Download(cmd) => cmd.execute().await,
+        Commands::Completion(cmd) => cmd.execute(),
+        // Commands::Repository(cmd) => cmd.execute().await,
+        Commands::Codegen(cmd) => cmd.execute().await,
     }
 }

@@ -13,9 +13,11 @@ pub mod element_converter;
 pub mod constraint_converter;
 pub mod slicing_converter;
 pub mod reference_resolver;
+pub mod progress;
 pub mod error;
 
 pub use converter::StructureDefinitionConverter;
+pub use progress::{ProgressTracker, ConversionMessage, Severity, StatType};
 pub use error::{Error, Result};
 
 /// The version of FHIR supported by this converter.

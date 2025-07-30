@@ -4,7 +4,10 @@ members = [
     "crates/fhirschema-core",
     "crates/fhirschema-converter",
     "crates/fhirschema-validator",
+    "crates/fhirschema-repository",
+    "crates/fhirschema-codegen",
     "crates/fhirschema-cli",
+    "crates/fhirschema-server",
 ]
 
 [workspace.package]

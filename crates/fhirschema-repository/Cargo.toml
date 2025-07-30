@@ -1,0 +1,42 @@
+[package]
+name = "fhirschema-repository"
+version = "0.1.0"
+edition = "2021"
+authors = ["FHIRSchema Team"]
+description = "Repository and management capabilities for FHIRSchema definitions"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/octofhir/fhirschema"
+keywords = ["fhir", "schema", "repository", "validation"]
+categories = ["data-structures", "web-programming"]
+
+[dependencies]
+fhirschema-core = { path = "../fhirschema-core" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+thiserror = "1.0"
+tracing = "0.1"
+url = "2.4"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+indexmap = "2.0"
+dashmap = "5.5"
+lru = "0.12"
+walkdir = "2.4"
+aws-sdk-s3 = { version = "1.0", optional = true }
+aws-config = { version = "1.0", optional = true }
+reqwest = { version = "0.11", features = ["json"], optional = true }
+
+[features]
+default = ["filesystem", "memory"]
+memory = []
+filesystem = []
+s3 = ["aws-sdk-s3", "aws-config"]
+remote = ["reqwest"]
+full = ["memory", "filesystem", "s3", "remote"]
+
+[dev-dependencies]
+tempfile = "3.8"
+tokio-test = "0.4"

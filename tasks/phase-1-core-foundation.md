@@ -15,7 +15,7 @@ Implement the foundational components for FHIRSchema support, focusing on core d
 ### Task 1.2: Implement fhirschema-core Data Structures ✓
 
 ### Task 1.3: Implement fhirschema-converter Core Engine
-**Status**: Largely Completed  
+**Status**: Completed  
 **Estimated Duration**: 2-3 weeks  
 **Priority**: High
 
@@ -28,24 +28,24 @@ Implement the foundational components for FHIRSchema support, focusing on core d
   - [x] Convert ElementDefinition to FHIRSchema Element
   - [x] Handle cardinality (min/max) conversion
   - [x] Process type references and choice types
-  - [ ] Convert slicing definitions
+  - [x] Convert slicing definitions
   - [x] Handle binding information
 - [x] Create `ConstraintConverter` for FHIRPath constraints
   - [x] Extract constraint definitions from ElementDefinition
   - [x] Convert constraint properties (key, expression, human, severity)
-  - [ ] Validate FHIRPath expression syntax
-- [ ] Implement `SlicingConverter` for slicing transformation
-  - [ ] Convert slicing discriminators to FHIRSchema format
-  - [ ] Handle slice definitions and ordering
-  - [ ] Process re-slicing scenarios
-- [ ] Add reference resolution utilities
-  - [ ] Resolve StructureDefinition references
-  - [ ] Handle canonical URLs and versioning
-  - [ ] Support local and remote reference resolution
+  - [x] Validate FHIRPath expression syntax
+- [x] Implement `SlicingConverter` for slicing transformation
+  - [x] Convert slicing discriminators to FHIRSchema format
+  - [x] Handle slice definitions and ordering
+  - [x] Process re-slicing scenarios
+- [x] Add reference resolution utilities
+  - [x] Resolve StructureDefinition references
+  - [x] Handle canonical URLs and versioning
+  - [x] Support local and remote reference resolution
 - [x] Implement error handling and reporting
   - [x] Detailed error messages with context
-  - [ ] Warning system for non-critical issues
-  - [ ] Progress reporting for large conversions
+  - [x] Warning system for non-critical issues
+  - [x] Progress reporting for large conversions
 
 #### Acceptance Criteria:
 - Successfully converts basic FHIR StructureDefinitions
