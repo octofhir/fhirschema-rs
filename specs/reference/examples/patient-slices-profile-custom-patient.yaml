@@ -1,6 +1,0 @@
-base: http://hl7.org/fhir/StructureDefinition/Patient
-id: custom-pat
-url: custom-pat
-type: Patient
-required:
-- gender
