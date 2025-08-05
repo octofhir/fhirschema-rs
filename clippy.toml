@@ -1,0 +1,30 @@
+cognitive-complexity-threshold = 30
+single-char-binding-names-threshold = 4
+trivial-copy-size-limit = 64
+pass-by-value-size-limit = 256
+too-many-arguments-threshold = 7
+type-complexity-threshold = 250
+literal-representation-threshold = 10
+doc-valid-idents = ["HTTP", "HTTPS", "URL", "JSON", "YAML", "XML", "API", "REST", "FHIR", "HL7", "UUID", "URI"]
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+warn-on-all-wildcard-imports = false
+disallowed-methods = [
+    # Encourage use of Result types over panicking
+    "std::panic::panic_any",
+    # Prefer explicit error handling
+    "std::process::exit",
+]
+disallowed-types = [
+    "std::collections::LinkedList",  # Prefer Vec or VecDeque
+]
+disallowed-names = [
+    "foo",
+    "bar",
+    "baz",
+    "test",
+    "tmp",
+    "temp"
+]
+max-trait-bounds = 3
+max-struct-bools = 3

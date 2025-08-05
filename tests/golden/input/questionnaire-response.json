@@ -1,0 +1,179 @@
+{
+  "resourceType": "StructureDefinition",
+  "id": "QuestionnaireResponse",
+  "url": "http://hl7.org/fhir/StructureDefinition/QuestionnaireResponse",
+  "version": "4.0.1",
+  "name": "QuestionnaireResponse",
+  "title": "QuestionnaireResponse",
+  "status": "active",
+  "date": "2019-11-01T09:29:23+11:00",
+  "publisher": "Health Level Seven International (FHIR Infrastructure)",
+  "description": "A structured set of questions and their answers.",
+  "fhirVersion": "4.0.1",
+  "kind": "resource",
+  "abstract": false,
+  "type": "QuestionnaireResponse",
+  "baseDefinition": "http://hl7.org/fhir/StructureDefinition/DomainResource",
+  "derivation": "specialization",
+  "snapshot": {
+    "element": [
+      {
+        "id": "QuestionnaireResponse",
+        "path": "QuestionnaireResponse",
+        "short": "A structured set of questions and their answers",
+        "definition": "A structured set of questions intended to guide the collection of answers from end-users. Questionnaires provide detailed control over order, presentation, phraseology and grouping to allow coherent, consistent data collection.",
+        "min": 0,
+        "max": "*",
+        "base": {
+          "path": "QuestionnaireResponse",
+          "min": 0,
+          "max": "*"
+        },
+        "constraint": [
+          {
+            "key": "qrs-1",
+            "severity": "error",
+            "human": "Nested answers are only found in items with nested items",
+            "expression": "descendants().where(answer.value.empty() and answer.item.exists()).empty()",
+            "xpath": "not(descendant::f:answer/f:*[starts-with(local-name(.), 'value')] and descendant::f:answer/f:item)"
+          }
+        ],
+        "isModifier": false,
+        "isSummary": false
+      },
+      {
+        "id": "QuestionnaireResponse.id",
+        "path": "QuestionnaireResponse.id",
+        "short": "Logical id of this artifact",
+        "definition": "The logical id of the resource, as used in the URL for the resource.",
+        "min": 0,
+        "max": "1",
+        "base": {
+          "path": "Resource.id",
+          "min": 0,
+          "max": "1"
+        },
+        "type": [
+          {
+            "extension": [
+              {
+                "url": "http://hl7.org/fhir/StructureDefinition/structuredefinition-fhir-type",
+                "valueUrl": "id"
+              }
+            ],
+            "code": "http://hl7.org/fhirpath/System.String"
+          }
+        ],
+        "isModifier": false,
+        "isSummary": true
+      },
+      {
+        "id": "QuestionnaireResponse.questionnaire",
+        "path": "QuestionnaireResponse.questionnaire",
+        "short": "Form being answered",
+        "definition": "The Questionnaire that defines and organizes the questions for which answers are being provided.",
+        "min": 0,
+        "max": "1",
+        "base": {
+          "path": "QuestionnaireResponse.questionnaire",
+          "min": 0,
+          "max": "1"
+        },
+        "type": [
+          {
+            "code": "canonical",
+            "targetProfile": [
+              "http://hl7.org/fhir/StructureDefinition/Questionnaire"
+            ]
+          }
+        ],
+        "isModifier": false,
+        "isSummary": true
+      },
+      {
+        "id": "QuestionnaireResponse.status",
+        "path": "QuestionnaireResponse.status",
+        "short": "in-progress | completed | amended | entered-in-error | stopped",
+        "definition": "The position of the questionnaire response within its overall lifecycle.",
+        "min": 1,
+        "max": "1",
+        "base": {
+          "path": "QuestionnaireResponse.status",
+          "min": 1,
+          "max": "1"
+        },
+        "type": [
+          {
+            "code": "code"
+          }
+        ],
+        "isModifier": true,
+        "isModifierReason": "This element is labeled as a modifier because it is a status element that contains status entered-in-error which means that the resource should not be treated as valid",
+        "isSummary": true,
+        "binding": {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/elementdefinition-bindingName",
+              "valueString": "QuestionnaireResponseStatus"
+            }
+          ],
+          "strength": "required",
+          "description": "Lifecycle status of the questionnaire response.",
+          "valueSet": "http://hl7.org/fhir/ValueSet/questionnaire-answers-status"
+        }
+      },
+      {
+        "id": "QuestionnaireResponse.subject",
+        "path": "QuestionnaireResponse.subject",
+        "short": "The subject of the questions",
+        "definition": "The subject of the questionnaire response.  This could be a patient, organization, practitioner, device, etc.  This is who/what the answers apply to, but is not necessarily the source of information.",
+        "min": 0,
+        "max": "1",
+        "base": {
+          "path": "QuestionnaireResponse.subject",
+          "min": 0,
+          "max": "1"
+        },
+        "type": [
+          {
+            "code": "Reference",
+            "targetProfile": [
+              "http://hl7.org/fhir/StructureDefinition/Resource"
+            ]
+          }
+        ],
+        "isModifier": false,
+        "isSummary": true
+      },
+      {
+        "id": "QuestionnaireResponse.item",
+        "path": "QuestionnaireResponse.item",
+        "short": "Groups and questions",
+        "definition": "A group or question item from the original questionnaire for which answers are provided.",
+        "min": 0,
+        "max": "*",
+        "base": {
+          "path": "QuestionnaireResponse.item",
+          "min": 0,
+          "max": "*"
+        },
+        "type": [
+          {
+            "code": "BackboneElement"
+          }
+        ],
+        "constraint": [
+          {
+            "key": "qrs-1",
+            "severity": "error",
+            "human": "Item cannot contain both item and answer",
+            "expression": "(answer.exists() and item.exists()).not()",
+            "xpath": "not(f:answer and f:item)"
+          }
+        ],
+        "isModifier": false,
+        "isSummary": false
+      }
+    ]
+  }
+}

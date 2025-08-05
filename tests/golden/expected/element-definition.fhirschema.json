@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "abstract": null,
+  "base": "http://hl7.org/fhir/StructureDefinition/BackboneElement",
+  "base_definition": "http://hl7.org/fhir/StructureDefinition/BackboneElement",
+  "class": "type",
+  "constraints": [
+    {
+      "expression": "min.empty() or max.empty() or (max = '*') or iif(max != '*', min <= max.toInteger())",
+      "human": "Min <= Max",
+      "key": "eld-2",
+      "severity": "error",
+      "source": null,
+      "xpath": "not(exists(f:min)) or not(exists(f:max)) or (not(f:max/@value) and not(f:min/@value)) or (f:max/@value = '*') or (number(f:max/@value) >= f:min/@value)"
+    },
+    {
+      "expression": "aggregation.empty() or (code = 'Reference') or (code = 'canonical')",
+      "human": "Aggregation may only be specified if one of the allowed types for the element is a reference",
+      "key": "eld-4",
+      "severity": "error",
+      "source": null,
+      "xpath": "not(exists(f:aggregation)) or exists(f:code[@value = 'Reference']) or exists(f:code[@value = 'canonical'])"
+    }
+  ],
+  "derivation": "specialization",
+  "description": "Captures constraints on each element within the resource, profile, or extension.",
+  "elements": {
+    "ElementDefinition": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "min.empty() or max.empty() or (max = '*') or iif(max != '*', min <= max.toInteger())",
+          "human": "Min <= Max",
+          "key": "eld-2",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Captures constraints on each element within the resource, profile, or extension.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "*",
+      "min": 0,
+      "path": "ElementDefinition",
+      "pattern": null,
+      "short": "Definition of an element in a resource or extension",
+      "type": null
+    },
+    "ElementDefinition.definition": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "Provides a complete explanation of the meaning of the data element for human readability.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": true,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "ElementDefinition.definition",
+      "pattern": null,
+      "short": "Full formal definition as narrative text",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "markdown",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "ElementDefinition.id": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "Unique id for the element within a resource (for internal references).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "ElementDefinition.id",
+      "pattern": null,
+      "short": "Unique id for inter-element referencing",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "http://hl7.org/fhirpath/System.String",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "ElementDefinition.max": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "The maximum number of times this element is permitted to appear in the instance.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": true,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "ElementDefinition.max",
+      "pattern": null,
+      "short": "Maximum Cardinality (a number or *)",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "string",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "ElementDefinition.min": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "The minimum number of times this element SHALL appear in the instance.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": true,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "ElementDefinition.min",
+      "pattern": null,
+      "short": "Minimum Cardinality",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "unsignedInt",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "ElementDefinition.path": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "The path identifies the element and is expressed as a \".\"-separated list of ancestor elements, beginning with the name of the resource or extension.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": true,
+      "mapping": [],
+      "max": "1",
+      "min": 1,
+      "path": "ElementDefinition.path",
+      "pattern": null,
+      "short": "Path of the element in the hierarchy of elements",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "string",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "ElementDefinition.short": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "A concise description of what this element means (e.g. for use in autogenerated summaries).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": true,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "ElementDefinition.short",
+      "pattern": null,
+      "short": "Concise definition for space-constrained presentation",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "string",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "ElementDefinition.type": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "aggregation.empty() or (code = 'Reference') or (code = 'canonical')",
+          "human": "Aggregation may only be specified if one of the allowed types for the element is a reference",
+          "key": "eld-4",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "The data type or resource that the value of this element is permitted to be.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": true,
+      "mapping": [],
+      "max": "*",
+      "min": 0,
+      "path": "ElementDefinition.type",
+      "pattern": null,
+      "short": "Data type and Profile for this element",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "BackboneElement",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    }
+  },
+  "kind": "complex-type",
+  "name": "ElementDefinition",
+  "slicing": {},
+  "status": "active",
+  "title": "ElementDefinition",
+  "type": "ElementDefinition",
+  "url": "http://hl7.org/fhir/StructureDefinition/ElementDefinition",
+  "version": "4.0.1"
+}

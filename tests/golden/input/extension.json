@@ -1,0 +1,289 @@
+{
+  "resourceType": "StructureDefinition",
+  "id": "Extension",
+  "url": "http://hl7.org/fhir/StructureDefinition/Extension",
+  "version": "4.0.1",
+  "name": "Extension",
+  "title": "Extension",
+  "status": "active",
+  "date": "2019-11-01T09:29:23+11:00",
+  "publisher": "Health Level Seven International (FHIR Infrastructure)",
+  "description": "Optional Extension Element - found in all resources.",
+  "fhirVersion": "4.0.1",
+  "kind": "complex-type",
+  "abstract": false,
+  "type": "Extension",
+  "baseDefinition": "http://hl7.org/fhir/StructureDefinition/Element",
+  "derivation": "specialization",
+  "snapshot": {
+    "element": [
+      {
+        "id": "Extension",
+        "path": "Extension",
+        "short": "Optional Extensions Element",
+        "definition": "Optional Extension Element - found in all resources.",
+        "min": 0,
+        "max": "*",
+        "base": {
+          "path": "Extension",
+          "min": 0,
+          "max": "*"
+        },
+        "constraint": [
+          {
+            "key": "ext-1",
+            "severity": "error",
+            "human": "Must have either extensions or value[x], not both",
+            "expression": "extension.exists() != value.exists()",
+            "xpath": "exists(f:extension)!=exists(f:*[starts-with(local-name(.), 'value')])"
+          }
+        ],
+        "isModifier": false,
+        "isSummary": false
+      },
+      {
+        "id": "Extension.id",
+        "path": "Extension.id",
+        "representation": [
+          "xmlAttr"
+        ],
+        "short": "Unique id for inter-element referencing",
+        "definition": "Unique id for the element within a resource (for internal references).",
+        "min": 0,
+        "max": "1",
+        "base": {
+          "path": "Element.id",
+          "min": 0,
+          "max": "1"
+        },
+        "type": [
+          {
+            "extension": [
+              {
+                "url": "http://hl7.org/fhir/StructureDefinition/structuredefinition-fhir-type",
+                "valueUrl": "string"
+              }
+            ],
+            "code": "http://hl7.org/fhirpath/System.String"
+          }
+        ],
+        "isModifier": false,
+        "isSummary": false
+      },
+      {
+        "id": "Extension.extension",
+        "path": "Extension.extension",
+        "slicing": {
+          "discriminator": [
+            {
+              "type": "value",
+              "path": "url"
+            }
+          ],
+          "description": "Extensions are always sliced by (at least) url",
+          "rules": "open"
+        },
+        "short": "Additional content defined by implementations",
+        "definition": "May be used to represent additional information that is not part of the basic definition of the element.",
+        "min": 0,
+        "max": "*",
+        "base": {
+          "path": "Element.extension",
+          "min": 0,
+          "max": "*"
+        },
+        "type": [
+          {
+            "code": "Extension"
+          }
+        ],
+        "constraint": [
+          {
+            "key": "ext-1",
+            "severity": "error",
+            "human": "Must have either extensions or value[x], not both",
+            "expression": "extension.exists() != value.exists()",
+            "xpath": "exists(f:extension)!=exists(f:*[starts-with(local-name(.), 'value')])"
+          }
+        ],
+        "isModifier": false,
+        "isSummary": false
+      },
+      {
+        "id": "Extension.url",
+        "path": "Extension.url",
+        "representation": [
+          "xmlAttr"
+        ],
+        "short": "identifies the meaning of the extension",
+        "definition": "Source of the definition for the extension code - a logical name or a URL.",
+        "min": 1,
+        "max": "1",
+        "base": {
+          "path": "Extension.url",
+          "min": 1,
+          "max": "1"
+        },
+        "type": [
+          {
+            "extension": [
+              {
+                "url": "http://hl7.org/fhir/StructureDefinition/structuredefinition-fhir-type",
+                "valueUrl": "uri"
+              }
+            ],
+            "code": "http://hl7.org/fhirpath/System.String"
+          }
+        ],
+        "isModifier": false,
+        "isSummary": false
+      },
+      {
+        "id": "Extension.value[x]",
+        "path": "Extension.value[x]",
+        "short": "Value of extension",
+        "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+        "min": 0,
+        "max": "1",
+        "base": {
+          "path": "Extension.value[x]",
+          "min": 0,
+          "max": "1"
+        },
+        "type": [
+          {
+            "code": "base64Binary"
+          },
+          {
+            "code": "boolean"
+          },
+          {
+            "code": "canonical"
+          },
+          {
+            "code": "code"
+          },
+          {
+            "code": "date"
+          },
+          {
+            "code": "dateTime"
+          },
+          {
+            "code": "decimal"
+          },
+          {
+            "code": "id"
+          },
+          {
+            "code": "instant"
+          },
+          {
+            "code": "integer"
+          },
+          {
+            "code": "markdown"
+          },
+          {
+            "code": "oid"
+          },
+          {
+            "code": "positiveInt"
+          },
+          {
+            "code": "string"
+          },
+          {
+            "code": "time"
+          },
+          {
+            "code": "unsignedInt"
+          },
+          {
+            "code": "uri"
+          },
+          {
+            "code": "url"
+          },
+          {
+            "code": "uuid"
+          },
+          {
+            "code": "Address"
+          },
+          {
+            "code": "Age"
+          },
+          {
+            "code": "Annotation"
+          },
+          {
+            "code": "Attachment"
+          },
+          {
+            "code": "CodeableConcept"
+          },
+          {
+            "code": "Coding"
+          },
+          {
+            "code": "ContactPoint"
+          },
+          {
+            "code": "Count"
+          },
+          {
+            "code": "Distance"
+          },
+          {
+            "code": "Duration"
+          },
+          {
+            "code": "HumanName"
+          },
+          {
+            "code": "Identifier"
+          },
+          {
+            "code": "Money"
+          },
+          {
+            "code": "Period"
+          },
+          {
+            "code": "Quantity"
+          },
+          {
+            "code": "Range"
+          },
+          {
+            "code": "Ratio"
+          },
+          {
+            "code": "Reference"
+          },
+          {
+            "code": "SampledData"
+          },
+          {
+            "code": "Signature"
+          },
+          {
+            "code": "Timing"
+          }
+        ],
+        "constraint": [
+          {
+            "key": "ext-1",
+            "severity": "error",
+            "human": "Must have either extensions or value[x], not both",
+            "expression": "extension.exists() != value.exists()",
+            "xpath": "exists(f:extension)!=exists(f:*[starts-with(local-name(.), 'value')])"
+          }
+        ],
+        "isModifier": false,
+        "isSummary": false
+      }
+    ]
+  }
+}

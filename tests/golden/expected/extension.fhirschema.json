@@ -1,0 +1,1483 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "abstract": null,
+  "base": "http://hl7.org/fhir/StructureDefinition/Element",
+  "base_definition": "http://hl7.org/fhir/StructureDefinition/Element",
+  "class": "extension",
+  "constraints": [
+    {
+      "expression": "extension.exists() != value.exists()",
+      "human": "Must have either extensions or value[x], not both",
+      "key": "ext-1",
+      "severity": "error",
+      "source": null,
+      "xpath": "exists(f:extension)!=exists(f:*[starts-with(local-name(.), 'value')])"
+    },
+    {
+      "expression": "extension.exists() != value.exists()",
+      "human": "Must have either extensions or value[x], not both",
+      "key": "ext-1",
+      "severity": "error",
+      "source": null,
+      "xpath": "exists(f:extension)!=exists(f:*[starts-with(local-name(.), 'value')])"
+    },
+    {
+      "expression": "extension.exists() != value.exists()",
+      "human": "Must have either extensions or value[x], not both",
+      "key": "ext-1",
+      "severity": "error",
+      "source": null,
+      "xpath": "exists(f:extension)!=exists(f:*[starts-with(local-name(.), 'value')])"
+    }
+  ],
+  "derivation": "specialization",
+  "description": "Optional Extension Element - found in all resources.",
+  "elements": {
+    "Extension": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Optional Extension Element - found in all resources.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "*",
+      "min": 0,
+      "path": "Extension",
+      "pattern": null,
+      "short": "Optional Extensions Element",
+      "type": null
+    },
+    "Extension.extension": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "May be used to represent additional information that is not part of the basic definition of the element.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "*",
+      "min": 0,
+      "path": "Extension.extension",
+      "pattern": null,
+      "short": "Additional content defined by implementations",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Extension",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.id": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "Unique id for the element within a resource (for internal references).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.id",
+      "pattern": null,
+      "short": "Unique id for inter-element referencing",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "http://hl7.org/fhirpath/System.String",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.url": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "Source of the definition for the extension code - a logical name or a URL.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 1,
+      "path": "Extension.url",
+      "pattern": null,
+      "short": "identifies the meaning of the extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "http://hl7.org/fhirpath/System.String",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueAddress": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueAddress",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Address",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueAge": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueAge",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Age",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueAnnotation": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueAnnotation",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Annotation",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueAttachment": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueAttachment",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Attachment",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueBase64Binary": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueBase64Binary",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "base64Binary",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueBoolean": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueBoolean",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "boolean",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueCanonical": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueCanonical",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "canonical",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueCode": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueCode",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "code",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueCodeableConcept": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueCodeableConcept",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "CodeableConcept",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueCoding": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueCoding",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Coding",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueContactPoint": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueContactPoint",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "ContactPoint",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueCount": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueCount",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Count",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueDate": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueDate",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "date",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueDateTime": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueDateTime",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "dateTime",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueDecimal": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueDecimal",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "decimal",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueDistance": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueDistance",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Distance",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueDuration": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueDuration",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Duration",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueHumanName": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueHumanName",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "HumanName",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueId": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueId",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "id",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueIdentifier": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueIdentifier",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Identifier",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueInstant": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueInstant",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "instant",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueInteger": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueInteger",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "integer",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueMarkdown": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueMarkdown",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "markdown",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueMoney": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueMoney",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Money",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueOid": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueOid",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "oid",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valuePeriod": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valuePeriod",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Period",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valuePositiveInt": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valuePositiveInt",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "positiveInt",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueQuantity": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueQuantity",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Quantity",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueRange": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueRange",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Range",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueRatio": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueRatio",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Ratio",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueReference": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueReference",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Reference",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueSampledData": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueSampledData",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "SampledData",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueSignature": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueSignature",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Signature",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueString": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueString",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "string",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueTime": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueTime",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "time",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueTiming": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueTiming",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Timing",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueUnsignedInt": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueUnsignedInt",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "unsignedInt",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueUri": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueUri",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "uri",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueUrl": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueUrl",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "url",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Extension.valueUuid": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "extension.exists() != value.exists()",
+          "human": "Must have either extensions or value[x], not both",
+          "key": "ext-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Value of extension - must be one of a constrained set of the data types (see [Extensibility](extensibility.html) for a list).",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Extension.valueUuid",
+      "pattern": null,
+      "short": "Value of extension",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "uuid",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    }
+  },
+  "kind": "complex-type",
+  "name": "Extension",
+  "slicing": {
+    "Extension.extension": {
+      "description": "Extensions are always sliced by (at least) url",
+      "discriminator": [
+        {
+          "path": "url",
+          "type": "value"
+        }
+      ],
+      "ordered": null,
+      "rules": "open"
+    }
+  },
+  "status": "active",
+  "title": "Extension",
+  "type": "Extension",
+  "url": "http://hl7.org/fhir/StructureDefinition/Extension",
+  "version": "4.0.1"
+}

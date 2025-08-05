@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "abstract": null,
+  "base": "http://hl7.org/fhir/StructureDefinition/DomainResource",
+  "base_definition": "http://hl7.org/fhir/StructureDefinition/DomainResource",
+  "class": "resource",
+  "constraints": [
+    {
+      "expression": "contained.contained.empty()",
+      "human": "If the resource is contained in another resource, it SHALL NOT contain nested Resources",
+      "key": "dom-2",
+      "severity": "error",
+      "source": "http://hl7.org/fhir/StructureDefinition/DomainResource",
+      "xpath": "not(parent::f:contained and f:contained)"
+    }
+  ],
+  "derivation": "specialization",
+  "description": "Demographics and other administrative information about an individual or animal receiving care or other health-related services.",
+  "elements": {
+    "Patient": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "contained.contained.empty()",
+          "human": "If the resource is contained in another resource, it SHALL NOT contain nested Resources",
+          "key": "dom-2",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "Demographics and other administrative information about an individual or animal receiving care or other health-related services.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [
+        {
+          "comment": null,
+          "identity": "rim",
+          "language": null,
+          "map": "Entity. Role, or Act"
+        },
+        {
+          "comment": null,
+          "identity": "cda",
+          "language": null,
+          "map": "ClinicalDocument, if patient is the subject"
+        }
+      ],
+      "max": "*",
+      "min": 0,
+      "path": "Patient",
+      "pattern": null,
+      "short": "Information about an individual or animal receiving care",
+      "type": null
+    },
+    "Patient.active": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "Whether this patient record is in active use.",
+      "fixed": null,
+      "is_modifier": true,
+      "is_summary": true,
+      "mapping": [
+        {
+          "comment": null,
+          "identity": "w5",
+          "language": null,
+          "map": "FiveWs.status"
+        },
+        {
+          "comment": null,
+          "identity": "cda",
+          "language": null,
+          "map": "n/a"
+        }
+      ],
+      "max": "1",
+      "min": 0,
+      "path": "Patient.active",
+      "pattern": null,
+      "short": "Whether this patient's record is in active use",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "boolean",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Patient.gender": {
+      "binding": {
+        "description": "The gender of a person used for administrative purposes.",
+        "strength": "required",
+        "value_set": "http://hl7.org/fhir/ValueSet/administrative-gender"
+      },
+      "comment": null,
+      "constraints": [],
+      "definition": "Administrative Gender - the gender that the patient is considered to have for administration and record keeping purposes.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": true,
+      "mapping": [
+        {
+          "comment": null,
+          "identity": "v2",
+          "language": null,
+          "map": "PID-8"
+        },
+        {
+          "comment": null,
+          "identity": "rim",
+          "language": null,
+          "map": "player[classCode=PSN|ANM and determinerCode=INSTANCE]/administrativeGender"
+        },
+        {
+          "comment": null,
+          "identity": "iso11179",
+          "language": null,
+          "map": ".patient.administrativeGenderCode"
+        },
+        {
+          "comment": null,
+          "identity": "cda",
+          "language": null,
+          "map": ".patient.administrativeGenderCode"
+        }
+      ],
+      "max": "1",
+      "min": 0,
+      "path": "Patient.gender",
+      "pattern": null,
+      "short": "male | female | other | unknown",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "code",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Patient.id": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "The logical id of the resource, as used in the URL for the resource.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": true,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "Patient.id",
+      "pattern": null,
+      "short": "Logical id of this artifact",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "http://hl7.org/fhirpath/System.String",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Patient.identifier": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "An identifier for this patient.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": true,
+      "mapping": [
+        {
+          "comment": null,
+          "identity": "w5",
+          "language": null,
+          "map": "FiveWs.identifier"
+        },
+        {
+          "comment": null,
+          "identity": "v2",
+          "language": null,
+          "map": "PID-3"
+        },
+        {
+          "comment": null,
+          "identity": "rim",
+          "language": null,
+          "map": "id"
+        },
+        {
+          "comment": null,
+          "identity": "cda",
+          "language": null,
+          "map": ".patient.id"
+        }
+      ],
+      "max": "*",
+      "min": 0,
+      "path": "Patient.identifier",
+      "pattern": null,
+      "short": "An identifier for this patient",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Identifier",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "Patient.name": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "A name associated with the individual.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": true,
+      "mapping": [
+        {
+          "comment": null,
+          "identity": "v2",
+          "language": null,
+          "map": "PID-5, PID-9"
+        },
+        {
+          "comment": null,
+          "identity": "rim",
+          "language": null,
+          "map": "name"
+        },
+        {
+          "comment": null,
+          "identity": "cda",
+          "language": null,
+          "map": ".patient.name"
+        }
+      ],
+      "max": "*",
+      "min": 0,
+      "path": "Patient.name",
+      "pattern": null,
+      "short": "A name associated with the patient",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "HumanName",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    }
+  },
+  "kind": "resource",
+  "name": "Patient",
+  "slicing": {},
+  "status": "active",
+  "title": "Patient",
+  "type": "Patient",
+  "url": "http://hl7.org/fhir/StructureDefinition/Patient",
+  "version": "4.0.1"
+}

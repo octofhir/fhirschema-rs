@@ -1,0 +1,16 @@
+# Rustfmt configuration for Rust stable 2024
+# Only includes truly stable configuration options
+
+# Basic formatting - these are the only stable options
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+use_small_heuristics = "Default"
+
+# Import formatting - stable options only
+reorder_imports = true
+reorder_modules = true
+
+# Edition specification
+edition = "2024"

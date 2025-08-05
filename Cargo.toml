@@ -1,0 +1,71 @@
+[package]
+name = "octofhir-fhirschema"
+version = "0.1.0"
+edition = "2024"
+authors = ["OctoFHIR Team <funyloony@gmail.com>"]
+description = "A high-performance FHIR schema management and validation library"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/octofhir/fhirschema-rs"
+keywords = ["fhir", "healthcare", "schema", "validation", "interoperability"]
+categories = ["api-bindings", "data-structures", "parser-implementations"]
+
+[features]
+default = ["memory-storage", "tokio"]
+cli = ["clap", "tokio"]
+memory-storage = ["dashmap", "lru"]
+disk-storage = ["tokio/fs"]
+server = ["axum", "tokio", "tracing"]
+all = ["cli", "memory-storage", "disk-storage", "server"]
+
+[dependencies]
+# Core serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2"
+async-trait = "0.1"
+
+# Memory storage
+dashmap = { version = "6", optional = true }
+lru = { version = "0.16", optional = true }
+
+# CLI dependencies
+clap = { version = "4", features = ["derive"], optional = true }
+
+# Async runtime
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "sync"], optional = true }
+
+# Server dependencies
+axum = { version = "0.8", optional = true }
+tracing = { version = "0.1", optional = true }
+
+# Validation
+regex = "1.10"
+url = { version = "2.4", features = ["serde"] }
+
+# OctoFHIR ecosystem - Official canonical manager (using local version with fix)
+octofhir-canonical-manager = {version = "0.1.1"}
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "sync", "test-util"] }
+tokio-test = "0.4"
+criterion = "0.7"
+tempfile = "3.8"
+reqwest = { version = "0.11", features = ["json"] }
+zip = "0.6"
+chrono = { version = "0.4", features = ["serde"] }
+
+[[bench]]
+name = "schema_validation"
+harness = false
+
+[lib]
+name = "octofhir_fhirschema"
+path = "src/lib.rs"
+
+[[bin]]
+name = "octofhir-fhirschema"
+path = "src/bin/cli.rs"
+required-features = ["cli"]

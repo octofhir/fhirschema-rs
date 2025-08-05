@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "abstract": null,
+  "base": "http://hl7.org/fhir/StructureDefinition/DomainResource",
+  "base_definition": "http://hl7.org/fhir/StructureDefinition/DomainResource",
+  "class": "resource",
+  "constraints": [
+    {
+      "expression": "descendants().where(answer.value.empty() and answer.item.exists()).empty()",
+      "human": "Nested answers are only found in items with nested items",
+      "key": "qrs-1",
+      "severity": "error",
+      "source": null,
+      "xpath": "not(descendant::f:answer/f:*[starts-with(local-name(.), 'value')] and descendant::f:answer/f:item)"
+    },
+    {
+      "expression": "(answer.exists() and item.exists()).not()",
+      "human": "Item cannot contain both item and answer",
+      "key": "qrs-1",
+      "severity": "error",
+      "source": null,
+      "xpath": "not(f:answer and f:item)"
+    }
+  ],
+  "derivation": "specialization",
+  "description": "A structured set of questions and their answers.",
+  "elements": {
+    "QuestionnaireResponse": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "descendants().where(answer.value.empty() and answer.item.exists()).empty()",
+          "human": "Nested answers are only found in items with nested items",
+          "key": "qrs-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "A structured set of questions intended to guide the collection of answers from end-users. Questionnaires provide detailed control over order, presentation, phraseology and grouping to allow coherent, consistent data collection.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "*",
+      "min": 0,
+      "path": "QuestionnaireResponse",
+      "pattern": null,
+      "short": "A structured set of questions and their answers",
+      "type": null
+    },
+    "QuestionnaireResponse.id": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "The logical id of the resource, as used in the URL for the resource.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": true,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "QuestionnaireResponse.id",
+      "pattern": null,
+      "short": "Logical id of this artifact",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "http://hl7.org/fhirpath/System.String",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "QuestionnaireResponse.item": {
+      "binding": null,
+      "comment": null,
+      "constraints": [
+        {
+          "expression": "(answer.exists() and item.exists()).not()",
+          "human": "Item cannot contain both item and answer",
+          "key": "qrs-1",
+          "severity": "error",
+          "source": null,
+          "xpath": null
+        }
+      ],
+      "definition": "A group or question item from the original questionnaire for which answers are provided.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": false,
+      "mapping": [],
+      "max": "*",
+      "min": 0,
+      "path": "QuestionnaireResponse.item",
+      "pattern": null,
+      "short": "Groups and questions",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "BackboneElement",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "QuestionnaireResponse.questionnaire": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "The Questionnaire that defines and organizes the questions for which answers are being provided.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": true,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "QuestionnaireResponse.questionnaire",
+      "pattern": null,
+      "short": "Form being answered",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "canonical",
+          "profile": null,
+          "target_profile": [
+            "http://hl7.org/fhir/StructureDefinition/Questionnaire"
+          ],
+          "versioning": null
+        }
+      ]
+    },
+    "QuestionnaireResponse.status": {
+      "binding": {
+        "description": "Lifecycle status of the questionnaire response.",
+        "strength": "required",
+        "value_set": "http://hl7.org/fhir/ValueSet/questionnaire-answers-status"
+      },
+      "comment": null,
+      "constraints": [],
+      "definition": "The position of the questionnaire response within its overall lifecycle.",
+      "fixed": null,
+      "is_modifier": true,
+      "is_summary": true,
+      "mapping": [],
+      "max": "1",
+      "min": 1,
+      "path": "QuestionnaireResponse.status",
+      "pattern": null,
+      "short": "in-progress | completed | amended | entered-in-error | stopped",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "code",
+          "profile": null,
+          "target_profile": null,
+          "versioning": null
+        }
+      ]
+    },
+    "QuestionnaireResponse.subject": {
+      "binding": null,
+      "comment": null,
+      "constraints": [],
+      "definition": "The subject of the questionnaire response.  This could be a patient, organization, practitioner, device, etc.  This is who/what the answers apply to, but is not necessarily the source of information.",
+      "fixed": null,
+      "is_modifier": false,
+      "is_summary": true,
+      "mapping": [],
+      "max": "1",
+      "min": 0,
+      "path": "QuestionnaireResponse.subject",
+      "pattern": null,
+      "short": "The subject of the questions",
+      "type": [
+        {
+          "aggregation": null,
+          "code": "Reference",
+          "profile": null,
+          "target_profile": [
+            "http://hl7.org/fhir/StructureDefinition/Resource"
+          ],
+          "versioning": null
+        }
+      ]
+    }
+  },
+  "kind": "resource",
+  "name": "QuestionnaireResponse",
+  "slicing": {},
+  "status": "active",
+  "title": "QuestionnaireResponse",
+  "type": "QuestionnaireResponse",
+  "url": "http://hl7.org/fhir/StructureDefinition/QuestionnaireResponse",
+  "version": "4.0.1"
+}

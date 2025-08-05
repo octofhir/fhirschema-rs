@@ -3,3 +3,19 @@ target
 node_modules
 .output
 generated
+
+# Golden test actual outputs (expected outputs are committed)
+tests/golden/actual/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor swap files
+*.swp
+*.swo
+*~
+
+# FCM (FHIR Canonical Manager) cache and packages - ignore contents but keep structure
+.fcm/*
+!.fcm/.gitkeep
