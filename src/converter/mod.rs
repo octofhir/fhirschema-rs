@@ -1,11 +1,14 @@
+mod adaptive_converter;
 mod choice_types;
 mod constraints;
 mod context;
 mod element_converter;
+mod parallel_benchmark;
 mod parallel_converter;
 mod slicing;
 mod structure_definition;
 
+pub use adaptive_converter::*;
 pub use choice_types::*;
 pub use constraints::*;
 pub use context::*;

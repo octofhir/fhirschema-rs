@@ -1,11 +1,22 @@
 use super::{FhirSchemaConverter, StructureDefinition, StructureDefinitionConverter};
 use crate::{FhirSchema, Result};
 use rayon::prelude::*;
-use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use thiserror::Error;
+
+// Global thread pool to avoid recreation overhead
+static GLOBAL_THREAD_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+fn get_or_create_thread_pool(num_threads: usize) -> &'static rayon::ThreadPool {
+    GLOBAL_THREAD_POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .expect("Failed to create global thread pool")
+    })
+}
 
 #[derive(Debug, Error)]
 pub enum ParallelConversionError {
@@ -86,7 +97,6 @@ impl Default for ParallelConverterConfig {
 pub struct ParallelSchemaConverter {
     converter: Arc<FhirSchemaConverter>,
     config: ParallelConverterConfig,
-    cache: Arc<Mutex<HashMap<String, FhirSchema>>>,
 }
 
 impl ParallelSchemaConverter {
@@ -94,7 +104,6 @@ impl ParallelSchemaConverter {
         Self {
             converter: Arc::new(converter),
             config: ParallelConverterConfig::default(),
-            cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -102,7 +111,6 @@ impl ParallelSchemaConverter {
         Self {
             converter: Arc::new(converter),
             config,
-            cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -115,53 +123,19 @@ impl ParallelSchemaConverter {
             return Ok(Vec::new());
         }
 
-        // Configure Rayon thread pool
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(self.config.worker_threads)
-            .build()
-            .map_err(|e| crate::FhirSchemaError::Conversion {
-                message: format!("Failed to create thread pool: {e}"),
-            })?;
+        // Use global thread pool to avoid recreation overhead
+        let pool = get_or_create_thread_pool(self.config.worker_threads);
 
-        // Process definitions in parallel with caching
+        // Process definitions in parallel
         let converter = self.converter.clone();
-        let cache = self.cache.clone();
         let results: Vec<Result<FhirSchema>> = pool.install(|| {
             definitions
                 .into_par_iter()
                 .map(|def| {
-                    // Create cache key from URL or name + type
-                    let cache_key = def
-                        .url
-                        .as_ref()
-                        .map(|u| u.to_string())
-                        .or_else(|| {
-                            def.name
-                                .as_ref()
-                                .map(|n| format!("{}:{}", n, def.type_name))
-                        })
-                        .unwrap_or_else(|| format!("{}:{}", def.type_name, def.kind));
-
-                    // Check cache first
-                    if let Ok(cache_guard) = cache.lock() {
-                        if let Some(cached_schema) = cache_guard.get(&cache_key) {
-                            // Return reference to cached schema instead of cloning
-                            return Ok(cached_schema.clone());
-                        }
-                    }
-
-                    // Convert if not in cache - create a shared context for batch processing
+                    // For small batches, skip caching to avoid mutex overhead
+                    // Convert directly without cache contention
                     let mut context = super::ConversionContext::new(&converter.config);
-                    match converter.convert_with_context(&def, &mut context) {
-                        Ok(schema) => {
-                            // Store in cache without unnecessary cloning
-                            if let Ok(mut cache_guard) = cache.lock() {
-                                cache_guard.insert(cache_key, schema.clone());
-                            }
-                            Ok(schema)
-                        }
-                        Err(e) => Err(e),
-                    }
+                    converter.convert_with_context(&def, &mut context)
                 })
                 .collect()
         });
