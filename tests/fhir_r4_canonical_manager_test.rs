@@ -20,6 +20,7 @@ fn create_local_fcm_config() -> FcmConfig {
             packages_dir: fcm_dir.join("packages"),
             max_cache_size: "2GB".to_string(), // Increase cache size for tests
         },
+        optimization: Default::default(),
     }
 }
 
@@ -135,14 +136,16 @@ async fn convert_sample_structure_definitions(
     let converter = FhirSchemaConverter::new();
 
     // Convert a sample of important FHIR resources
-    let priority_resources = ["Patient",
+    let priority_resources = [
+        "Patient",
         "Observation",
         "Practitioner",
         "Organization",
         "Encounter",
         "Condition",
         "MedicationRequest",
-        "DiagnosticReport"];
+        "DiagnosticReport",
+    ];
 
     for structure_def in structure_definitions
         .iter()
@@ -209,9 +212,7 @@ fn display_conversion_results(results: &[SampleConversionResult]) {
 
     println!("\n📊 Conversion Results Summary:");
     println!("  - Total Resources: {total}");
-    println!(
-        "  - Successful Conversions: {successful} ({success_rate:.1}%)"
-    );
+    println!("  - Successful Conversions: {successful} ({success_rate:.1}%)");
     println!("  - Failed Conversions: {}", total - successful);
 
     if total > 0 {

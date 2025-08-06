@@ -1,3 +1,6 @@
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::only_used_in_recursion)]
+
 use crate::{FhirSchema, Result};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -14,7 +17,11 @@ pub trait ValidationEngine {
     fn validate_resource(&self, resource: &Value, schema: &FhirSchema) -> Result<ValidationResult>;
 
     /// Validate a FHIR resource against multiple schemas
-    fn validate_resource_with_schemas(&self, resource: &Value, schemas: &[&FhirSchema]) -> Result<ValidationResult>;
+    fn validate_resource_with_schemas(
+        &self,
+        resource: &Value,
+        schemas: &[&FhirSchema],
+    ) -> Result<ValidationResult>;
 }
 
 /// Validation context that maintains state during validation
@@ -131,9 +138,18 @@ impl ValidationContext {
 impl ValidationResult {
     /// Create a new validation result from a list of issues
     pub fn from_issues(issues: Vec<ValidationIssue>) -> Self {
-        let error_count = issues.iter().filter(|i| matches!(i.severity, ValidationSeverity::Error)).count();
-        let warning_count = issues.iter().filter(|i| matches!(i.severity, ValidationSeverity::Warning)).count();
-        let info_count = issues.iter().filter(|i| matches!(i.severity, ValidationSeverity::Information)).count();
+        let error_count = issues
+            .iter()
+            .filter(|i| matches!(i.severity, ValidationSeverity::Error))
+            .count();
+        let warning_count = issues
+            .iter()
+            .filter(|i| matches!(i.severity, ValidationSeverity::Warning))
+            .count();
+        let info_count = issues
+            .iter()
+            .filter(|i| matches!(i.severity, ValidationSeverity::Information))
+            .count();
 
         Self {
             is_valid: error_count == 0,
@@ -181,16 +197,12 @@ pub struct FhirSchemaValidationEngine {
 impl FhirSchemaValidationEngine {
     /// Create a new validation engine
     pub fn new() -> Self {
-        Self {
-            strict_mode: false,
-        }
+        Self { strict_mode: false }
     }
 
     /// Create a new validation engine with strict mode enabled
     pub fn new_strict() -> Self {
-        Self {
-            strict_mode: true,
-        }
+        Self { strict_mode: true }
     }
 }
 
@@ -211,7 +223,11 @@ impl ValidationEngine for FhirSchemaValidationEngine {
         Ok(context.into_result())
     }
 
-    fn validate_resource_with_schemas(&self, resource: &Value, schemas: &[&FhirSchema]) -> Result<ValidationResult> {
+    fn validate_resource_with_schemas(
+        &self,
+        resource: &Value,
+        schemas: &[&FhirSchema],
+    ) -> Result<ValidationResult> {
         let mut context = ValidationContext::new(resource.clone());
 
         // Add all schemas to the context
@@ -256,7 +272,8 @@ impl FhirSchemaValidationEngine {
             } else {
                 context.add_error(
                     "invalid-resource-type",
-                    format!("resourceType field must be a string, found: {}",
+                    format!(
+                        "resourceType field must be a string, found: {}",
                         match resource_type {
                             Value::Null => "null",
                             Value::Bool(_) => "boolean",
@@ -264,7 +281,8 @@ impl FhirSchemaValidationEngine {
                             Value::String(_) => "string",
                             Value::Array(_) => "array",
                             Value::Object(_) => "object",
-                        }),
+                        }
+                    ),
                 );
             }
             context.pop_path();
@@ -273,7 +291,10 @@ impl FhirSchemaValidationEngine {
             context.push_path("resourceType");
             context.add_error(
                 "missing-resource-type",
-                format!("Required field 'resourceType' is missing. Expected value: '{}'", schema.schema_type),
+                format!(
+                    "Required field 'resourceType' is missing. Expected value: '{}'",
+                    schema.schema_type
+                ),
             );
             context.pop_path();
         }
@@ -346,7 +367,10 @@ impl FhirSchemaValidationEngine {
             // If this schema extends another, validate base type conformance
             context.add_warning(
                 "base-definition-validation",
-                format!("Base definition validation not yet implemented for: {}", base_definition),
+                format!(
+                    "Base definition validation not yet implemented for: {}",
+                    base_definition
+                ),
             );
         }
 
@@ -494,9 +518,8 @@ impl FhirSchemaValidationEngine {
                 }
 
                 if !type_matched {
-                    let expected_types: Vec<String> = element_types.iter()
-                        .map(|t| t.code.clone())
-                        .collect();
+                    let expected_types: Vec<String> =
+                        element_types.iter().map(|t| t.code.clone()).collect();
                     context.add_error(
                         "type-mismatch",
                         format!(
@@ -560,7 +583,7 @@ impl FhirSchemaValidationEngine {
             }
             "boolean" => value.is_boolean(),
             "integer" | "positiveInt" | "unsignedInt" => {
-                value.is_number() && value.as_f64().map_or(false, |n| n.fract() == 0.0)
+                value.is_number() && value.as_f64().is_some_and(|n| n.fract() == 0.0)
             }
             "decimal" => value.is_number(),
             "date" | "dateTime" | "instant" | "time" => {
@@ -604,10 +627,7 @@ impl FhirSchemaValidationEngine {
             if !self.value_matches_pattern(value, pattern_value) {
                 context.add_error(
                     "pattern-violation",
-                    format!(
-                        "Element '{}' does not match required pattern",
-                        element.path
-                    ),
+                    format!("Element '{}' does not match required pattern", element.path),
                 );
             }
         }
@@ -628,7 +648,10 @@ impl FhirSchemaValidationEngine {
             for element_type in element_types {
                 if self.is_primitive_type(&element_type.code) {
                     // For primitive elements, check for the corresponding extension element
-                    let extension_path = format!("_{}", element_path.split('.').last().unwrap_or(element_path));
+                    let extension_path = format!(
+                        "_{}",
+                        element_path.split('.').next_back().unwrap_or(element_path)
+                    );
 
                     // Get the parent object to check for extension
                     if let Some(parent_path) = element_path.rsplit_once('.') {
@@ -636,14 +659,22 @@ impl FhirSchemaValidationEngine {
                         if let Some(Value::Object(parent_obj)) = parent_value {
                             if let Some(extension_value) = parent_obj.get(&extension_path) {
                                 // Validate extension structure
-                                self.validate_extension_structure(extension_value, &extension_path, context)?;
+                                self.validate_extension_structure(
+                                    extension_value,
+                                    &extension_path,
+                                    context,
+                                )?;
                             }
                         }
                     } else {
                         // Root level primitive - check for extension in root object
                         if let Value::Object(root_obj) = resource {
                             if let Some(extension_value) = root_obj.get(&extension_path) {
-                                self.validate_extension_structure(extension_value, &extension_path, context)?;
+                                self.validate_extension_structure(
+                                    extension_value,
+                                    &extension_path,
+                                    context,
+                                )?;
                             }
                         }
                     }
@@ -656,10 +687,27 @@ impl FhirSchemaValidationEngine {
 
     /// Check if a FHIR type is a primitive type
     fn is_primitive_type(&self, fhir_type: &str) -> bool {
-        matches!(fhir_type,
-            "boolean" | "integer" | "string" | "decimal" | "uri" | "url" | "canonical" |
-            "base64Binary" | "instant" | "date" | "dateTime" | "time" | "code" | "oid" |
-            "id" | "markdown" | "unsignedInt" | "positiveInt" | "uuid"
+        matches!(
+            fhir_type,
+            "boolean"
+                | "integer"
+                | "string"
+                | "decimal"
+                | "uri"
+                | "url"
+                | "canonical"
+                | "base64Binary"
+                | "instant"
+                | "date"
+                | "dateTime"
+                | "time"
+                | "code"
+                | "oid"
+                | "id"
+                | "markdown"
+                | "unsignedInt"
+                | "positiveInt"
+                | "uuid"
         )
     }
 
@@ -676,7 +724,10 @@ impl FhirSchemaValidationEngine {
                 if !ext_obj.contains_key("url") {
                     context.add_error(
                         "extension-missing-url",
-                        format!("Extension at '{}' must have a 'url' property", extension_path),
+                        format!(
+                            "Extension at '{}' must have a 'url' property",
+                            extension_path
+                        ),
                     );
                 }
 
@@ -687,14 +738,20 @@ impl FhirSchemaValidationEngine {
                 if !has_value && !has_extension {
                     context.add_error(
                         "extension-missing-content",
-                        format!("Extension at '{}' must have either a value[x] or nested extensions", extension_path),
+                        format!(
+                            "Extension at '{}' must have either a value[x] or nested extensions",
+                            extension_path
+                        ),
                     );
                 }
 
                 if has_value && has_extension {
                     context.add_error(
                         "extension-conflicting-content",
-                        format!("Extension at '{}' cannot have both value[x] and nested extensions", extension_path),
+                        format!(
+                            "Extension at '{}' cannot have both value[x] and nested extensions",
+                            extension_path
+                        ),
                     );
                 }
             }
@@ -708,14 +765,16 @@ impl FhirSchemaValidationEngine {
             _ => {
                 context.add_error(
                     "extension-invalid-type",
-                    format!("Extension at '{}' must be an object or array of objects", extension_path),
+                    format!(
+                        "Extension at '{}' must be an object or array of objects",
+                        extension_path
+                    ),
                 );
             }
         }
 
         Ok(())
     }
-
 
     /// Validate FHIR Reference structure and content
     fn validate_reference(
@@ -732,7 +791,10 @@ impl FhirSchemaValidationEngine {
             if !has_reference && !has_identifier {
                 context.add_error(
                     "reference-missing-content",
-                    format!("Reference at '{}' must have either 'reference' or 'identifier'", element_path),
+                    format!(
+                        "Reference at '{}' must have either 'reference' or 'identifier'",
+                        element_path
+                    ),
                 );
                 return Ok(());
             }
@@ -798,7 +860,10 @@ impl FhirSchemaValidationEngine {
                 if reference_str.len() == 1 {
                     context.add_error(
                         "reference-invalid-fragment",
-                        format!("Fragment reference at '{}' cannot be just '#'", element_path),
+                        format!(
+                            "Fragment reference at '{}' cannot be just '#'",
+                            element_path
+                        ),
                     );
                 }
             } else if reference_str.contains('/') {
@@ -811,7 +876,10 @@ impl FhirSchemaValidationEngine {
                     if resource_type.is_empty() || resource_id.is_empty() {
                         context.add_error(
                             "reference-invalid-format",
-                            format!("Reference at '{}' has invalid format: '{}'", element_path, reference_str),
+                            format!(
+                                "Reference at '{}' has invalid format: '{}'",
+                                element_path, reference_str
+                            ),
                         );
                     }
                 }
@@ -949,28 +1017,22 @@ impl FhirSchemaValidationEngine {
         if !constraint_result {
             match constraint.severity.as_str() {
                 "error" => {
-                    context.add_error(
-                        &constraint.key,
-                        &constraint.human,
-                    );
+                    context.add_error(&constraint.key, &constraint.human);
                 }
                 "warning" => {
-                    context.add_warning(
-                        &constraint.key,
-                        &constraint.human,
-                    );
+                    context.add_warning(&constraint.key, &constraint.human);
                 }
                 "information" => {
-                    context.add_warning(
-                        &constraint.key,
-                        &constraint.human,
-                    );
+                    context.add_warning(&constraint.key, &constraint.human);
                 }
                 _ => {
                     // Default to warning for unknown severity
                     context.add_warning(
                         &constraint.key,
-                        format!("Constraint failed (unknown severity '{}'): {}", constraint.severity, constraint.human),
+                        format!(
+                            "Constraint failed (unknown severity '{}'): {}",
+                            constraint.severity, constraint.human
+                        ),
                     );
                 }
             }
@@ -1014,8 +1076,7 @@ impl FhirSchemaValidationEngine {
             "complex-fhirpath-constraint",
             format!(
                 "Complex FHIRPath constraint not yet fully supported: {} - {}",
-                constraint.key,
-                expression
+                constraint.key, expression
             ),
         );
 
@@ -1071,8 +1132,8 @@ impl FhirSchemaValidationEngine {
                     "!=" => Ok(expected_count != 0),
                     ">" => Ok(false), // 0 is never > any positive number
                     ">=" => Ok(expected_count == 0), // 0 >= expected_count only if expected_count is 0
-                    "<" => Ok(expected_count > 0), // 0 < expected_count if expected_count > 0
-                    "<=" => Ok(true), // 0 <= any number is always true
+                    "<" => Ok(expected_count > 0),   // 0 < expected_count if expected_count > 0
+                    "<=" => Ok(true),                // 0 <= any number is always true
                     _ => Ok(true),
                 }
             }
@@ -1093,8 +1154,8 @@ impl FhirSchemaValidationEngine {
         if let Some((path, operator, expected_value)) = self.parse_value_constraint(expression) {
             if let Some(actual_value) = self.get_value_at_path(resource, &path) {
                 match operator.as_str() {
-                    "=" | "==" => Ok(actual_value.to_string() == expected_value),
-                    "!=" => Ok(actual_value.to_string() != expected_value),
+                    "=" | "==" => Ok(*actual_value == expected_value),
+                    "!=" => Ok(*actual_value != expected_value),
                     _ => Ok(true), // Unknown operator, assume passes
                 }
             } else {
@@ -1188,7 +1249,8 @@ impl FhirSchemaValidationEngine {
             if let Some(op_pos) = expression.find(op) {
                 let path = expression[..op_pos].trim().to_string();
                 let operator = op.to_string();
-                let value = expression[op_pos + op.len()..].trim()
+                let value = expression[op_pos + op.len()..]
+                    .trim()
                     .trim_matches('\'')
                     .trim_matches('"')
                     .to_string();
@@ -1268,7 +1330,10 @@ impl FhirSchemaValidationEngine {
     ) -> Result<()> {
         context.add_warning(
             "schema-directive",
-            format!("Schema directive '{}' validation not yet implemented", directive),
+            format!(
+                "Schema directive '{}' validation not yet implemented",
+                directive
+            ),
         );
         Ok(())
     }
@@ -1285,7 +1350,7 @@ impl FhirSchemaValidationEngine {
             if value != fixed_value {
                 context.add_error(
                     "fixed-value-mismatch",
-                    format!("Value does not match fixed value constraint"),
+                    "Value does not match fixed value constraint".to_string(),
                 );
             }
         }
@@ -1295,7 +1360,7 @@ impl FhirSchemaValidationEngine {
             if !self.value_matches_pattern(value, pattern_value) {
                 context.add_error(
                     "pattern-mismatch",
-                    format!("Value does not match pattern constraint"),
+                    "Value does not match pattern constraint".to_string(),
                 );
             }
         }
@@ -1322,7 +1387,10 @@ impl FhirSchemaValidationEngine {
                 if let Some(value_set) = &binding.value_set {
                     context.add_warning(
                         "binding-validation",
-                        format!("Required binding validation not yet implemented for value set: {}", value_set),
+                        format!(
+                            "Required binding validation not yet implemented for value set: {}",
+                            value_set
+                        ),
                     );
                 }
             }
@@ -1419,7 +1487,10 @@ impl FhirSchemaValidationEngine {
                 if discriminator_value.is_none() {
                     context.add_error(
                         "discriminator-value-missing",
-                        format!("Discriminator value missing at path: {}", discriminator.path),
+                        format!(
+                            "Discriminator value missing at path: {}",
+                            discriminator.path
+                        ),
                     );
                 }
                 // Note: Actual value comparison would require the expected value from slice definition
@@ -1429,7 +1500,10 @@ impl FhirSchemaValidationEngine {
                 if discriminator_value.is_none() {
                     context.add_error(
                         "discriminator-exists-failed",
-                        format!("Required discriminator element missing at path: {}", discriminator.path),
+                        format!(
+                            "Required discriminator element missing at path: {}",
+                            discriminator.path
+                        ),
                     );
                 }
             }
@@ -1445,7 +1519,10 @@ impl FhirSchemaValidationEngine {
                 } else {
                     context.add_error(
                         "discriminator-pattern-missing",
-                        format!("Pattern discriminator value missing at path: {}", discriminator.path),
+                        format!(
+                            "Pattern discriminator value missing at path: {}",
+                            discriminator.path
+                        ),
                     );
                 }
             }
@@ -1459,7 +1536,10 @@ impl FhirSchemaValidationEngine {
                             if !resource_type.is_string() {
                                 context.add_error(
                                     "discriminator-type-invalid",
-                                    format!("Type discriminator at path '{}' has invalid resourceType", discriminator.path),
+                                    format!(
+                                        "Type discriminator at path '{}' has invalid resourceType",
+                                        discriminator.path
+                                    ),
                                 );
                             }
                         }
@@ -1468,7 +1548,10 @@ impl FhirSchemaValidationEngine {
                 } else {
                     context.add_error(
                         "discriminator-type-missing",
-                        format!("Type discriminator value missing at path: {}", discriminator.path),
+                        format!(
+                            "Type discriminator value missing at path: {}",
+                            discriminator.path
+                        ),
                     );
                 }
             }
@@ -1487,26 +1570,38 @@ impl FhirSchemaValidationEngine {
                         } else {
                             context.add_warning(
                                 "discriminator-profile-missing",
-                                format!("Profile discriminator at path '{}' missing meta.profile", discriminator.path),
+                                format!(
+                                    "Profile discriminator at path '{}' missing meta.profile",
+                                    discriminator.path
+                                ),
                             );
                         }
                     } else {
                         context.add_warning(
                             "discriminator-profile-no-meta",
-                            format!("Profile discriminator at path '{}' missing meta element", discriminator.path),
+                            format!(
+                                "Profile discriminator at path '{}' missing meta element",
+                                discriminator.path
+                            ),
                         );
                     }
                 } else {
                     context.add_error(
                         "discriminator-profile-missing",
-                        format!("Profile discriminator value missing at path: {}", discriminator.path),
+                        format!(
+                            "Profile discriminator value missing at path: {}",
+                            discriminator.path
+                        ),
                     );
                 }
             }
             _ => {
                 context.add_error(
                     "invalid-discriminator-type",
-                    format!("Invalid discriminator type: {}", discriminator.discriminator_type),
+                    format!(
+                        "Invalid discriminator type: {}",
+                        discriminator.discriminator_type
+                    ),
                 );
             }
         }

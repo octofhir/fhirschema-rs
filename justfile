@@ -1,4 +1,9 @@
 # Build and test commands for octofhir-fhirschema
+#
+# Key FHIR download commands:
+#   just download-r4-core                              # Download all HL7 FHIR R4 core schemas
+#   just download-r4-core-filtered "Patient,Observation"  # Download specific resource types
+#   just download-package <pkg> <version> <output>     # Download any FHIR package
 
 # Default task - run tests and check
 default: test check
@@ -26,6 +31,26 @@ test-coverage:
 # Check code formatting and linting
 check: format-check clippy
 
+# Comprehensive check - format, clippy, and compilation
+check-all: format-check clippy check-compile check-tests
+    @echo "✓ All checks passed"
+
+# Check if code compiles
+check-compile:
+    cargo check --all-targets
+
+# Check if tests compile
+check-tests:
+    cargo check --tests
+
+# Check with strict clippy (deny warnings)
+check-strict:
+    cargo clippy --all-targets -- -D warnings
+
+# Check formatting without fixing
+check-format:
+    cargo fmt -- --check
+
 # Format code
 format:
     cargo fmt
@@ -41,6 +66,32 @@ clippy:
 # Fix clippy issues automatically
 clippy-fix:
     cargo clippy --all-features --fix --allow-dirty --allow-staged
+
+# Fix all format, check, and clippy issues
+fix-all: format clippy-fix cargo-fix
+    @echo "✓ Applied all automatic fixes"
+
+# Run cargo fix to apply automatic code fixes
+cargo-fix:
+    cargo fix --all-targets --allow-dirty --allow-staged
+
+# Fix clippy issues for specific targets
+clippy-fix-lib:
+    cargo clippy --fix --lib --allow-dirty --allow-staged
+
+clippy-fix-tests:
+    cargo clippy --fix --tests --allow-dirty --allow-staged
+
+clippy-fix-all-targets:
+    cargo clippy --fix --all-targets --allow-dirty --allow-staged
+
+# Show what clippy would fix (dry run)
+clippy-check:
+    cargo clippy --all-targets
+
+# Show formatting issues without fixing
+format-diff:
+    cargo fmt -- --check --verbose
 
 # Build documentation
 docs:
@@ -82,31 +133,32 @@ watch:
 # Quick development check
 dev: format clippy test
 
-# Generate test data
-gen-test-data:
-    mkdir -p tests/data
-    echo "Test data generation commands go here"
+# Pre-commit checks - format, fix, check, and test
+pre-commit: fix-all check-all test
+    @echo "✓ Pre-commit checks completed"
 
-# Test StructureDefinition to FHIRSchema conversion
-test-conversion:
-    cargo build --features cli
-    ./target/debug/octofhir-fhirschema convert-structure-definition \
-        --input examples/simple-patient-structuredefinition.json \
-        --output examples/test-converted-patient.fhirschema.json
-    @echo "✓ Conversion test completed"
-    @echo "Generated schema:"
-    @head -20 examples/test-converted-patient.fhirschema.json
-    @echo "..."
-    @rm examples/test-converted-patient.fhirschema.json
+# Full development cycle - fix, check, test, and verify
+full-check: fix-all check-all test-all
+    @echo "✓ Full development cycle completed"
 
-# Test conversion with validation
-test-conversion-validate:
-    cargo build --features cli
-    ./target/debug/octofhir-fhirschema convert-structure-definition \
-        --input examples/simple-patient-structuredefinition.json \
-        --output examples/test-converted-patient.fhirschema.json
-    ./target/debug/octofhir-fhirschema validate \
-        --schema examples/test-converted-patient.fhirschema.json
-    ./target/debug/octofhir-fhirschema info \
-        --schema examples/test-converted-patient.fhirschema.json
-    @rm examples/test-converted-patient.fhirschema.json
+# Download and convert HL7 FHIR R4 core package
+download-r4-core:
+    @echo "🚀 Downloading and converting HL7 FHIR R4 core package..."
+    mkdir -p schemas/r4-core
+    cargo run --features cli -- download --package hl7.fhir.r4.core --version 4.0.1 --output schemas/r4-core
+    @echo "✅ HL7 FHIR R4 core schemas saved to schemas/r4-core/"
+
+# Download and convert HL7 FHIR R4 core package with specific resource types
+download-r4-core-filtered types:
+    @echo "🚀 Downloading and converting HL7 FHIR R4 core package (filtered: {{types}})..."
+    mkdir -p schemas/r4-core-filtered
+    cargo run --features cli -- download --package hl7.fhir.r4.core --version 4.0.1 --output schemas/r4-core-filtered --resource-types {{types}}
+    @echo "✅ HL7 FHIR R4 core schemas ({{types}}) saved to schemas/r4-core-filtered/"
+
+# Download and convert any FHIR package
+download-package package version output:
+    @echo "🚀 Downloading and converting FHIR package: {{package}}@{{version}}..."
+    mkdir -p {{output}}
+    cargo run --features cli -- download --package {{package}} --version {{version}} --output {{output}}
+    @echo "✅ FHIR package {{package}}@{{version}} schemas saved to {{output}}/"
+

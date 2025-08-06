@@ -2,6 +2,7 @@ mod choice_types;
 mod constraints;
 mod context;
 mod element_converter;
+mod parallel_converter;
 mod slicing;
 mod structure_definition;
 
@@ -9,6 +10,7 @@ pub use choice_types::*;
 pub use constraints::*;
 pub use context::*;
 pub use element_converter::*;
+pub use parallel_converter::*;
 pub use slicing::*;
 pub use structure_definition::*;
 
@@ -76,12 +78,10 @@ impl FhirSchemaConverter {
     /// Determine the schema class based on kind, derivation, and type according to specification
     fn determine_class(kind: &str, derivation: Option<&str>, type_name: &str) -> String {
         match kind {
-            "resource" => {
-                match derivation {
-                    Some("constraint") => "profile".to_string(),
-                    _ => "resource".to_string(),
-                }
-            }
+            "resource" => match derivation {
+                Some("constraint") => "profile".to_string(),
+                _ => "resource".to_string(),
+            },
             "complex-type" | "primitive-type" => {
                 if type_name == "Extension" {
                     "extension".to_string()

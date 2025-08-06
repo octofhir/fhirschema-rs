@@ -8,13 +8,15 @@ A high-performance Rust library for working with FHIRSchema that provides both l
 
 ## Features
 
-- 🚀 **High Performance**: Async/await throughout with efficient memory usage
-- 🔄 **Full Conversion**: Convert FHIR StructureDefinitions to FHIRSchema format
+- 🚀 **High Performance**: Async/await throughout with efficient memory usage and parallel processing
+- 🔄 **Full Conversion**: Convert FHIR StructureDefinitions to FHIRSchema format with parallel batch processing
 - ✅ **Validation**: Validate FHIR resources against FHIRSchema definitions
 - 📦 **Package Integration**: Seamless integration with `octofhir-canonical-manager`
 - 🛠️ **CLI Tool**: Optional command-line interface for standalone usage
+- 🌐 **Server Mode**: Optional HTTP server for schema management and validation
 - 🧪 **Golden Test Compatible**: 100% compatibility with reference TypeScript implementation
-- 💾 **Storage & Caching**: In-memory and optional disk-based schema storage
+- 💾 **Storage & Caching**: In-memory LRU caching and optional disk-based persistence with compression
+- 🔍 **Search & Discovery**: Search StructureDefinitions across FHIR packages
 
 ## Quick Start
 
@@ -240,6 +242,7 @@ at your option.
 ## References
 
 - [FHIRSchema Specification](https://github.com/atomic-ehr/fhirschema/blob/main/spec/fhirschema-specification.md)
-- [Reference TypeScript Implementation](https://github.com/atomic-ehr/fhirschema)
 - [OctoFHIR Canonical Manager](https://crates.io/crates/octofhir-canonical-manager)
 - [FHIR R4 Specification](http://hl7.org/fhir/R4/)
+
+Made with ❤️ by OctoFHIR Team 🐙🦀

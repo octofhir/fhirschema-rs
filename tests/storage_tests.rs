@@ -80,10 +80,13 @@ mod memory_storage_tests {
     }
 
     #[tokio::test]
-    async fn test_storage_manager() {
+    async fn test_enhanced_storage_manager() {
         let storage = Arc::new(MemoryStorage::new());
-        let cache = Arc::new(LruSchemaCache::new(10));
-        let manager = StorageManager::new(storage).with_cache(cache);
+        let config = StorageConfig {
+            storage,
+            cache: CacheConfig::default(),
+        };
+        let manager = EnhancedStorageManager::new(config);
 
         let url = Url::parse("http://example.com/Patient").unwrap();
         let schema = create_test_schema();
@@ -99,7 +102,7 @@ mod memory_storage_tests {
         assert_eq!(retrieved2, Some(schema));
 
         // Remove through manager
-        let removed = manager.remove(&url).await.unwrap();
+        let removed = manager.delete(&url).await.unwrap();
         assert!(removed);
 
         let after_removal = manager.get(&url).await.unwrap();

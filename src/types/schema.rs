@@ -5,7 +5,7 @@ use url::Url;
 
 use super::{Constraint, Element, Slicing};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct FhirSchema {
     #[serde(rename = "$schema")]
     pub schema_version: Option<String>,
@@ -136,5 +136,36 @@ impl fmt::Display for FhirSchema {
             write!(f, " [{url}]")?;
         }
         Ok(())
+    }
+}
+
+impl bincode::Encode for FhirSchema {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        let json_bytes = serde_json::to_vec(self)
+            .map_err(|_| bincode::error::EncodeError::Other("JSON serialization failed"))?;
+        json_bytes.encode(encoder)
+    }
+}
+
+impl<Context> bincode::Decode<Context> for FhirSchema {
+    fn decode<D: bincode::de::Decoder>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let json_bytes = Vec::<u8>::decode(decoder)?;
+        serde_json::from_slice(&json_bytes)
+            .map_err(|_| bincode::error::DecodeError::Other("JSON deserialization failed"))
+    }
+}
+
+impl<'de, Context> bincode::BorrowDecode<'de, Context> for FhirSchema {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let json_bytes = Vec::<u8>::borrow_decode(decoder)?;
+        serde_json::from_slice(&json_bytes)
+            .map_err(|_| bincode::error::DecodeError::Other("JSON deserialization failed"))
     }
 }

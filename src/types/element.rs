@@ -55,7 +55,7 @@ pub struct Binding {
     pub value_set: Option<Url>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, bincode::Encode, bincode::Decode)]
 pub struct Mapping {
     pub identity: String,
     pub language: Option<String>,

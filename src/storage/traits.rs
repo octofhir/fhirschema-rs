@@ -29,8 +29,7 @@ pub trait SchemaResolver: Send + Sync {
     fn normalize_url(&self, url: &Url) -> Url;
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct StorageStats {
     pub schemas_count: usize,
     pub cache_hits: u64,
@@ -38,4 +37,3 @@ pub struct StorageStats {
     pub storage_operations: u64,
     pub last_accessed: Option<std::time::SystemTime>,
 }
-

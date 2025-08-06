@@ -259,6 +259,7 @@ fn create_canonical_manager_config(use_local_cache: bool) -> FcmConfig {
                 packages_dir: fcm_dir.join("packages"),
                 max_cache_size: "2GB".to_string(),
             },
+            optimization: Default::default(),
         }
     } else {
         // Use default system locations
@@ -274,9 +275,7 @@ async fn download_and_convert(
     resource_types: Option<&str>,
     use_local_cache: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    println!(
-        "🚀 Downloading and converting FHIR package: {package}@{version}"
-    );
+    println!("🚀 Downloading and converting FHIR package: {package}@{version}");
 
     // Create output directory if it doesn't exist
     std::fs::create_dir_all(output_dir)?;
@@ -312,6 +311,7 @@ async fn download_and_convert(
         .search()
         .await
         .resource_type("StructureDefinition")
+        .limit(1000) // Increase limit to get all StructureDefinitions
         .execute()
         .await?;
 
@@ -328,8 +328,8 @@ async fn download_and_convert(
             .collect::<Vec<_>>()
     });
 
-    let converter = FhirSchemaConverter::new();
-    let mut converted_count = 0;
+    // Prepare StructureDefinitions for parallel conversion
+    let mut structure_definitions = Vec::new();
 
     // Track skip reasons for detailed reporting
     #[derive(Default)]
@@ -342,25 +342,35 @@ async fn download_and_convert(
     }
     let mut skip_stats = SkipStats::default();
 
-    for resource_match in search_results.resources {
-        // Skip OpenAPI/JSON Schema files (from openapi folder)
-        if let Some(schema_field) = resource_match.resource.content.get("$schema") {
+    // Helper function to check if a resource is a JSON Schema file
+    let is_json_schema = |content: &serde_json::Value| -> bool {
+        // Check $schema field for json-schema.org
+        if let Some(schema_field) = content.get("$schema") {
             if let Some(schema_str) = schema_field.as_str() {
                 if schema_str.contains("json-schema.org") {
-                    // This is a JSON Schema file from openapi folder, skip it
-                    continue;
+                    return true;
                 }
             }
         }
 
-        // Skip resources with JSON Schema ID pattern
-        if let Some(id_field) = resource_match.resource.content.get("id") {
+        // Check id field for json-schema pattern
+        if let Some(id_field) = content.get("id") {
             if let Some(id_str) = id_field.as_str() {
                 if id_str.contains("json-schema") {
-                    // This is likely a JSON Schema file from openapi folder, skip it
-                    continue;
+                    return true;
                 }
             }
+        }
+
+        false
+    };
+
+    // First pass: collect and validate StructureDefinitions
+    for resource_match in search_results.resources {
+        // Skip OpenAPI/JSON Schema files (from openapi folder)
+        if is_json_schema(&resource_match.resource.content) {
+            // This is a JSON Schema file from openapi folder, skip it
+            continue;
         }
 
         // Parse StructureDefinition
@@ -372,18 +382,24 @@ async fn download_and_convert(
             Err(e) => {
                 // Show detailed information about the resource that failed to parse
                 println!("❌ Failed to parse StructureDefinition:");
-                println!("   📍 Canonical URL: {}", resource_match.index.canonical_url);
-                println!("   📦 Package: {}@{}", resource_match.index.package_name, resource_match.index.package_version);
+                println!(
+                    "   📍 Canonical URL: {}",
+                    resource_match.index.canonical_url
+                );
+                println!(
+                    "   📦 Package: {}@{}",
+                    resource_match.index.package_name, resource_match.index.package_version
+                );
                 if let Some(resource_type) = resource_match.resource.content.get("resourceType") {
-                    println!("   🏷️  Resource Type: {}", resource_type);
+                    println!("   🏷️  Resource Type: {resource_type}");
                 }
                 if let Some(id) = resource_match.resource.content.get("id") {
-                    println!("   🆔 Resource ID: {}", id);
+                    println!("   🆔 Resource ID: {id}");
                 }
                 if let Some(name) = resource_match.resource.content.get("name") {
-                    println!("   📝 Name: {}", name);
+                    println!("   📝 Name: {name}");
                 }
-                println!("   ⚠️  Parse Error: {}", e);
+                println!("   ⚠️  Parse Error: {e}");
                 println!();
                 skip_stats.parse_failed += 1;
                 continue;
@@ -406,7 +422,7 @@ async fn download_and_convert(
         }
 
         println!(
-            "⚙️  Converting: {} ({})",
+            "📋 Preparing: {} ({})",
             structure_def.type_name, structure_def.kind
         );
 
@@ -416,27 +432,40 @@ async fn download_and_convert(
             continue;
         }
 
-        // Convert to FhirSchema
-        let schema = match converter.convert(&structure_def) {
-            Ok(s) => s,
-            Err(_e) => {
-                skip_stats.conversion_failed += 1;
-                continue;
-            }
-        };
+        // Add to collection for parallel processing
+        structure_definitions.push(structure_def);
+    }
 
-        // Write to file
-        let filename = format!("{}.fhirschema.json", structure_def.type_name.to_lowercase());
+    // Parallel conversion
+    println!(
+        "🚀 Converting {} StructureDefinitions in parallel...",
+        structure_definitions.len()
+    );
+
+    let parallel_converter = ParallelSchemaConverter::new(FhirSchemaConverter::new());
+    let conversion_report = parallel_converter
+        .convert_batch(structure_definitions)
+        .await?;
+
+    // Write schemas to files
+    let mut converted_count = 0;
+    for schema in conversion_report {
+        let type_name = &schema.schema_type;
+        let filename = format!("{}.fhirschema.json", type_name.to_lowercase());
         let output_path = output_dir.join(&filename);
         let output_content = serde_json::to_string_pretty(&schema)?;
 
-        std::fs::write(&output_path, output_content)?;
-        println!("✅ Converted {} -> {}", structure_def.type_name, filename);
+        tokio::fs::write(&output_path, output_content).await?;
+        println!("✅ Converted {type_name} -> {filename}");
         converted_count += 1;
     }
 
     // Calculate total skipped
-    let total_skipped = skip_stats.parse_failed + skip_stats.type_filtered + skip_stats.unsupported_kind + skip_stats.element_extraction_failed + skip_stats.conversion_failed;
+    let total_skipped = skip_stats.parse_failed
+        + skip_stats.type_filtered
+        + skip_stats.unsupported_kind
+        + skip_stats.element_extraction_failed
+        + skip_stats.conversion_failed;
 
     println!("\n🎉 Conversion completed!");
     println!("📊 Converted: {converted_count} schemas");
@@ -445,19 +474,34 @@ async fn download_and_convert(
     if total_skipped > 0 {
         println!("📋 Resources skipped and reasons:");
         if skip_stats.parse_failed > 0 {
-            println!("   • {} resources failed to parse - Invalid JSON structure or malformed StructureDefinition", skip_stats.parse_failed);
+            println!(
+                "   • {} resources failed to parse - Invalid JSON structure or malformed StructureDefinition",
+                skip_stats.parse_failed
+            );
         }
         if skip_stats.type_filtered > 0 {
-            println!("   • {} resources filtered by type - Resource type not in the specified filter list", skip_stats.type_filtered);
+            println!(
+                "   • {} resources filtered by type - Resource type not in the specified filter list",
+                skip_stats.type_filtered
+            );
         }
         if skip_stats.unsupported_kind > 0 {
-            println!("   • {} resources have unsupported kind - Only StructureDefinitions with supported kinds are converted (supported: resource, complex-type, primitive-type, logical)", skip_stats.unsupported_kind);
+            println!(
+                "   • {} resources have unsupported kind - Only StructureDefinitions with supported kinds are converted (supported: resource, complex-type, primitive-type, logical)",
+                skip_stats.unsupported_kind
+            );
         }
         if skip_stats.element_extraction_failed > 0 {
-            println!("   • {} resources failed element extraction - Unable to process the element definitions from the StructureDefinition", skip_stats.element_extraction_failed);
+            println!(
+                "   • {} resources failed element extraction - Unable to process the element definitions from the StructureDefinition",
+                skip_stats.element_extraction_failed
+            );
         }
         if skip_stats.conversion_failed > 0 {
-            println!("   • {} resources failed schema conversion - Error occurred while converting StructureDefinition to FhirSchema format", skip_stats.conversion_failed);
+            println!(
+                "   • {} resources failed schema conversion - Error occurred while converting StructureDefinition to FhirSchema format",
+                skip_stats.conversion_failed
+            );
         }
     }
 
@@ -494,13 +538,10 @@ async fn search_structure_definitions(
     query: &str,
     use_local_cache: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    println!(
-        "🔍 Searching for StructureDefinitions matching: '{query}'"
-    );
+    println!("🔍 Searching for StructureDefinitions matching: '{query}'");
 
     let config = create_canonical_manager_config(use_local_cache);
     let canonical_manager = CanonicalManager::new(config).await?;
-
 
     println!("🔍 Executing search for StructureDefinitions...");
     let search_results = canonical_manager
@@ -517,7 +558,6 @@ async fn search_structure_definitions(
 
     let mut matches = Vec::new();
     let query_lower = query.to_lowercase();
-
 
     println!("🔍 Filtering results for query: '{query}'");
 

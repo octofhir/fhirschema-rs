@@ -1,5 +1,5 @@
-use octofhir_fhirschema::*;
 use octofhir_fhirschema::validation::ValidationSeverity;
+use octofhir_fhirschema::*;
 use serde_json::json;
 use url::Url;
 
@@ -41,9 +41,16 @@ async fn test_resource_type_validation() {
         "id": "example"
     });
 
-    let result = engine.validate_resource(&invalid_resource, &schema).unwrap();
+    let result = engine
+        .validate_resource(&invalid_resource, &schema)
+        .unwrap();
     assert!(!result.is_valid);
-    assert!(result.issues.iter().any(|issue| issue.code == "resource-type-mismatch"));
+    assert!(
+        result
+            .issues
+            .iter()
+            .any(|issue| issue.code == "resource-type-mismatch")
+    );
 }
 
 #[tokio::test]
@@ -66,9 +73,16 @@ async fn test_element_cardinality_validation() {
         "id": "example"
     });
 
-    let result = engine.validate_resource(&resource_missing_name, &schema).unwrap();
+    let result = engine
+        .validate_resource(&resource_missing_name, &schema)
+        .unwrap();
     assert!(!result.is_valid);
-    assert!(result.issues.iter().any(|issue| issue.code == "cardinality-min-violation"));
+    assert!(
+        result
+            .issues
+            .iter()
+            .any(|issue| issue.code == "cardinality-min-violation")
+    );
 
     // Test with required element present
     let resource_with_name = json!({
@@ -77,9 +91,13 @@ async fn test_element_cardinality_validation() {
         "name": [{"family": "Doe"}]
     });
 
-    let result = engine.validate_resource(&resource_with_name, &schema).unwrap();
+    let result = engine
+        .validate_resource(&resource_with_name, &schema)
+        .unwrap();
     // Note: This might still have issues due to incomplete validation, but cardinality should pass
-    let cardinality_issues: Vec<_> = result.issues.iter()
+    let cardinality_issues: Vec<_> = result
+        .issues
+        .iter()
         .filter(|issue| issue.code.starts_with("cardinality-"))
         .collect();
     assert!(cardinality_issues.is_empty());
@@ -108,9 +126,11 @@ async fn test_constraint_validation() {
         "id": "example"
     });
 
-    let result = engine.validate_resource(&resource_no_name, &schema).unwrap();
+    let result = engine
+        .validate_resource(&resource_no_name, &schema)
+        .unwrap();
     // The constraint should be evaluated and may fail
-    println!("Validation result: {:?}", result);
+    println!("Validation result: {result:?}");
 
     // Test resource with name (should pass constraint)
     let resource_with_name = json!({
@@ -119,8 +139,10 @@ async fn test_constraint_validation() {
         "name": [{"family": "Doe"}]
     });
 
-    let result = engine.validate_resource(&resource_with_name, &schema).unwrap();
-    println!("Validation result with name: {:?}", result);
+    let result = engine
+        .validate_resource(&resource_with_name, &schema)
+        .unwrap();
+    println!("Validation result with name: {result:?}");
 }
 
 // Note: FHIRPath constraint evaluation is tested through the public validation API
@@ -147,11 +169,19 @@ async fn test_validation_context() {
     assert!(!result.is_valid);
     assert_eq!(result.issues.len(), 2);
 
-    let error_issue = result.issues.iter().find(|i| i.code == "test-error").unwrap();
+    let error_issue = result
+        .issues
+        .iter()
+        .find(|i| i.code == "test-error")
+        .unwrap();
     assert_eq!(error_issue.severity, ValidationSeverity::Error);
     assert_eq!(error_issue.message, "Test error message");
 
-    let warning_issue = result.issues.iter().find(|i| i.code == "test-warning").unwrap();
+    let warning_issue = result
+        .issues
+        .iter()
+        .find(|i| i.code == "test-warning")
+        .unwrap();
     assert_eq!(warning_issue.severity, ValidationSeverity::Warning);
 }
 
@@ -174,10 +204,12 @@ async fn test_multiple_schema_validation() {
     });
 
     let schemas = vec![&schema1, &schema2];
-    let result = engine.validate_resource_with_schemas(&resource, &schemas).unwrap();
+    let result = engine
+        .validate_resource_with_schemas(&resource, &schemas)
+        .unwrap();
 
     // Should validate against both schemas
-    println!("Multiple schema validation result: {:?}", result);
+    println!("Multiple schema validation result: {result:?}");
 }
 
 #[tokio::test]
@@ -204,8 +236,10 @@ async fn test_reference_validation() {
         }
     });
 
-    let result = engine.validate_resource(&valid_reference_resource, &schema).unwrap();
-    println!("Valid reference validation result: {:?}", result);
+    let result = engine
+        .validate_resource(&valid_reference_resource, &schema)
+        .unwrap();
+    println!("Valid reference validation result: {result:?}");
     // Should pass reference validation
 
     // Test valid reference with identifier field
@@ -221,8 +255,10 @@ async fn test_reference_validation() {
         }
     });
 
-    let result = engine.validate_resource(&valid_identifier_resource, &schema).unwrap();
-    println!("Valid identifier reference validation result: {:?}", result);
+    let result = engine
+        .validate_resource(&valid_identifier_resource, &schema)
+        .unwrap();
+    println!("Valid identifier reference validation result: {result:?}");
 
     // Test invalid reference (missing both reference and identifier)
     let invalid_reference_resource = json!({
@@ -233,10 +269,17 @@ async fn test_reference_validation() {
         }
     });
 
-    let result = engine.validate_resource(&invalid_reference_resource, &schema).unwrap();
-    println!("Invalid reference validation result: {:?}", result);
+    let result = engine
+        .validate_resource(&invalid_reference_resource, &schema)
+        .unwrap();
+    println!("Invalid reference validation result: {result:?}");
     assert!(!result.is_valid);
-    assert!(result.issues.iter().any(|issue| issue.code == "reference-missing-content"));
+    assert!(
+        result
+            .issues
+            .iter()
+            .any(|issue| issue.code == "reference-missing-content")
+    );
 
     // Test invalid reference structure (not an object)
     let invalid_structure_resource = json!({
@@ -245,8 +288,15 @@ async fn test_reference_validation() {
         "managingOrganization": "Organization/123"
     });
 
-    let result = engine.validate_resource(&invalid_structure_resource, &schema).unwrap();
-    println!("Invalid reference structure validation result: {:?}", result);
+    let result = engine
+        .validate_resource(&invalid_structure_resource, &schema)
+        .unwrap();
+    println!("Invalid reference structure validation result: {result:?}");
     assert!(!result.is_valid);
-    assert!(result.issues.iter().any(|issue| issue.code == "type-mismatch"));
+    assert!(
+        result
+            .issues
+            .iter()
+            .any(|issue| issue.code == "type-mismatch")
+    );
 }

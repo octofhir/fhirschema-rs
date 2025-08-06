@@ -12,7 +12,7 @@ pub struct Slicing {
     pub extensions: HashMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, bincode::Encode, bincode::Decode)]
 pub struct Discriminator {
     #[serde(rename = "type")]
     pub discriminator_type: String,

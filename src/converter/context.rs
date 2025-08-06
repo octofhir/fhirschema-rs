@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 pub struct ConversionContext {
     pub config: ConverterConfig,
-    pub current_structure_definition: Option<StructureDefinition>,
+    pub is_conversion_active: bool,
     pub resolved_profiles: HashMap<Url, StructureDefinition>,
     pub processed_elements: HashSet<String>,
     pub choice_type_expansions: HashMap<String, Vec<String>>,
@@ -34,7 +34,7 @@ impl ConversionContext {
     pub fn new(config: &ConverterConfig) -> Self {
         Self {
             config: config.clone(),
-            current_structure_definition: None,
+            is_conversion_active: false,
             resolved_profiles: HashMap::new(),
             processed_elements: HashSet::new(),
             choice_type_expansions: HashMap::new(),
@@ -50,7 +50,7 @@ impl ConversionContext {
     ) -> Self {
         Self {
             config: config.clone(),
-            current_structure_definition: None,
+            is_conversion_active: false,
             resolved_profiles: HashMap::new(),
             processed_elements: HashSet::new(),
             choice_type_expansions: HashMap::new(),
@@ -62,7 +62,7 @@ impl ConversionContext {
 
     pub fn begin_conversion(&mut self, structure_definition: &StructureDefinition) -> Result<()> {
         self.start_time = Some(Instant::now());
-        self.current_structure_definition = Some(structure_definition.clone());
+        self.is_conversion_active = true;
         self.processed_elements.clear();
         self.choice_type_expansions.clear();
         self.conversion_stats = ConversionStats::default();
@@ -80,6 +80,8 @@ impl ConversionContext {
         if let Some(start_time) = self.start_time {
             self.conversion_stats.conversion_duration = Some(start_time.elapsed());
         }
+
+        self.is_conversion_active = false;
 
         self.add_info(format!(
             "Conversion completed. Processed {} elements, expanded {} choice types, processed {} slices, converted {} constraints",
@@ -222,9 +224,9 @@ impl ConversionContext {
     }
 
     pub fn validate_state(&self) -> Result<()> {
-        if self.current_structure_definition.is_none() {
+        if !self.is_conversion_active {
             return Err(FhirSchemaError::Conversion {
-                message: "No current StructureDefinition in conversion context".to_string(),
+                message: "No active conversion in progress".to_string(),
             });
         }
         Ok(())

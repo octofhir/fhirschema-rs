@@ -11,12 +11,13 @@ keywords = ["fhir", "healthcare", "schema", "validation", "interoperability"]
 categories = ["api-bindings", "data-structures", "parser-implementations"]
 
 [features]
-default = ["memory-storage", "tokio"]
+default = ["memory-storage", "tokio", "bincode"]
 cli = ["clap", "tokio"]
 memory-storage = ["dashmap", "lru"]
 disk-storage = ["tokio/fs"]
 server = ["axum", "tokio", "tracing"]
-all = ["cli", "memory-storage", "disk-storage", "server"]
+bincode = []
+all = ["cli", "memory-storage", "disk-storage", "server", "bincode"]
 
 [dependencies]
 # Core serialization
@@ -46,7 +47,17 @@ regex = "1.10"
 url = { version = "2.4", features = ["serde"] }
 
 # OctoFHIR ecosystem - Official canonical manager (using local version with fix)
-octofhir-canonical-manager = {version = "0.1.1"}
+octofhir-canonical-manager = {version = "0.1.2"}
+
+# ADR-003 Phase 1: Hierarchical Cache dependencies
+# ADR-003 Phase 2: Compressed Storage dependencies
+lz4_flex = "0.11"
+bincode = "2"
+
+# ADR-003 Phase 4: Parallel Converter dependencies
+rayon = "1.8"
+crossbeam-channel = "0.5"
+num_cpus = "1.16"
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "sync", "test-util"] }

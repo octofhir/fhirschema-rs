@@ -19,3 +19,4 @@ Thumbs.db
 # FCM (FHIR Canonical Manager) cache and packages - ignore contents but keep structure
 .fcm/*
 !.fcm/.gitkeep
+/schemas

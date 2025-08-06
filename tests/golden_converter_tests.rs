@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 /// - tests/golden/input/*.json - Input StructureDefinitions
 /// - tests/golden/expected/*.fhirschema.json - Expected FHIRSchema outputs
 /// - tests/golden/actual/*.fhirschema.json - Actual outputs (gitignored)
-
 fn golden_test_dir() -> PathBuf {
     PathBuf::from("tests/golden")
 }
@@ -29,7 +28,8 @@ fn ensure_test_directories() {
 }
 
 fn load_json_file(path: &Path) -> Value {
-    let content = fs::read_to_string(path).unwrap_or_else(|_| panic!("Failed to read file: {path:?}"));
+    let content =
+        fs::read_to_string(path).unwrap_or_else(|_| panic!("Failed to read file: {path:?}"));
     serde_json::from_str(&content).unwrap_or_else(|_| panic!("Failed to parse JSON from: {path:?}"))
 }
 
@@ -53,7 +53,8 @@ fn run_golden_test(test_name: &str) {
 
     // Load input StructureDefinition
     let input_json = load_json_file(&input_path);
-    let mut structure_def: StructureDefinition = serde_json::from_value(input_json.clone()).unwrap_or_else(|_| panic!("Failed to parse StructureDefinition from: {input_path:?}"));
+    let mut structure_def: StructureDefinition = serde_json::from_value(input_json.clone())
+        .unwrap_or_else(|_| panic!("Failed to parse StructureDefinition from: {input_path:?}"));
 
     // Extract elements from snapshot/differential
     structure_def
@@ -198,22 +199,20 @@ fn update_all_golden_tests() {
 
     let input_dir = golden_test_dir().join("input");
     if let Ok(entries) = fs::read_dir(&input_dir) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Some(test_name) = path.file_stem().and_then(|s| s.to_str()) {
-                        println!("Updating golden test: {test_name}");
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                if let Some(test_name) = path.file_stem().and_then(|s| s.to_str()) {
+                    println!("Updating golden test: {test_name}");
 
-                        // Force update by removing expected file
-                        let expected_path = golden_test_dir()
-                            .join("expected")
-                            .join(format!("{test_name}.fhirschema.json"));
-                        let _ = fs::remove_file(&expected_path);
+                    // Force update by removing expected file
+                    let expected_path = golden_test_dir()
+                        .join("expected")
+                        .join(format!("{test_name}.fhirschema.json"));
+                    let _ = fs::remove_file(&expected_path);
 
-                        // Run the test to generate new expected file
-                        run_golden_test(test_name);
-                    }
+                    // Run the test to generate new expected file
+                    run_golden_test(test_name);
                 }
             }
         }
