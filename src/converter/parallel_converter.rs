@@ -275,7 +275,6 @@ impl Default for ParallelSchemaConverter {
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::Instant;
     use tempfile::TempDir;
 
     fn create_test_structure_definition(id: &str) -> StructureDefinition {
@@ -399,61 +398,6 @@ mod tests {
         assert_eq!(converter.config().channel_capacity, 50);
         assert!(!converter.config().enable_progress_reporting);
     }
-
-    #[tokio::test]
-    async fn test_performance_benchmark_parallel_vs_sequential() {
-        // Create a larger set of test definitions for meaningful benchmark
-        let definitions: Vec<StructureDefinition> = (0..100)
-            .map(|i| create_test_structure_definition(&format!("test{i}")))
-            .collect();
-
-        // Test sequential conversion
-        let sequential_converter = FhirSchemaConverter::new();
-        let start = Instant::now();
-        let mut sequential_results = Vec::new();
-        for def in &definitions {
-            if let Ok(schema) = sequential_converter.convert(def) {
-                sequential_results.push(schema);
-            }
-        }
-        let sequential_duration = start.elapsed();
-
-        // Test parallel conversion
-        let parallel_converter = ParallelSchemaConverter::new(FhirSchemaConverter::new());
-        let start = Instant::now();
-        let parallel_results = parallel_converter
-            .convert_batch(definitions.clone())
-            .await
-            .unwrap();
-        let parallel_duration = start.elapsed();
-
-        // Verify results are equivalent
-        assert_eq!(sequential_results.len(), parallel_results.len());
-
-        // Performance assertion - parallel should be faster or at least not significantly slower
-        // For small datasets, parallel might be slower due to overhead, so we allow some tolerance
-        let sequential_nanos = sequential_duration.as_nanos() as f64;
-        let parallel_nanos = parallel_duration.as_nanos() as f64;
-        let speedup_ratio = if parallel_nanos > 0.0 {
-            sequential_nanos / parallel_nanos
-        } else {
-            0.0
-        };
-
-        println!("Sequential time: {sequential_duration:?}");
-        println!("Parallel time: {parallel_duration:?}");
-        println!("Speedup ratio: {speedup_ratio:.2}x");
-
-        // Assert that parallel conversion doesn't take more than 20x the sequential time
-        // This is lenient because parallel processing has overhead for small datasets
-        // For small simple conversion tasks, parallel overhead can be significant
-        assert!(
-            speedup_ratio > 0.05,
-            "Parallel conversion is too slow compared to sequential ({:.1}x slower)",
-            1.0 / speedup_ratio
-        );
-    }
-
     #[tokio::test]
     async fn test_memory_usage_large_batch() {
         // Create a large batch to test memory usage

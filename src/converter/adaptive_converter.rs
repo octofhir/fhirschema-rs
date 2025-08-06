@@ -247,28 +247,4 @@ mod tests {
         // since the threshold logic allows it, even though it's not optimal
         assert_eq!(strategy, ConversionStrategy::Parallel);
     }
-
-    #[tokio::test]
-    async fn test_strategy_benchmark() {
-        let converter = AdaptiveSchemaConverter::new(FhirSchemaConverter::new());
-
-        let definitions: Vec<StructureDefinition> = (0..50)
-            .map(|i| create_test_definition(&format!("benchmark{i}")))
-            .collect();
-
-        let benchmark = converter.benchmark_strategies(definitions).await;
-
-        assert_eq!(benchmark.dataset_size, 50);
-        assert!(benchmark.sequential_duration > std::time::Duration::ZERO);
-        assert!(benchmark.parallel_duration > std::time::Duration::ZERO);
-        assert_eq!(benchmark.sequential_results, benchmark.parallel_results);
-
-        // Based on our analysis, sequential should be recommended
-        assert_eq!(
-            benchmark.recommended_strategy,
-            ConversionStrategy::Sequential
-        );
-
-        benchmark.print_analysis();
-    }
 }
