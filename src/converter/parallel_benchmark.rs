@@ -1,11 +1,15 @@
+#[cfg(test)]
 use super::{
     FhirSchemaConverter, ParallelSchemaConverter, StructureDefinition, StructureDefinitionConverter,
 };
+#[cfg(test)]
 use std::time::Instant;
 
 /// Comprehensive benchmark to find the break-even point for parallel processing
+#[cfg(test)]
 pub struct ParallelBenchmark;
 
+#[cfg(test)]
 impl ParallelBenchmark {
     /// Run benchmarks with different dataset sizes to find when parallel becomes beneficial
     pub async fn run_scalability_benchmark() {

@@ -49,7 +49,7 @@ fn test_memory_optimization_context_reuse() {
 
 #[test]
 fn test_context_boolean_flag_optimization() {
-    let converter = FhirSchemaConverter::new();
+    let _converter = FhirSchemaConverter::new();
     let config = ConverterConfig::default();
     let mut context = ConversionContext::new(&config);
 
