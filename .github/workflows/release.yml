@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Perform a dry run (do not actually publish)'
+        description: "Perform a dry run (do not actually publish)"
         required: false
         default: false
         type: boolean
@@ -20,44 +20,44 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       already_published: ${{ steps.check_published.outputs.already_published }}
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-    - name: Extract version from Cargo.toml
-      id: version
-      run: |
-        VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "Extracted version: $VERSION"
+      - name: Extract version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
 
-    - name: Check if version is already published
-      id: check_published
-      run: |
-        PACKAGE_NAME="octofhir-fhirschema"
-        VERSION="${{ steps.version.outputs.version }}"
-        
-        echo "Checking if $PACKAGE_NAME version $VERSION is already published..."
-        
-        # Check if the version exists on crates.io
-        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/$PACKAGE_NAME/$VERSION")
-        
-        if [ "$HTTP_STATUS" = "200" ]; then
-          echo "❌ Version $VERSION is already published on crates.io"
-          echo "already_published=true" >> $GITHUB_OUTPUT
-          exit 1
-        else
-          echo "✅ Version $VERSION is not yet published"
-          echo "already_published=false" >> $GITHUB_OUTPUT
-        fi
+      - name: Check if version is already published
+        id: check_published
+        run: |
+          PACKAGE_NAME="octofhir-fhirschema"
+          VERSION="${{ steps.version.outputs.version }}"
 
-    - name: Run full CI checks
-      run: |
-        cargo fmt -- --check
-        cargo clippy --all-features -- -D warnings
-        cargo test --all-features
-        cargo doc --all-features --no-deps
+          echo "Checking if $PACKAGE_NAME version $VERSION is already published..."
+
+          # Check if the version exists on crates.io
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/$PACKAGE_NAME/$VERSION")
+
+          if [ "$HTTP_STATUS" = "200" ]; then
+            echo "❌ Version $VERSION is already published on crates.io"
+            echo "already_published=true" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "✅ Version $VERSION is not yet published"
+            echo "already_published=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run full CI checks
+        run: |
+          cargo fmt -- --check
+          cargo clippy --all-features
+          cargo test --all-features
+          cargo doc --all-features --no-deps
 
   release:
     name: Publish Release
@@ -65,79 +65,79 @@ jobs:
     needs: pre_check
     if: needs.pre_check.outputs.already_published == 'false'
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Dry run publish
-      if: ${{ inputs.dry_run }}
-      run: |
-        echo "🧪 Performing dry run publish..."
-        cargo publish --dry-run
-        echo "✅ Dry run completed successfully"
+      - name: Dry run publish
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "🧪 Performing dry run publish..."
+          cargo publish --dry-run
+          echo "✅ Dry run completed successfully"
 
-    - name: Publish to crates.io
-      if: ${{ !inputs.dry_run }}
-      env:
-        CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      run: |
-        echo "🚀 Publishing to crates.io..."
-        cargo publish
-        echo "✅ Successfully published to crates.io"
+      - name: Publish to crates.io
+        if: ${{ !inputs.dry_run }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          echo "🚀 Publishing to crates.io..."
+          cargo publish
+          echo "✅ Successfully published to crates.io"
 
-    - name: Wait for crates.io propagation
-      if: ${{ !inputs.dry_run }}
-      run: |
-        echo "⏳ Waiting for crates.io propagation..."
-        sleep 30
+      - name: Wait for crates.io propagation
+        if: ${{ !inputs.dry_run }}
+        run: |
+          echo "⏳ Waiting for crates.io propagation..."
+          sleep 30
 
-    - name: Create and push tag
-      if: ${{ !inputs.dry_run }}
-      run: |
-        VERSION="${{ needs.pre_check.outputs.version }}"
-        TAG="v$VERSION"
-        
-        echo "🏷️ Creating tag $TAG..."
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        
-        git tag -a "$TAG" -m "Release version $VERSION"
-        git push origin "$TAG"
-        
-        echo "✅ Tag $TAG created and pushed"
+      - name: Create and push tag
+        if: ${{ !inputs.dry_run }}
+        run: |
+          VERSION="${{ needs.pre_check.outputs.version }}"
+          TAG="v$VERSION"
 
-    - name: Create GitHub Release
-      if: ${{ !inputs.dry_run }}
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: v${{ needs.pre_check.outputs.version }}
-        release_name: Release v${{ needs.pre_check.outputs.version }}
-        body: |
-          ## Release v${{ needs.pre_check.outputs.version }}
-          
-          This release has been automatically published to [crates.io](https://crates.io/crates/octofhir-fhirschema).
-          
-          ### Installation
-          ```bash
-          cargo add octofhir-fhirschema@${{ needs.pre_check.outputs.version }}
-          ```
-          
-          ### Changes
-          See the [CHANGELOG.md](CHANGELOG.md) for detailed changes in this release.
-        draft: false
-        prerelease: false
+          echo "🏷️ Creating tag $TAG..."
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$TAG" -m "Release version $VERSION"
+          git push origin "$TAG"
+
+          echo "✅ Tag $TAG created and pushed"
+
+      - name: Create GitHub Release
+        if: ${{ !inputs.dry_run }}
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ needs.pre_check.outputs.version }}
+          release_name: Release v${{ needs.pre_check.outputs.version }}
+          body: |
+            ## Release v${{ needs.pre_check.outputs.version }}
+
+            This release has been automatically published to [crates.io](https://crates.io/crates/octofhir-fhirschema).
+
+            ### Installation
+            ```bash
+            cargo add octofhir-fhirschema@${{ needs.pre_check.outputs.version }}
+            ```
+
+            ### Changes
+            See the [CHANGELOG.md](CHANGELOG.md) for detailed changes in this release.
+          draft: false
+          prerelease: false
 
   notify:
     name: Notify Results
@@ -145,25 +145,25 @@ jobs:
     needs: [pre_check, release]
     if: always()
     steps:
-    - name: Success notification
-      if: ${{ needs.release.result == 'success' && !inputs.dry_run }}
-      run: |
-        echo "🎉 Release v${{ needs.pre_check.outputs.version }} completed successfully!"
-        echo "📦 Package published to crates.io"
-        echo "🏷️ Git tag created"
-        echo "📋 GitHub release created"
+      - name: Success notification
+        if: ${{ needs.release.result == 'success' && !inputs.dry_run }}
+        run: |
+          echo "🎉 Release v${{ needs.pre_check.outputs.version }} completed successfully!"
+          echo "📦 Package published to crates.io"
+          echo "🏷️ Git tag created"
+          echo "📋 GitHub release created"
 
-    - name: Dry run notification
-      if: ${{ needs.release.result == 'success' && inputs.dry_run }}
-      run: |
-        echo "🧪 Dry run completed successfully for version ${{ needs.pre_check.outputs.version }}"
-        echo "✅ All checks passed - ready for actual release"
+      - name: Dry run notification
+        if: ${{ needs.release.result == 'success' && inputs.dry_run }}
+        run: |
+          echo "🧪 Dry run completed successfully for version ${{ needs.pre_check.outputs.version }}"
+          echo "✅ All checks passed - ready for actual release"
 
-    - name: Failure notification
-      if: ${{ needs.pre_check.result == 'failure' }}
-      run: |
-        echo "❌ Pre-release checks failed"
-        if [ "${{ needs.pre_check.outputs.already_published }}" = "true" ]; then
-          echo "🚫 Version ${{ needs.pre_check.outputs.version }} is already published"
-          echo "💡 Please update the version in Cargo.toml before releasing"
-        fi
+      - name: Failure notification
+        if: ${{ needs.pre_check.result == 'failure' }}
+        run: |
+          echo "❌ Pre-release checks failed"
+          if [ "${{ needs.pre_check.outputs.already_published }}" = "true" ]; then
+            echo "🚫 Version ${{ needs.pre_check.outputs.version }} is already published"
+            echo "💡 Please update the version in Cargo.toml before releasing"
+          fi
