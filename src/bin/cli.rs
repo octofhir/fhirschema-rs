@@ -244,6 +244,7 @@ async fn convert_structure_definition(
 }
 
 #[cfg(feature = "cli")]
+#[allow(dead_code)]
 fn create_canonical_manager_config(use_local_cache: bool) -> FcmConfig {
     if use_local_cache {
         // Use local .fcm folder in current directory
@@ -268,6 +269,7 @@ fn create_canonical_manager_config(use_local_cache: bool) -> FcmConfig {
 }
 
 #[cfg(feature = "cli")]
+#[allow(dead_code)]
 async fn download_and_convert(
     package: &str,
     version: &str,
@@ -511,6 +513,7 @@ async fn download_and_convert(
 }
 
 #[cfg(feature = "cli")]
+#[allow(dead_code)]
 async fn list_packages(
     use_local_cache: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -534,6 +537,7 @@ async fn list_packages(
 }
 
 #[cfg(feature = "cli")]
+#[allow(dead_code)]
 async fn search_structure_definitions(
     query: &str,
     use_local_cache: bool,

@@ -11,7 +11,7 @@ use url::Url;
 
 #[derive(Debug)]
 pub struct CacheEntry {
-    pub schema: FhirSchema,
+    pub schema: Arc<FhirSchema>,
     pub version: u64,
     pub created_at: SystemTime,
     pub last_accessed: AtomicU64,
@@ -21,7 +21,7 @@ pub struct CacheEntry {
 impl Clone for CacheEntry {
     fn clone(&self) -> Self {
         Self {
-            schema: self.schema.clone(),
+            schema: Arc::clone(&self.schema), // Zero-cost Arc clone
             version: self.version,
             created_at: self.created_at,
             last_accessed: AtomicU64::new(self.last_accessed.load(Ordering::Relaxed)),
@@ -33,7 +33,7 @@ impl Clone for CacheEntry {
 impl CacheEntry {
     pub fn new(schema: FhirSchema, version: u64) -> Self {
         Self {
-            schema,
+            schema: Arc::new(schema), // Wrap in Arc for efficient sharing
             version,
             created_at: SystemTime::now(),
             last_accessed: AtomicU64::new(
@@ -128,11 +128,11 @@ impl HierarchicalCache {
         }
     }
 
-    pub async fn get(&self, url: &Url) -> Result<Option<FhirSchema>> {
+    pub async fn get(&self, url: &Url) -> Result<Option<Arc<FhirSchema>>> {
         // Check L1 cache
         if let Some(entry) = self.l1_hot.get(url) {
             entry.touch();
-            return Ok(Some(entry.schema.clone()));
+            return Ok(Some(Arc::clone(&entry.schema))); // Zero-cost Arc clone
         }
 
         // Check L2 cache
@@ -140,7 +140,7 @@ impl HierarchicalCache {
             let mut l2 = self.l2_warm.write().await;
             if let Some(entry) = l2.get_mut(url) {
                 entry.touch();
-                let schema = entry.schema.clone();
+                let schema = Arc::clone(&entry.schema); // Zero-cost Arc clone
                 let should_promote =
                     entry.access_count.load(Ordering::Relaxed) >= self.promotion_threshold;
 
@@ -167,12 +167,13 @@ impl HierarchicalCache {
 
         // Fetch from storage
         if let Some(schema) = self.l3_storage.get(url).await? {
-            let entry = CacheEntry::new(schema.clone(), self.get_current_version());
+            let entry = CacheEntry::new(schema, self.get_current_version());
+            let schema_arc = Arc::clone(&entry.schema); // Get Arc reference before moving entry
 
             // Add to L2 cache
             self.l2_warm.write().await.put(url.clone(), entry);
 
-            return Ok(Some(schema));
+            return Ok(Some(schema_arc));
         }
 
         Ok(None)
@@ -283,7 +284,7 @@ mod tests {
         let schema = test_schema();
         let entry = CacheEntry::new(schema.clone(), 1);
 
-        assert_eq!(entry.schema, schema);
+        assert_eq!(*entry.schema, schema); // Dereference Arc for comparison
         assert_eq!(entry.version, 1);
         assert_eq!(entry.get_access_count(), 1);
     }
@@ -312,7 +313,7 @@ mod tests {
 
         // Get schema
         let retrieved = cache.get(&url).await.unwrap().unwrap();
-        assert_eq!(retrieved, schema);
+        assert_eq!(*retrieved, schema); // Dereference Arc for comparison
     }
 
     #[tokio::test]

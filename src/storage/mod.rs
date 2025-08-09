@@ -1,3 +1,4 @@
+mod debug_impl;
 mod enhanced_manager;
 mod hierarchical_cache;
 mod memory;

@@ -1,6 +1,6 @@
 [package]
 name = "octofhir-fhirschema"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["OctoFHIR Team <funyloony@gmail.com>"]
 description = "A high-performance FHIR schema management and validation library"
@@ -36,7 +36,11 @@ lru = { version = "0.16", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 
 # Async runtime
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "sync"], optional = true }
+tokio = { version = "1.0", features = [
+    "macros",
+    "rt-multi-thread",
+    "sync",
+], optional = true }
 
 # Server dependencies
 axum = { version = "0.8", optional = true }
@@ -45,31 +49,40 @@ tracing = { version = "0.1", optional = true }
 # Validation
 regex = "1.10"
 url = { version = "2.4", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
 
 # OctoFHIR ecosystem - Official canonical manager (using local version with fix)
-octofhir-canonical-manager = {version = "0.1.2"}
+octofhir-canonical-manager = { version = "0.1.2" }
 
-# ADR-003 Phase 1: Hierarchical Cache dependencies
-# ADR-003 Phase 2: Compressed Storage dependencies
 lz4_flex = "0.11"
 bincode = "2"
 
-# ADR-003 Phase 4: Parallel Converter dependencies
 rayon = "1.8"
 crossbeam-channel = "0.5"
 num_cpus = "1.16"
 
 [dev-dependencies]
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "sync", "test-util"] }
+tokio = { version = "1.0", features = [
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "test-util",
+] }
 tokio-test = "0.4"
 criterion = "0.7"
 tempfile = "3.8"
-reqwest = { version = "0.11", features = ["json"] }
-zip = "0.6"
+reqwest = { version = "0.12", features = ["json"] }
+zip = "4.3.0"
 chrono = { version = "0.4", features = ["serde"] }
+rand = "0.9"
 
 [[bench]]
 name = "schema_validation"
+harness = false
+
+[[bench]]
+name = "performance_optimizations"
 harness = false
 
 [lib]

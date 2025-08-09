@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2025-08-09
+
+### Added
+- Advanced package management system with install, uninstall, list, and search capabilities
+- Package registry for centralized FHIR package management
+- Schema indexing system for fast lookups by canonical URL
+- Processing pipeline for batch schema operations
+- Adaptive converter with dynamic batch sizing for optimal parallel processing
+- Enhanced storage manager with improved compression strategies
+- Hierarchical caching system with multiple cache tiers
+- New CLI commands for package management operations
+- Schema retrieval by canonical URL
+- Debug implementations for better development experience
+- Performance benchmarks for optimization tracking
+
+### Changed
+- Improved parallel converter with adaptive batch processing
+- Enhanced storage system with hierarchical caching
+- Updated CLI structure with new package subcommands
+- Optimized memory usage with better compression (LZ4 + Bincode)
+- Refactored converter module for better efficiency
+- Updated version to 0.2.0 in Cargo.toml
+
+### Fixed
+- CI test running issues
+- Formatting issues in various modules
+- Memory optimization in storage layers
+
 ## [0.1.0] - 2025-08-06
 
 ### Added

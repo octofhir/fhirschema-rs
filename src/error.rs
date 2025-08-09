@@ -14,6 +14,24 @@ pub enum FhirSchemaError {
     #[error("Storage error: {message}")]
     Storage { message: String },
 
+    #[error("Download error: {message}")]
+    Download { message: String },
+
+    #[error("Parsing error: {message}")]
+    Parsing { message: String },
+
+    #[error("Dependency error: {message}")]
+    Dependency { message: String },
+
+    #[error("Initialization error: {message}")]
+    Initialization { message: String },
+
+    #[error("Search error: {message}")]
+    Search { message: String },
+
+    #[error("Concurrency error: {message}")]
+    Concurrency { message: String },
+
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 

@@ -16,10 +16,17 @@ pub struct StorageConfig {
 
 impl Default for StorageConfig {
     fn default() -> Self {
-        use crate::storage::MemoryStorage;
-        Self {
-            storage: Arc::new(MemoryStorage::new()),
-            cache: CacheConfig::default(),
+        #[cfg(feature = "memory-storage")]
+        {
+            use crate::storage::MemoryStorage;
+            Self {
+                storage: Arc::new(MemoryStorage::new()),
+                cache: CacheConfig::default(),
+            }
+        }
+        #[cfg(not(feature = "memory-storage"))]
+        {
+            compile_error!("memory-storage feature is required for default StorageConfig");
         }
     }
 }
@@ -142,6 +149,15 @@ impl EnhancedStorageManager {
     }
 
     pub async fn get(&self, url: &Url) -> Result<Option<FhirSchema>> {
+        // Legacy interface - clones the schema
+        match self.cache.get(url).await? {
+            Some(arc_schema) => Ok(Some((*arc_schema).clone())),
+            None => Ok(None),
+        }
+    }
+
+    /// Optimized get method that returns Arc<FhirSchema> to avoid cloning
+    pub async fn get_arc(&self, url: &Url) -> Result<Option<Arc<FhirSchema>>> {
         self.cache.get(url).await
     }
 
@@ -314,6 +330,17 @@ impl EnhancedStorageManager {
         }
 
         Ok(())
+    }
+}
+
+impl std::fmt::Debug for EnhancedStorageManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnhancedStorageManager")
+            .field("primary_storage", &"Arc<dyn SchemaStorage>")
+            .field("cache", &self.cache)
+            .field("invalidation_tx", &"mpsc::Sender<InvalidationRequest>")
+            .field("dependency_tracker", &self.dependency_tracker)
+            .finish()
     }
 }
 
