@@ -13,6 +13,7 @@ use octofhir_canonical_manager::{CanonicalManager, FcmConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, Semaphore};
+use tokio::time::timeout;
 
 /// Main package manager for FHIRSchema with O(1) schema access
 pub struct FhirSchemaPackageManager {
@@ -113,7 +114,16 @@ impl FhirSchemaPackageManager {
             config.converter_config.clone(),
         ));
 
-        let install_semaphore = Arc::new(Semaphore::new(config.max_concurrent_installs));
+        // Ensure at least one permit to prevent deadlock if misconfigured with 0
+        let install_permits = if config.max_concurrent_installs == 0 {
+            eprintln!(
+                "Warning: max_concurrent_installs=0 detected; defaulting to 1 to prevent deadlock"
+            );
+            1
+        } else {
+            config.max_concurrent_installs
+        };
+        let install_semaphore = Arc::new(Semaphore::new(install_permits));
         let progress_tracker = Arc::new(RwLock::new(HashMap::new()));
 
         Ok(Self {
@@ -181,12 +191,18 @@ impl FhirSchemaPackageManager {
         for package_spec in packages_to_install {
             let package_id = PackageId::new(&package_spec.name, &package_spec.version);
 
-            // Acquire semaphore permit
-            let _permit = self.install_semaphore.acquire().await.map_err(|e| {
-                FhirSchemaError::Concurrency {
+            // Acquire semaphore permit with timeout to avoid infinite waits
+            let permit_future = self.install_semaphore.acquire();
+            let _permit = match timeout(std::time::Duration::from_secs(60), permit_future).await {
+                Ok(res) => res.map_err(|e| FhirSchemaError::Concurrency {
                     message: format!("Failed to acquire install permit: {e}"),
+                })?,
+                Err(_) => {
+                    return Err(FhirSchemaError::Concurrency {
+                        message: "Timed out acquiring install permit".to_string(),
+                    });
                 }
-            })?;
+            };
 
             match self.install_single_package(package_spec, &options).await {
                 Ok((installed_package, conversion_results)) => {
