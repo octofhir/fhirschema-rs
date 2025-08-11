@@ -74,7 +74,6 @@ pub async fn install_packages(
     let options = InstallOptions {
         force,
         skip_dependencies,
-        max_parallel: 4,
         timeout_seconds: 300,
         validate: true,
         allow_prerelease: false,

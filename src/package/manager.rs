@@ -12,8 +12,7 @@ use chrono::Utc;
 use octofhir_canonical_manager::{CanonicalManager, FcmConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{RwLock, Semaphore};
-use tokio::time::timeout;
+use tokio::sync::RwLock;
 
 /// Main package manager for FHIRSchema with O(1) schema access
 pub struct FhirSchemaPackageManager {
@@ -32,9 +31,6 @@ pub struct FhirSchemaPackageManager {
     /// Package manager configuration
     config: PackageManagerConfig,
 
-    /// Semaphore for controlling concurrent operations
-    install_semaphore: Arc<Semaphore>,
-
     /// Installation progress tracking
     progress_tracker: Arc<RwLock<HashMap<String, InstallProgress>>>,
 }
@@ -42,7 +38,6 @@ pub struct FhirSchemaPackageManager {
 /// Package manager configuration
 #[derive(Clone)]
 pub struct PackageManagerConfig {
-    pub max_concurrent_installs: usize,
     pub max_concurrent_conversions: usize,
     pub registry_config: RegistryConfig,
     pub storage_config: StorageConfig,
@@ -100,11 +95,26 @@ pub trait ModelProvider: Send + Sync {
 impl FhirSchemaPackageManager {
     /// Create a new package manager with the specified configurations
     pub async fn new(fcm_config: FcmConfig, config: PackageManagerConfig) -> Result<Self> {
-        let canonical_manager = Arc::new(CanonicalManager::new(fcm_config).await.map_err(|e| {
-            FhirSchemaError::Initialization {
-                message: format!("Failed to initialize canonical manager: {e}"),
+        // Add timeout to CanonicalManager initialization to prevent hanging
+        let canonical_manager = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            CanonicalManager::new(fcm_config),
+        )
+        .await
+        {
+            Ok(Ok(cm)) => Arc::new(cm),
+            Ok(Err(e)) => {
+                return Err(FhirSchemaError::Initialization {
+                    message: format!("Failed to initialize canonical manager: {e}"),
+                });
             }
-        })?);
+            Err(_) => {
+                return Err(FhirSchemaError::Initialization {
+                    message: "Canonical manager initialization timed out after 30 seconds"
+                        .to_string(),
+                });
+            }
+        };
 
         let storage = Arc::new(EnhancedStorageManager::new(config.storage_config.clone()));
         let registry = Arc::new(RwLock::new(PackageRegistry::new(
@@ -114,16 +124,6 @@ impl FhirSchemaPackageManager {
             config.converter_config.clone(),
         ));
 
-        // Ensure at least one permit to prevent deadlock if misconfigured with 0
-        let install_permits = if config.max_concurrent_installs == 0 {
-            eprintln!(
-                "Warning: max_concurrent_installs=0 detected; defaulting to 1 to prevent deadlock"
-            );
-            1
-        } else {
-            config.max_concurrent_installs
-        };
-        let install_semaphore = Arc::new(Semaphore::new(install_permits));
         let progress_tracker = Arc::new(RwLock::new(HashMap::new()));
 
         Ok(Self {
@@ -132,7 +132,6 @@ impl FhirSchemaPackageManager {
             registry,
             converter,
             config,
-            install_semaphore,
             progress_tracker,
         })
     }
@@ -183,41 +182,29 @@ impl FhirSchemaPackageManager {
             });
         }
 
-        // Install packages - pre-allocate with known capacity
+        // Install packages sequentially - pre-allocate with known capacity
         let mut installed = Vec::with_capacity(packages_to_install.len());
         let mut failed = Vec::new(); // Unknown failure count, keep as-is
         let mut total_conversion_results = ConversionResults::default();
 
-        for package_spec in packages_to_install {
-            let package_id = PackageId::new(&package_spec.name, &package_spec.version);
+        // Install packages one by one sequentially
+        for spec in &packages_to_install {
+            let package_id = PackageId::new(&spec.name, &spec.version);
 
-            // Acquire semaphore permit with timeout to avoid infinite waits
-            let permit_future = self.install_semaphore.acquire();
-            let _permit = match timeout(std::time::Duration::from_secs(60), permit_future).await {
-                Ok(res) => res.map_err(|e| FhirSchemaError::Concurrency {
-                    message: format!("Failed to acquire install permit: {e}"),
-                })?,
-                Err(_) => {
-                    return Err(FhirSchemaError::Concurrency {
-                        message: "Timed out acquiring install permit".to_string(),
-                    });
-                }
-            };
-
-            match self.install_single_package(package_spec, &options).await {
+            match self.install_single_package(spec, &options).await {
                 Ok((installed_package, conversion_results)) => {
                     installed.push(installed_package);
                     total_conversion_results.merge(conversion_results);
                 }
                 Err(e) => {
                     failed.push(PackageInstallError {
-                        package_id,
+                        package_id: package_id.clone(),
                         error: e.to_string(),
                         category: self.categorize_error(&e),
                     });
 
                     if !options.force && self.config.cleanup_on_failure {
-                        // Rollback previously installed packages in this batch
+                        // Rollback previously installed packages
                         self.rollback_installation(&installed).await;
                         break;
                     }
@@ -251,13 +238,30 @@ impl FhirSchemaPackageManager {
         )
         .await;
 
-        // Download package via canonical manager
-        self.canonical_manager
-            .install_package(&package_spec.name, &package_spec.version)
-            .await
-            .map_err(|e| FhirSchemaError::Download {
-                message: format!("Failed to download package {package_id}: {e}"),
-            })?;
+        // Download package via canonical manager with timeout to prevent hanging
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.canonical_manager
+                .install_package(&package_spec.name, &package_spec.version),
+        )
+        .await
+        {
+            Ok(Ok(())) => {
+                // Successfully installed
+            }
+            Ok(Err(e)) => {
+                return Err(FhirSchemaError::Download {
+                    message: format!("Failed to download package {package_id}: {e}"),
+                });
+            }
+            Err(_) => {
+                return Err(FhirSchemaError::Download {
+                    message: format!(
+                        "Package download timed out after 30 seconds for {package_id}"
+                    ),
+                });
+            }
+        }
 
         self.update_progress(
             &package_id,
@@ -720,7 +724,6 @@ impl ModelProvider for FhirSchemaPackageManager {
 impl Default for PackageManagerConfig {
     fn default() -> Self {
         Self {
-            max_concurrent_installs: 4,
             max_concurrent_conversions: 8,
             registry_config: RegistryConfig::default(),
             storage_config: StorageConfig::default(),
@@ -747,7 +750,6 @@ impl std::fmt::Debug for FhirSchemaPackageManager {
 impl std::fmt::Debug for PackageManagerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PackageManagerConfig")
-            .field("max_concurrent_installs", &self.max_concurrent_installs)
             .field(
                 "max_concurrent_conversions",
                 &self.max_concurrent_conversions,

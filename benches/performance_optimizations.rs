@@ -318,7 +318,7 @@ fn bench_schema_registry_access(c: &mut Criterion) {
     group.bench_function("o1_schema_access", |b| {
         use rand::Rng;
         b.iter_batched(
-            || rand::thread_rng().gen_range(0..schema_count),
+            || rand::rng().random_range(0..schema_count),
             |index| {
                 let url = format!("http://example.com/Schema{index}");
                 rt.block_on(async { black_box(registry.get_schema(&url).await) })

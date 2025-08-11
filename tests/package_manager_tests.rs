@@ -64,7 +64,6 @@ async fn test_install_options() {
     assert!(!options.skip_dependencies);
     assert!(!options.force);
     assert!(!options.allow_prerelease);
-    assert_eq!(options.max_parallel, 4);
     assert_eq!(options.timeout_seconds, 300);
     assert!(options.validate);
 }

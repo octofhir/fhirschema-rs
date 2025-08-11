@@ -176,9 +176,6 @@ pub struct InstallOptions {
     /// Allow pre-release versions
     pub allow_prerelease: bool,
 
-    /// Maximum parallel installations
-    pub max_parallel: usize,
-
     /// Timeout for package downloads
     pub timeout_seconds: u64,
 
@@ -311,7 +308,6 @@ impl Default for InstallOptions {
             skip_dependencies: false,
             force: false,
             allow_prerelease: false,
-            max_parallel: 4,
             timeout_seconds: 300,
             validate: true,
             hooks: InstallHooks::default(),
