@@ -1,6 +1,6 @@
 [package]
 name = "octofhir-fhirschema"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 authors = ["OctoFHIR Team <funyloony@gmail.com>"]
 description = "A high-performance FHIR schema management and validation library"
@@ -56,12 +56,12 @@ chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 
 # OctoFHIR ecosystem - Official canonical manager (using local version with fix)
-octofhir-canonical-manager = { version = "0.1.3" }
+octofhir-canonical-manager = { version = "0.1.5" }
 
 lz4_flex = "0.11"
 bincode = "2"
 
-rayon = "1.8"
+rayon = "1.11"
 crossbeam-channel = "0.5"
 num_cpus = "1.16"
 
@@ -75,7 +75,7 @@ tokio = { version = "1.0", features = [
 tokio-test = "0.4"
 criterion = "0.7"
 tempfile = "3.8"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 zip = "4.3.0"
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.9"
