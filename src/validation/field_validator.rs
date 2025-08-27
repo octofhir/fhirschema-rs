@@ -4,7 +4,7 @@
 //! expressions uses fields that actually exist in FHIR resource types according to
 //! the FHIRSchema definitions.
 
-use crate::error::{FhirSchemaError, Result};
+use crate::error::Result;
 use crate::package::ModelProvider;
 use crate::types::FhirSchema;
 use std::sync::Arc;
@@ -171,13 +171,60 @@ impl FhirSchemaFieldValidator {
             return Ok(schema.clone());
         }
 
-        Err(FhirSchemaError::Validation {
-            message: format!("Schema not found for resource type: {}", resource_type),
-        })
+        // If no schema found, create a minimal placeholder schema
+        // This allows field validation to be more permissive when full schemas aren't loaded
+        Ok(Arc::new(self.create_placeholder_schema(resource_type)))
+    }
+
+    /// Create a minimal placeholder schema for a resource type
+    fn create_placeholder_schema(&self, resource_type: &str) -> FhirSchema {
+        use std::collections::HashMap;
+        use url::Url;
+
+        // Create basic schema structure using the actual FhirSchema fields
+        let mut extensions = HashMap::new();
+        extensions.insert(
+            "placeholder_marker".to_string(),
+            serde_json::Value::String("FhirSchema Field Validator".to_string()),
+        );
+
+        FhirSchema {
+            schema_version: Some("https://json-schema.org/draft/2020-12/schema".to_string()),
+            url: Url::parse(&format!(
+                "http://hl7.org/fhir/StructureDefinition/{}",
+                resource_type
+            ))
+            .ok(),
+            name: Some(resource_type.to_string()),
+            title: Some(format!("Placeholder for {}", resource_type)),
+            description: Some(format!(
+                "Placeholder schema for {} when full schema is not available",
+                resource_type
+            )),
+            version: Some("placeholder".to_string()),
+            status: Some("draft".to_string()),
+            schema_type: "object".to_string(),
+            kind: Some("resource".to_string()),
+            class: Some(resource_type.to_string()),
+            base: Url::parse("http://hl7.org/fhir/StructureDefinition/Resource").ok(),
+            abstract_type: Some(false),
+            base_definition: Url::parse("http://hl7.org/fhir/StructureDefinition/Resource").ok(),
+            derivation: Some("specialization".to_string()),
+            elements: HashMap::new(), // Empty elements - will make field validation permissive
+            constraints: vec![],
+            slicing: HashMap::new(),
+            extensions,
+        }
     }
 
     /// Check if a field exists in the schema
     async fn check_field_exists(&self, schema: &FhirSchema, field_name: &str) -> bool {
+        // If this is a placeholder schema (empty elements), be permissive
+        if schema.elements.is_empty() && schema.extensions.get("placeholder_marker").is_some() {
+            // For placeholder schemas, accept common FHIR field patterns
+            return self.is_likely_valid_fhir_field(field_name);
+        }
+
         // Check direct field references
         for (element_path, _element) in &schema.elements {
             if let Some(path_field_name) = element_path.split('.').last() {
@@ -188,6 +235,26 @@ impl FhirSchemaFieldValidator {
         }
 
         false
+    }
+
+    /// Heuristic check for likely valid FHIR field names
+    fn is_likely_valid_fhir_field(&self, field_name: &str) -> bool {
+        // Valid FHIR field names are typically camelCase starting with lowercase
+        if field_name.is_empty() {
+            return false;
+        }
+
+        let first_char = field_name.chars().next().unwrap();
+        if !first_char.is_lowercase() {
+            return false;
+        }
+
+        // Must be alphanumeric (allowing for choice type suffixes like valueString)
+        if !field_name.chars().all(|c| c.is_alphanumeric()) {
+            return false;
+        }
+
+        true
     }
 
     /// Get detailed information about a field

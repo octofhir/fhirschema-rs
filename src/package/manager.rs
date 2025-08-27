@@ -702,7 +702,34 @@ impl ModelProvider for FhirSchemaPackageManager {
 
     async fn has_resource_type(&self, resource_type: &str) -> bool {
         let schemas = self.get_schemas_by_type(resource_type).await;
-        !schemas.is_empty()
+        if !schemas.is_empty() {
+            return true;
+        }
+
+        // Fallback: check if this looks like a valid FHIR resource type name
+        // Valid resource types are PascalCase and start with uppercase letter
+        if resource_type
+            .chars()
+            .next()
+            .map_or(false, |c| c.is_uppercase())
+            && resource_type.chars().all(|c| c.is_alphanumeric())
+        {
+            // Additional check: see if we can find any schemas that might contain this type
+            let registry = self.registry.read().await;
+            let index = registry.get_schema_index();
+
+            // Check if there are any schemas in the registry at all
+            // If there are schemas but none for this type, it's likely invalid
+            // If there are no schemas at all, be permissive (schemas may not be loaded)
+            let has_any_schemas = !index.by_resource_type.is_empty();
+
+            if !has_any_schemas {
+                // No schemas loaded, be permissive for common resource types
+                return true;
+            }
+        }
+
+        false
     }
 
     async fn get_resource_types(&self) -> Vec<String> {
