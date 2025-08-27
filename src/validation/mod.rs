@@ -1,9 +1,15 @@
 #![allow(clippy::uninlined_format_args)]
 #![allow(clippy::only_used_in_recursion)]
 
+pub mod field_validator;
+
 use crate::{FhirSchema, Result};
 use serde_json::Value;
 use std::collections::HashMap;
+
+pub use field_validator::{
+    FhirSchemaFieldValidator, FieldInfo, FieldValidationContext, FieldValidationResult,
+};
 
 pub trait SchemaValidator {
     fn validate_schema(&self, schema: &FhirSchema) -> Result<Vec<ValidationIssue>>;

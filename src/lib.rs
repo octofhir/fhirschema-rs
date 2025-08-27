@@ -49,7 +49,8 @@ pub use package::{
 pub use storage::*;
 pub use types::*;
 pub use validation::{
-    BasicSchemaValidator, FhirSchemaValidationEngine, SchemaValidator, ValidationContext,
+    BasicSchemaValidator, FhirSchemaFieldValidator, FhirSchemaValidationEngine, FieldInfo,
+    FieldValidationContext, FieldValidationResult, SchemaValidator, ValidationContext,
     ValidationEngine, ValidationResult,
 };
 
