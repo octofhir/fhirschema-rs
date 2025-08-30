@@ -7,6 +7,7 @@ mod parallel_benchmark;
 mod parallel_converter;
 mod slicing;
 mod structure_definition;
+mod test_constraint_preservation;
 
 pub use adaptive_converter::*;
 pub use choice_types::*;

@@ -1,4 +1,4 @@
-use dashmap::DashMap;
+use papaya::HashMap as PapayaMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -16,24 +16,17 @@ pub struct StorageConfig {
 
 impl Default for StorageConfig {
     fn default() -> Self {
-        #[cfg(feature = "memory-storage")]
-        {
-            use crate::storage::MemoryStorage;
-            Self {
-                storage: Arc::new(MemoryStorage::new()),
-                cache: CacheConfig::default(),
-            }
-        }
-        #[cfg(not(feature = "memory-storage"))]
-        {
-            compile_error!("memory-storage feature is required for default StorageConfig");
+        use crate::storage::MemoryStorage;
+        Self {
+            storage: Arc::new(MemoryStorage::new()),
+            cache: CacheConfig::default(),
         }
     }
 }
 
 #[derive(Debug)]
 pub struct DependencyTracker {
-    dependencies: DashMap<Url, HashSet<Url>>,
+    dependencies: PapayaMap<Url, HashSet<Url>>,
 }
 
 impl Default for DependencyTracker {
@@ -45,36 +38,40 @@ impl Default for DependencyTracker {
 impl DependencyTracker {
     pub fn new() -> Self {
         Self {
-            dependencies: DashMap::new(),
+            dependencies: PapayaMap::new(),
         }
     }
 
     pub fn add_dependency(&self, schema_url: Url, depends_on: Url) {
-        self.dependencies
-            .entry(depends_on)
-            .or_default()
-            .insert(schema_url);
+        let guard = self.dependencies.pin_owned();
+        let mut deps = guard.get(&depends_on).cloned().unwrap_or_default();
+        deps.insert(schema_url);
+        guard.insert(depends_on, deps);
     }
 
     pub fn remove_dependency(&self, schema_url: &Url, depends_on: &Url) {
-        if let Some(mut deps) = self.dependencies.get_mut(depends_on) {
+        let guard = self.dependencies.pin_owned();
+        if let Some(mut deps) = guard.get(depends_on).cloned() {
             deps.remove(schema_url);
             if deps.is_empty() {
-                drop(deps);
-                self.dependencies.remove(depends_on);
+                guard.remove(depends_on);
+            } else {
+                guard.insert(depends_on.clone(), deps);
             }
         }
     }
 
     pub async fn get_dependencies(&self, url: &Url) -> Vec<Url> {
-        self.dependencies
+        let guard = self.dependencies.pin_owned();
+        guard
             .get(url)
             .map(|deps| deps.clone().into_iter().collect())
             .unwrap_or_default()
     }
 
     pub fn clear(&self) {
-        self.dependencies.clear();
+        let guard = self.dependencies.pin_owned();
+        guard.clear();
     }
 }
 
@@ -258,7 +255,10 @@ impl EnhancedStorageManager {
         CacheStats {
             l1_size: self.cache.get_l1_size(),
             l2_size: self.cache.get_l2_size().await,
-            dependency_count: self.dependency_tracker.dependencies.len(),
+            dependency_count: {
+                let guard = self.dependency_tracker.dependencies.pin_owned();
+                guard.len()
+            },
         }
     }
 
@@ -304,12 +304,10 @@ impl EnhancedStorageManager {
 
     async fn cleanup_dependencies(&self, url: &Url) {
         // Remove this schema from all dependency lists
-        let all_deps: Vec<_> = self
-            .dependency_tracker
-            .dependencies
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect();
+        let all_deps: Vec<_> = {
+            let guard = self.dependency_tracker.dependencies.pin_owned();
+            guard.iter().map(|(key, _)| key.clone()).collect()
+        };
 
         for dep_url in all_deps {
             self.dependency_tracker.remove_dependency(url, &dep_url);

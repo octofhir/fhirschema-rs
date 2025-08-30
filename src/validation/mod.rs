@@ -1,12 +1,14 @@
 #![allow(clippy::uninlined_format_args)]
 #![allow(clippy::only_used_in_recursion)]
 
+pub mod fhirpath_validation_engine;
 pub mod field_validator;
 
 use crate::{FhirSchema, Result};
 use serde_json::Value;
 use std::collections::HashMap;
 
+pub use fhirpath_validation_engine::{ConstraintValidationStats, FhirPathValidationEngine};
 pub use field_validator::{
     FhirSchemaFieldValidator, FieldInfo, FieldValidationContext, FieldValidationResult,
 };

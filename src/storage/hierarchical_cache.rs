@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::storage::SchemaStorage;
 use crate::types::FhirSchema;
-use dashmap::DashMap;
+use papaya::HashMap as PapayaMap;
 use lru::LruCache;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -88,7 +88,7 @@ impl Default for CacheConfig {
 }
 
 pub struct HierarchicalCache {
-    l1_hot: Arc<DashMap<Url, CacheEntry>>, // Frequently accessed
+    l1_hot: Arc<PapayaMap<Url, CacheEntry>>, // Frequently accessed
     l2_warm: Arc<RwLock<LruCache<Url, CacheEntry>>>, // Recently accessed
     l3_storage: Arc<dyn SchemaStorage>,    // Persistent storage
 
@@ -116,7 +116,7 @@ impl std::fmt::Debug for HierarchicalCache {
 impl HierarchicalCache {
     pub fn new(config: CacheConfig, storage: Arc<dyn SchemaStorage>) -> Self {
         Self {
-            l1_hot: Arc::new(DashMap::with_capacity(config.l1_size)),
+            l1_hot: Arc::new(PapayaMap::new()),
             l2_warm: Arc::new(RwLock::new(LruCache::new(
                 config.l2_size.try_into().unwrap(),
             ))),
@@ -130,9 +130,15 @@ impl HierarchicalCache {
 
     pub async fn get(&self, url: &Url) -> Result<Option<Arc<FhirSchema>>> {
         // Check L1 cache
-        if let Some(entry) = self.l1_hot.get(url) {
-            entry.touch();
-            return Ok(Some(Arc::clone(&entry.schema))); // Zero-cost Arc clone
+        let result = {
+            let l1_guard = self.l1_hot.pin_owned();
+            l1_guard.get(url).map(|entry| {
+                entry.touch();
+                Arc::clone(&entry.schema)
+            })
+        };
+        if let Some(schema) = result {
+            return Ok(Some(schema));
         }
 
         // Check L2 cache
@@ -192,7 +198,10 @@ impl HierarchicalCache {
 
     pub async fn invalidate(&self, url: &Url) {
         // Remove from all cache levels
-        self.l1_hot.remove(url);
+        {
+            let l1_guard = self.l1_hot.pin_owned();
+            l1_guard.remove(url);
+        }
         self.l2_warm.write().await.pop(url);
     }
 
@@ -204,11 +213,17 @@ impl HierarchicalCache {
 
     async fn promote_to_l1(&self, url: Url, entry: CacheEntry) {
         // Check L1 size limit
-        if self.l1_hot.len() >= self.l1_max_size {
+        let should_evict = {
+            let l1_guard = self.l1_hot.pin_owned();
+            l1_guard.len() >= self.l1_max_size
+        };
+        
+        if should_evict {
             self.evict_from_l1().await;
         }
 
-        self.l1_hot.insert(url, entry);
+        let l1_guard = self.l1_hot.pin_owned();
+        l1_guard.insert(url, entry);
     }
 
     async fn evict_from_l1(&self) {
@@ -216,16 +231,24 @@ impl HierarchicalCache {
         let mut oldest_url = None;
         let mut oldest_time = u64::MAX;
 
-        for entry in self.l1_hot.iter() {
-            let last_accessed = entry.value().last_accessed.load(Ordering::Relaxed);
-            if last_accessed < oldest_time {
-                oldest_time = last_accessed;
-                oldest_url = Some(entry.key().clone());
+        {
+            let l1_guard = self.l1_hot.pin_owned();
+            for (key, value) in l1_guard.iter() {
+                let last_accessed = value.last_accessed.load(Ordering::Relaxed);
+                if last_accessed < oldest_time {
+                    oldest_time = last_accessed;
+                    oldest_url = Some(key.clone());
+                }
             }
         }
 
         if let Some(url) = oldest_url {
-            if let Some((_, entry)) = self.l1_hot.remove(&url) {
+            let entry = {
+                let l1_guard = self.l1_hot.pin_owned();
+                l1_guard.remove(&url).cloned()
+            };
+            
+            if let Some(entry) = entry {
                 // Demote to L2
                 self.l2_warm.write().await.put(url, entry);
             }
@@ -241,7 +264,8 @@ impl HierarchicalCache {
     }
 
     pub fn get_l1_size(&self) -> usize {
-        self.l1_hot.len()
+        let l1_guard = self.l1_hot.pin_owned();
+        l1_guard.len()
     }
 
     pub async fn get_l2_size(&self) -> usize {
@@ -249,7 +273,10 @@ impl HierarchicalCache {
     }
 
     pub async fn clear(&self) {
-        self.l1_hot.clear();
+        {
+            let l1_guard = self.l1_hot.pin_owned();
+            l1_guard.clear();
+        }
         self.l2_warm.write().await.clear();
     }
 }

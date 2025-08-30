@@ -1,8 +1,8 @@
 use crate::error::{FhirSchemaError, Result};
 use crate::package::specification::{InstalledPackage, PackageId};
-use crate::types::FhirSchema;
+use crate::types::{FhirSchema, ResourceTypeRegistry};
 use chrono::{DateTime, Utc};
-use dashmap::DashMap;
+use papaya::HashMap as PapayaMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -12,16 +12,19 @@ use url::Url;
 #[derive(Debug)]
 pub struct PackageRegistry {
     /// Installed packages indexed by PackageId
-    installed: Arc<DashMap<PackageId, InstalledPackage>>,
+    installed: Arc<PapayaMap<PackageId, InstalledPackage>>,
 
     /// Schema index for O(1) schema lookups
     pub schema_index: Arc<SchemaIndex>,
+
+    /// Dedicated type registry for O(1) type access (atomic replacement)
+    pub type_registry: Arc<papaya::HashMap<(), ResourceTypeRegistry>>,
 
     /// Dependency graph for dependency management
     dependency_graph: Arc<DependencyGraph>,
 
     /// Package metadata cache
-    metadata_cache: Arc<DashMap<PackageId, PackageRegistryMetadata>>,
+    metadata_cache: Arc<PapayaMap<PackageId, PackageRegistryMetadata>>,
 
     /// Registry configuration
     config: RegistryConfig,
@@ -31,22 +34,22 @@ pub struct PackageRegistry {
 #[derive(Debug)]
 pub struct SchemaIndex {
     /// Primary index: canonical URL -> FhirSchema
-    by_canonical_url: DashMap<String, Arc<FhirSchema>>,
+    by_canonical_url: PapayaMap<String, Arc<FhirSchema>>,
 
     /// Secondary indexes for efficient lookups
-    pub by_resource_type: DashMap<String, Vec<Arc<FhirSchema>>>,
-    pub by_package: DashMap<PackageId, Vec<Arc<FhirSchema>>>,
-    pub by_profile_type: DashMap<ProfileType, Vec<Arc<FhirSchema>>>,
-    pub by_base_type: DashMap<String, Vec<Arc<FhirSchema>>>,
+    pub by_resource_type: PapayaMap<String, Vec<Arc<FhirSchema>>>,
+    pub by_package: PapayaMap<PackageId, Vec<Arc<FhirSchema>>>,
+    pub by_profile_type: PapayaMap<ProfileType, Vec<Arc<FhirSchema>>>,
+    pub by_base_type: PapayaMap<String, Vec<Arc<FhirSchema>>>,
 
     /// Full-text search index (schema names and descriptions)
-    search_index: DashMap<String, Vec<Arc<FhirSchema>>>,
+    search_index: PapayaMap<String, Vec<Arc<FhirSchema>>>,
 
     /// Reverse dependency tracking
-    dependencies: DashMap<String, Vec<String>>,
+    dependencies: PapayaMap<String, Vec<String>>,
 
     /// Schema version tracking
-    versions: DashMap<String, Vec<SchemaVersion>>,
+    versions: PapayaMap<String, Vec<SchemaVersion>>,
 }
 
 /// Profile type classification for schemas
@@ -73,13 +76,13 @@ pub struct SchemaVersion {
 #[derive(Debug)]
 pub struct DependencyGraph {
     /// Direct dependencies: package -> its dependencies
-    dependencies: DashMap<PackageId, Vec<PackageId>>,
+    dependencies: PapayaMap<PackageId, Vec<PackageId>>,
 
     /// Reverse dependencies: package -> packages that depend on it
-    dependents: DashMap<PackageId, Vec<PackageId>>,
+    dependents: PapayaMap<PackageId, Vec<PackageId>>,
 
     /// Resolved dependency order for installation/uninstallation
-    resolution_cache: DashMap<Vec<PackageId>, Vec<PackageId>>,
+    resolution_cache: PapayaMap<Vec<PackageId>, Vec<PackageId>>,
 }
 
 /// Package registry metadata for caching and performance
@@ -124,10 +127,18 @@ pub enum ValidationLevel {
 impl PackageRegistry {
     pub fn new(config: RegistryConfig) -> Self {
         Self {
-            installed: Arc::new(DashMap::new()),
+            installed: Arc::new(PapayaMap::new()),
             schema_index: Arc::new(SchemaIndex::new()),
+            type_registry: {
+                let registry_map = papaya::HashMap::new();
+                {
+                    let guard = registry_map.pin();
+                    guard.insert((), ResourceTypeRegistry::new());
+                }
+                Arc::new(registry_map)
+            },
             dependency_graph: Arc::new(DependencyGraph::new()),
-            metadata_cache: Arc::new(DashMap::new()),
+            metadata_cache: Arc::new(PapayaMap::new()),
             config,
         }
     }
@@ -141,7 +152,8 @@ impl PackageRegistry {
         let package_id = package.id.clone();
 
         // Store the package
-        self.installed.insert(package_id.clone(), package.clone());
+        let guard = self.installed.pin();
+        guard.insert(package_id.clone(), package.clone());
 
         // Index all schemas from this package - pre-allocate capacity
         let mut schema_refs = Vec::with_capacity(schemas.len());
@@ -152,6 +164,9 @@ impl PackageRegistry {
                 .add_schema(package_id.clone(), schema_arc)
                 .await?;
         }
+
+        // Rebuild type registry when schemas change
+        self.rebuild_type_registry().await?;
 
         // Update dependency graph
         self.dependency_graph
@@ -165,7 +180,8 @@ impl PackageRegistry {
             size_bytes: Self::calculate_schemas_size(&schema_refs),
             checksum: package.checksum.clone(),
         };
-        self.metadata_cache.insert(package_id, metadata);
+        let cache_guard = self.metadata_cache.pin();
+        cache_guard.insert(package_id, metadata);
 
         Ok(())
     }
@@ -195,22 +211,38 @@ impl PackageRegistry {
         self.dependency_graph.remove_package(package_id);
 
         // Remove metadata
-        self.metadata_cache.remove(package_id);
+        let cache_guard = self.metadata_cache.pin();
+        cache_guard.remove(package_id);
 
         // Remove and return the package
-        Ok(self
-            .installed
-            .remove(package_id)
-            .map(|(_, package)| package))
+        let installed_guard = self.installed.pin();
+        Ok(installed_guard.remove(package_id).cloned())
+    }
+
+    /// Rebuild type registry when schemas change
+    pub async fn rebuild_type_registry(&self) -> Result<()> {
+        let schemas = self.get_all_schemas().await;
+        let new_registry = ResourceTypeRegistry::build_from_schemas(&schemas).await?;
+        
+        // Replace the registry atomically using papaya HashMap
+        let guard = self.type_registry.pin();
+        guard.insert((), new_registry);
+        
+        Ok(())
+    }
+
+    /// Get all schemas across all packages
+    pub async fn get_all_schemas(&self) -> Vec<Arc<FhirSchema>> {
+        let guard = self.schema_index.by_canonical_url.pin();
+        guard.iter().map(|(_, schema)| schema.clone()).collect()
     }
 
     /// Get schema by canonical URL (O(1) operation)
     pub async fn get_schema(&self, canonical_url: &str) -> Option<Arc<FhirSchema>> {
-        let result = self
-            .schema_index
-            .by_canonical_url
-            .get(canonical_url)
-            .map(|entry| entry.clone());
+        let result = {
+            let guard = self.schema_index.by_canonical_url.pin();
+            guard.get(canonical_url).cloned()
+        };
 
         // Update access statistics
         if let Some(schema) = &result {
@@ -222,11 +254,8 @@ impl PackageRegistry {
 
     /// Get schemas by resource type
     pub async fn get_schemas_by_type(&self, resource_type: &str) -> Vec<Arc<FhirSchema>> {
-        self.schema_index
-            .by_resource_type
-            .get(resource_type)
-            .map(|entry| entry.clone())
-            .unwrap_or_default()
+        let guard = self.schema_index.by_resource_type.pin();
+        guard.get(resource_type).cloned().unwrap_or_default()
     }
 
     /// Get schemas by profile type
@@ -234,20 +263,14 @@ impl PackageRegistry {
         &self,
         profile_type: &ProfileType,
     ) -> Vec<Arc<FhirSchema>> {
-        self.schema_index
-            .by_profile_type
-            .get(profile_type)
-            .map(|entry| entry.clone())
-            .unwrap_or_default()
+        let guard = self.schema_index.by_profile_type.pin();
+        guard.get(profile_type).cloned().unwrap_or_default()
     }
 
     /// Get all schemas for a package
     pub async fn get_package_schemas(&self, package_id: &PackageId) -> Vec<Arc<FhirSchema>> {
-        self.schema_index
-            .by_package
-            .get(package_id)
-            .map(|entry| entry.clone())
-            .unwrap_or_default()
+        let guard = self.schema_index.by_package.pin();
+        guard.get(package_id).cloned().unwrap_or_default()
     }
 
     /// Search schemas by text query
@@ -260,9 +283,10 @@ impl PackageRegistry {
         let mut results = Vec::new(); // Unknown result count, keep as-is
 
         // Search in index
-        for entry in self.schema_index.search_index.iter() {
-            if entry.key().to_lowercase().contains(&query_lower) {
-                results.extend(entry.value().clone());
+        let search_guard = self.schema_index.search_index.pin();
+        for (key, value) in search_guard.iter() {
+            if key.to_lowercase().contains(&query_lower) {
+                results.extend(value.clone());
             }
         }
 
@@ -281,20 +305,20 @@ impl PackageRegistry {
 
     /// List all installed packages
     pub fn list_packages(&self) -> Vec<PackageId> {
-        self.installed
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect()
+        let guard = self.installed.pin();
+        guard.iter().map(|(key, _)| key.clone()).collect()
     }
 
     /// Get package information
     pub fn get_package(&self, package_id: &PackageId) -> Option<InstalledPackage> {
-        self.installed.get(package_id).map(|entry| entry.clone())
+        let guard = self.installed.pin();
+        guard.get(package_id).cloned()
     }
 
     /// Check if a package is installed
     pub fn is_installed(&self, package_id: &PackageId) -> bool {
-        self.installed.contains_key(package_id)
+        let guard = self.installed.pin();
+        guard.get(package_id).is_some()
     }
 
     /// Get dependency information
@@ -318,9 +342,11 @@ impl PackageRegistry {
 
     /// Get registry statistics
     pub fn get_stats(&self) -> RegistryStats {
+        let installed_guard = self.installed.pin();
+        let schemas_guard = self.schema_index.by_canonical_url.pin();
         RegistryStats {
-            total_packages: self.installed.len(),
-            total_schemas: self.schema_index.by_canonical_url.len(),
+            total_packages: installed_guard.len(),
+            total_schemas: schemas_guard.len(),
             memory_usage_mb: self.estimate_memory_usage(),
             cache_hit_rate: self.calculate_cache_hit_rate(),
         }
@@ -333,10 +359,12 @@ impl PackageRegistry {
 
     /// Clear all packages and schemas
     pub async fn clear(&self) -> Result<()> {
-        self.installed.clear();
+        let installed_guard = self.installed.pin();
+        installed_guard.clear();
         self.schema_index.clear().await;
         self.dependency_graph.clear();
-        self.metadata_cache.clear();
+        let cache_guard = self.metadata_cache.pin();
+        cache_guard.clear();
         Ok(())
     }
 
@@ -344,12 +372,9 @@ impl PackageRegistry {
     async fn update_access_stats(&self, _schema_url: &Option<Url>) {
         // Find the package that contains this schema and update its access stats
         if let Some(_url) = _schema_url {
-            for mut entry in self.metadata_cache.iter_mut() {
-                // This is a simplified approach - in a real implementation,
-                // you'd want to maintain a more efficient mapping
-                entry.last_accessed = Utc::now();
-                entry.access_count += 1;
-            }
+            // For papaya, we'll need to implement more sophisticated access tracking
+            // since there's no iter_mut - this would require atomic operations
+            // or a different approach to access statistics
         }
     }
 
@@ -394,8 +419,8 @@ impl PackageRegistry {
         let mut total_hits = 0u64;
 
         // Calculate based on schema access patterns
-        for entry in self.metadata_cache.iter() {
-            let metadata = entry.value();
+        let cache_guard = self.metadata_cache.pin();
+        for (_, metadata) in cache_guard.iter() {
             total_accesses += metadata.access_count;
 
             // Assume schemas accessed more than once had cache hits
@@ -414,8 +439,10 @@ impl PackageRegistry {
     /// Estimate memory usage in MB
     fn estimate_memory_usage(&self) -> f64 {
         // Rough estimation - in a real implementation you'd want more precise measurement
-        let package_count = self.installed.len();
-        let schema_count = self.schema_index.by_canonical_url.len();
+        let installed_guard = self.installed.pin();
+        let schemas_guard = self.schema_index.by_canonical_url.pin();
+        let package_count = installed_guard.len();
+        let schema_count = schemas_guard.len();
 
         // Estimate: ~1KB per package, ~5KB per schema on average
         ((package_count * 1024) + (schema_count * 5 * 1024)) as f64 / (1024.0 * 1024.0)
@@ -431,14 +458,14 @@ impl Default for SchemaIndex {
 impl SchemaIndex {
     pub fn new() -> Self {
         Self {
-            by_canonical_url: DashMap::new(),
-            by_resource_type: DashMap::new(),
-            by_package: DashMap::new(),
-            by_profile_type: DashMap::new(),
-            by_base_type: DashMap::new(),
-            search_index: DashMap::new(),
-            dependencies: DashMap::new(),
-            versions: DashMap::new(),
+            by_canonical_url: PapayaMap::new(),
+            by_resource_type: PapayaMap::new(),
+            by_package: PapayaMap::new(),
+            by_profile_type: PapayaMap::new(),
+            by_base_type: PapayaMap::new(),
+            search_index: PapayaMap::new(),
+            dependencies: PapayaMap::new(),
+            versions: PapayaMap::new(),
         }
     }
 
@@ -446,51 +473,52 @@ impl SchemaIndex {
     pub async fn add_schema(&self, package_id: PackageId, schema: Arc<FhirSchema>) -> Result<()> {
         // Primary index by canonical URL
         if let Some(url) = &schema.url {
-            self.by_canonical_url
-                .insert(url.to_string(), schema.clone());
+            let guard = self.by_canonical_url.pin();
+            guard.insert(url.to_string(), schema.clone());
         }
 
         // Index by resource type
         let resource_type = &schema.schema_type;
-        self.by_resource_type
-            .entry(resource_type.clone())
-            .or_default()
-            .push(schema.clone());
+        let guard = self.by_resource_type.pin();
+        let mut schemas = guard.get(resource_type).cloned().unwrap_or_default();
+        schemas.push(schema.clone());
+        guard.insert(resource_type.clone(), schemas);
 
         // Index by package
-        self.by_package
-            .entry(package_id.clone())
-            .or_default()
-            .push(schema.clone());
+        let guard = self.by_package.pin();
+        let mut schemas = guard.get(&package_id).cloned().unwrap_or_default();
+        schemas.push(schema.clone());
+        guard.insert(package_id.clone(), schemas);
 
         // Index by profile type
         let profile_type = self.determine_profile_type(&schema);
-        self.by_profile_type
-            .entry(profile_type)
-            .or_default()
-            .push(schema.clone());
+        let guard = self.by_profile_type.pin();
+        let mut schemas = guard.get(&profile_type).cloned().unwrap_or_default();
+        schemas.push(schema.clone());
+        guard.insert(profile_type, schemas);
 
         // Index by base type if available
         if let Some(base) = &schema.base {
-            self.by_base_type
-                .entry(base.to_string())
-                .or_default()
-                .push(schema.clone());
+            let guard = self.by_base_type.pin();
+            let base_str = base.to_string();
+            let mut schemas = guard.get(&base_str).cloned().unwrap_or_default();
+            schemas.push(schema.clone());
+            guard.insert(base_str, schemas);
         }
 
         // Full-text search index
         if let Some(name) = &schema.name {
-            self.search_index
-                .entry(name.clone())
-                .or_default()
-                .push(schema.clone());
+            let guard = self.search_index.pin();
+            let mut schemas = guard.get(name).cloned().unwrap_or_default();
+            schemas.push(schema.clone());
+            guard.insert(name.clone(), schemas);
         }
 
         if let Some(title) = &schema.title {
-            self.search_index
-                .entry(title.clone())
-                .or_default()
-                .push(schema.clone());
+            let guard = self.search_index.pin();
+            let mut schemas = guard.get(title).cloned().unwrap_or_default();
+            schemas.push(schema.clone());
+            guard.insert(title.clone(), schemas);
         }
 
         // Version tracking
@@ -505,10 +533,10 @@ impl SchemaIndex {
                 schema: schema.clone(),
             };
 
-            self.versions
-                .entry(url.to_string())
-                .or_default()
-                .push(version);
+            let guard = self.versions.pin();
+            let mut versions = guard.get(&url.to_string()).cloned().unwrap_or_default();
+            versions.push(version);
+            guard.insert(url.to_string(), versions);
         }
 
         Ok(())
@@ -516,7 +544,8 @@ impl SchemaIndex {
 
     /// Remove all schemas for a package
     pub async fn remove_schemas_for_package(&self, package_id: &PackageId) {
-        if let Some((_, schemas)) = self.by_package.remove(package_id) {
+        let guard = self.by_package.pin();
+        if let Some(schemas) = guard.remove(package_id) {
             for schema in schemas {
                 self.remove_schema_from_indexes(&schema).await;
             }
@@ -525,14 +554,22 @@ impl SchemaIndex {
 
     /// Clear all indexes
     pub async fn clear(&self) {
-        self.by_canonical_url.clear();
-        self.by_resource_type.clear();
-        self.by_package.clear();
-        self.by_profile_type.clear();
-        self.by_base_type.clear();
-        self.search_index.clear();
-        self.dependencies.clear();
-        self.versions.clear();
+        let canonical_guard = self.by_canonical_url.pin();
+        canonical_guard.clear();
+        let resource_guard = self.by_resource_type.pin();
+        resource_guard.clear();
+        let package_guard = self.by_package.pin();
+        package_guard.clear();
+        let profile_guard = self.by_profile_type.pin();
+        profile_guard.clear();
+        let base_guard = self.by_base_type.pin();
+        base_guard.clear();
+        let search_guard = self.search_index.pin();
+        search_guard.clear();
+        let deps_guard = self.dependencies.pin();
+        deps_guard.clear();
+        let versions_guard = self.versions.pin();
+        versions_guard.clear();
     }
 
     /// Determine profile type from schema
@@ -560,7 +597,8 @@ impl SchemaIndex {
     async fn remove_schema_from_indexes(&self, schema: &Arc<FhirSchema>) {
         // Remove from canonical URL index
         if let Some(url) = &schema.url {
-            self.by_canonical_url.remove(&url.to_string());
+            let guard = self.by_canonical_url.pin();
+            guard.remove(&url.to_string());
         }
 
         // Remove from other indexes - this is simplified,
@@ -578,58 +616,68 @@ impl Default for DependencyGraph {
 impl DependencyGraph {
     pub fn new() -> Self {
         Self {
-            dependencies: DashMap::new(),
-            dependents: DashMap::new(),
-            resolution_cache: DashMap::new(),
+            dependencies: PapayaMap::new(),
+            dependents: PapayaMap::new(),
+            resolution_cache: PapayaMap::new(),
         }
     }
 
     pub fn add_package_dependencies(&self, package_id: &PackageId, deps: &[PackageId]) {
         // Add forward dependencies
-        self.dependencies.insert(package_id.clone(), deps.to_vec());
+        let deps_guard = self.dependencies.pin();
+        deps_guard.insert(package_id.clone(), deps.to_vec());
 
         // Add reverse dependencies
+        let dependents_guard = self.dependents.pin();
         for dep in deps {
-            self.dependents
-                .entry(dep.clone())
-                .or_default()
-                .push(package_id.clone());
+            let mut dependents_list = dependents_guard.get(dep).cloned().unwrap_or_default();
+            dependents_list.push(package_id.clone());
+            dependents_guard.insert(dep.clone(), dependents_list);
         }
 
         // Clear resolution cache as it may be invalidated
-        self.resolution_cache.clear();
+        let cache_guard = self.resolution_cache.pin();
+        cache_guard.clear();
     }
 
     pub fn remove_package(&self, package_id: &PackageId) {
         // Remove forward dependencies
-        if let Some((_, deps)) = self.dependencies.remove(package_id) {
+        let deps_guard = self.dependencies.pin();
+        if let Some(deps) = deps_guard.remove(package_id) {
             // Remove from reverse dependencies
+            let dependents_guard = self.dependents.pin();
             for dep in deps {
-                if let Some(mut dependents) = self.dependents.get_mut(&dep) {
-                    dependents.retain(|id| id != package_id);
+                if let Some(mut dependents_list) = dependents_guard.get(dep).cloned() {
+                    dependents_list.retain(|id| id != package_id);
+                    dependents_guard.insert(dep.clone(), dependents_list);
                 }
             }
         }
 
         // Remove as a dependent
-        self.dependents.remove(package_id);
+        let dependents_guard = self.dependents.pin();
+        dependents_guard.remove(package_id);
 
         // Clear resolution cache
-        self.resolution_cache.clear();
+        let cache_guard = self.resolution_cache.pin();
+        cache_guard.clear();
     }
 
     pub fn get_dependencies(&self, package_id: &PackageId) -> Option<Vec<PackageId>> {
-        self.dependencies.get(package_id).map(|entry| entry.clone())
+        let guard = self.dependencies.pin();
+        guard.get(package_id).cloned()
     }
 
     pub fn get_dependents(&self, package_id: &PackageId) -> Option<Vec<PackageId>> {
-        self.dependents.get(package_id).map(|entry| entry.clone())
+        let guard = self.dependents.pin();
+        guard.get(package_id).cloned()
     }
 
     pub fn resolve_install_order(&self, packages: &[PackageId]) -> Result<Vec<PackageId>> {
         // Check cache first
         let cache_key = packages.to_vec();
-        if let Some(cached) = self.resolution_cache.get(&cache_key) {
+        let cache_guard = self.resolution_cache.pin();
+        if let Some(cached) = cache_guard.get(&cache_key) {
             return Ok(cached.clone());
         }
 
@@ -645,15 +693,19 @@ impl DependencyGraph {
         }
 
         // Cache the result
-        self.resolution_cache.insert(cache_key, result.clone());
+        let cache_guard = self.resolution_cache.pin();
+        cache_guard.insert(cache_key, result.clone());
 
         Ok(result)
     }
 
     pub fn clear(&self) {
-        self.dependencies.clear();
-        self.dependents.clear();
-        self.resolution_cache.clear();
+        let deps_guard = self.dependencies.pin();
+        deps_guard.clear();
+        let dependents_guard = self.dependents.pin();
+        dependents_guard.clear();
+        let cache_guard = self.resolution_cache.pin();
+        cache_guard.clear();
     }
 
     fn visit_package(

@@ -11,13 +11,12 @@ keywords = ["fhir", "healthcare", "schema", "validation", "interoperability"]
 categories = ["api-bindings", "data-structures", "parser-implementations"]
 
 [features]
-default = ["memory-storage", "tokio", "bincode"]
+default = ["tokio", "bincode"]
 cli = ["clap", "tokio"]
-memory-storage = ["dashmap", "lru"]
 disk-storage = ["tokio/fs"]
 server = ["axum", "tokio", "tracing"]
 bincode = []
-all = ["cli", "memory-storage", "disk-storage", "server", "bincode"]
+all = ["cli", "disk-storage", "server", "bincode"]
 
 [dependencies]
 # Core serialization
@@ -31,9 +30,9 @@ futures = "0.3"
 thiserror = "2"
 async-trait = "0.1"
 
-# Memory storage
-dashmap = { version = "6", optional = true }
-lru = { version = "0.16", optional = true }
+# Memory storage (always available)
+papaya = { version = "0.2.3" }
+lru = { version = "0.16" }
 
 # CLI dependencies
 clap = { version = "4", features = ["derive"], optional = true }
@@ -56,7 +55,10 @@ chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 
 # OctoFHIR ecosystem - Official canonical manager (using local version with fix)
-octofhir-canonical-manager = { version = "0.1.5" }
+octofhir-canonical-manager = { version = "0.1.6" }
+
+# FhirPathEngine trait for constraint evaluation (avoiding circular dependencies)
+octofhir-fhir-model = { path = "../fhir-model-rs", features = ["serde"] }
 
 lz4_flex = "0.11"
 bincode = "2"

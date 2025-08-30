@@ -1,6 +1,4 @@
-#[cfg(feature = "memory-storage")]
-use dashmap::DashMap;
-#[cfg(feature = "memory-storage")]
+use papaya::HashMap as PapayaMap;
 use lru::LruCache;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -10,18 +8,16 @@ use url::Url;
 use super::{SchemaCache, SchemaStorage, StorageStats};
 use crate::{FhirSchema, Result};
 
-#[cfg(feature = "memory-storage")]
 #[derive(Debug)]
 pub struct MemoryStorage {
-    schemas: Arc<DashMap<Url, FhirSchema>>,
+    schemas: Arc<PapayaMap<Url, FhirSchema>>,
     stats: Arc<RwLock<StorageStats>>,
 }
 
-#[cfg(feature = "memory-storage")]
 impl MemoryStorage {
     pub fn new() -> Self {
         Self {
-            schemas: Arc::new(DashMap::new()),
+            schemas: Arc::new(PapayaMap::new()),
             stats: Arc::new(RwLock::new(StorageStats::default())),
         }
     }
@@ -40,33 +36,43 @@ impl MemoryStorage {
     }
 }
 
-#[cfg(feature = "memory-storage")]
 #[async_trait::async_trait]
 impl SchemaStorage for MemoryStorage {
     async fn get(&self, url: &Url) -> Result<Option<FhirSchema>> {
         self.update_stats(|s| s.storage_operations += 1).await;
 
-        let result = self.schemas.get(url).map(|entry| entry.clone());
+        let guard = self.schemas.pin_owned();
+        let result = guard.get(url).cloned();
         Ok(result)
     }
 
     async fn put(&self, url: Url, schema: FhirSchema) -> Result<()> {
+        let exists = {
+            let guard = self.schemas.pin_owned();
+            guard.get(&url).is_some()
+        };
+        
         self.update_stats(|s| {
             s.storage_operations += 1;
-            if !self.schemas.contains_key(&url) {
+            if !exists {
                 s.schemas_count += 1;
             }
         })
         .await;
 
-        self.schemas.insert(url, schema);
+        let guard = self.schemas.pin_owned();
+        guard.insert(url, schema);
         Ok(())
     }
 
     async fn remove(&self, url: &Url) -> Result<bool> {
         self.update_stats(|s| s.storage_operations += 1).await;
 
-        let removed = self.schemas.remove(url).is_some();
+        let removed = {
+            let guard = self.schemas.pin_owned();
+            guard.remove(url).is_some()
+        };
+        
         if removed {
             self.update_stats(|s| s.schemas_count = s.schemas_count.saturating_sub(1))
                 .await;
@@ -77,15 +83,13 @@ impl SchemaStorage for MemoryStorage {
     async fn list(&self) -> Result<Vec<Url>> {
         self.update_stats(|s| s.storage_operations += 1).await;
 
-        Ok(self
-            .schemas
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect())
+        let guard = self.schemas.pin_owned();
+        Ok(guard.iter().map(|(key, _)| key.clone()).collect())
     }
 
     async fn contains(&self, url: &Url) -> Result<bool> {
-        Ok(self.schemas.contains_key(url))
+        let guard = self.schemas.pin_owned();
+        Ok(guard.get(url).is_some())
     }
 
     async fn clear(&self) -> Result<()> {
@@ -95,30 +99,29 @@ impl SchemaStorage for MemoryStorage {
         })
         .await;
 
-        self.schemas.clear();
+        let guard = self.schemas.pin_owned();
+        guard.clear();
         Ok(())
     }
 
     async fn size(&self) -> Result<usize> {
-        Ok(self.schemas.len())
+        let guard = self.schemas.pin_owned();
+        Ok(guard.len())
     }
 }
 
-#[cfg(feature = "memory-storage")]
 impl Default for MemoryStorage {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(feature = "memory-storage")]
 #[derive(Debug)]
 pub struct LruSchemaCache {
     cache: Arc<RwLock<LruCache<Url, FhirSchema>>>,
     stats: Arc<RwLock<StorageStats>>,
 }
 
-#[cfg(feature = "memory-storage")]
 impl LruSchemaCache {
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -141,7 +144,6 @@ impl LruSchemaCache {
     }
 }
 
-#[cfg(feature = "memory-storage")]
 #[async_trait::async_trait]
 impl SchemaCache for LruSchemaCache {
     async fn get(&self, url: &Url) -> Option<FhirSchema> {
@@ -182,6 +184,3 @@ impl SchemaCache for LruSchemaCache {
         self.cache.read().await.len()
     }
 }
-
-#[cfg(not(feature = "memory-storage"))]
-compile_error!("memory-storage feature is required for MemoryStorage and LruSchemaCache");
