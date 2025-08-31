@@ -20,12 +20,9 @@
 
 use crate::validation::{ValidationContext, ValidationEngine, ValidationResult};
 use crate::{Constraint, FhirSchema, Result};
+use octofhir_fhir_model::constraints::ConstraintSeverity;
 use octofhir_fhir_model::{
-    ConstraintInfo,
-    constraints::ConstraintSeverity,
-    FhirPathEngine,
-    FhirPathEngineCapabilities,
-    FhirPathEvaluationConfig,
+    ConstraintInfo, FhirPathEngine, FhirPathEngineCapabilities, FhirPathEvaluationConfig,
     FhirPathEvaluationContext,
 };
 use serde_json::Value;
@@ -135,7 +132,12 @@ impl FhirPathValidationEngine {
                     .with_path(context.current_path.clone());
 
                 match fhirpath_engine
-                    .evaluate_constraint(resource, &constraint_info, &evaluation_context, &self.fhirpath_config)
+                    .evaluate_constraint(
+                        resource,
+                        &constraint_info,
+                        &evaluation_context,
+                        &self.fhirpath_config,
+                    )
                     .await
                 {
                     Ok(result) => {
@@ -166,10 +168,12 @@ impl FhirPathValidationEngine {
                     Err(e) => {
                         // FHIRPath evaluation failed - add as warning and fall back to basic evaluation
                         context.add_warning(
-                            &format!("{}-fhirpath-error", constraint.key),
-                            format!("FHIRPath evaluation error: {e}. Falling back to basic evaluation."),
+                            format!("{}-fhirpath-error", constraint.key),
+                            format!(
+                                "FHIRPath evaluation error: {e}. Falling back to basic evaluation."
+                            ),
                         );
-                        
+
                         // Fall back to basic constraint evaluation
                         self.base_engine
                             .validate_constraint(resource, constraint, context)?;
@@ -193,7 +197,7 @@ impl FhirPathValidationEngine {
         // - Complex operators (|, &, implies, etc.)
         // - Nested paths with multiple dots and complex navigation
         // - Function calls beyond simple exists()
-        
+
         let complex_indicators = [
             ".where(",
             ".select(",
@@ -228,16 +232,18 @@ impl FhirPathValidationEngine {
 
         // Count dots to detect complex navigation
         let dot_count = expression.matches('.').count();
-        
+
         // Check for complex indicators
-        let has_complex_indicator = complex_indicators.iter().any(|indicator| expression.contains(indicator));
-        
+        let has_complex_indicator = complex_indicators
+            .iter()
+            .any(|indicator| expression.contains(indicator));
+
         // Consider it complex if:
         // 1. It has complex indicators, OR
         // 2. It has more than 3 dots (complex navigation), OR
         // 3. It contains parentheses beyond simple function calls
-        has_complex_indicator 
-            || dot_count > 3 
+        has_complex_indicator
+            || dot_count > 3
             || (expression.contains('(') && !self.is_simple_function_call(expression))
     }
 
@@ -253,7 +259,9 @@ impl FhirPathValidationEngine {
             "count(",
         ];
 
-        simple_functions.iter().any(|func| expression.contains(func))
+        simple_functions
+            .iter()
+            .any(|func| expression.contains(func))
     }
 
     /// Convert fhirschema Constraint to fhir-model ConstraintInfo
@@ -334,7 +342,8 @@ impl ValidationEngine for FhirPathValidationEngine {
     ) -> Result<ValidationResult> {
         // For now, use the base engine for synchronous validation
         // In a real async implementation, this would be handled differently
-        self.base_engine.validate_resource_with_schemas(resource, schemas)
+        self.base_engine
+            .validate_resource_with_schemas(resource, schemas)
     }
 }
 
@@ -379,17 +388,20 @@ impl FhirPathValidationEngine {
         // Validate against each schema
         for schema in schemas {
             let mut schema_context = context.clone();
-            
+
             // Basic validation
-            self.base_engine
-                .validate_resource_with_context(resource, schema, &mut schema_context)?;
-            
+            self.base_engine.validate_resource_with_context(
+                resource,
+                schema,
+                &mut schema_context,
+            )?;
+
             // Enhanced constraint validation if available
             if self.fhirpath_engine.is_some() {
                 self.validate_schema_constraints(resource, schema, &mut schema_context)
                     .await?;
             }
-            
+
             final_result.merge(schema_context.into_result());
         }
 
@@ -455,31 +467,31 @@ mod tests {
         assert!(engine.is_complex_expression("name.where(use = 'official').exists()"));
         assert!(engine.is_complex_expression("telecom.where(system = 'email').value"));
         assert!(engine.is_complex_expression("contact.all(name.exists())"));
-        assert!(engine.is_complex_expression("extension.where(url = 'http://example.com').exists()"));
+        assert!(
+            engine.is_complex_expression("extension.where(url = 'http://example.com').exists()")
+        );
         assert!(engine.is_complex_expression("value implies reason.exists()"));
     }
 
     #[test]
     fn test_constraint_conversion() {
         let engine = FhirPathValidationEngine::new();
-        
-        let constraint = Constraint::new(
-            "pat-1",
-            "error",
-            "Name must exist",
-            "name.exists()"
-        )
-        .with_xpath("//name")
-        .with_source("http://example.com/Patient");
+
+        let constraint = Constraint::new("pat-1", "error", "Name must exist", "name.exists()")
+            .with_xpath("//name")
+            .with_source("http://example.com/Patient");
 
         let constraint_info = engine.convert_constraint_to_info(&constraint);
-        
+
         assert_eq!(constraint_info.key, "pat-1");
         assert_eq!(constraint_info.severity, ConstraintSeverity::Error);
         assert_eq!(constraint_info.human, "Name must exist");
         assert_eq!(constraint_info.expression, "name.exists()");
         assert_eq!(constraint_info.xpath.as_deref(), Some("//name"));
-        assert_eq!(constraint_info.source.as_deref(), Some("http://example.com/Patient"));
+        assert_eq!(
+            constraint_info.source.as_deref(),
+            Some("http://example.com/Patient")
+        );
     }
 
     #[tokio::test]
@@ -491,12 +503,18 @@ mod tests {
         });
 
         let mut schema = FhirSchema::new("Patient");
-        schema.constraints.push(
-            Constraint::new("pat-1", "error", "Name must exist", "name.exists()")
-        );
+        schema.constraints.push(Constraint::new(
+            "pat-1",
+            "error",
+            "Name must exist",
+            "name.exists()",
+        ));
 
-        let result = engine.validate_resource_async(&resource, &schema).await.unwrap();
-        
+        let result = engine
+            .validate_resource_async(&resource, &schema)
+            .await
+            .unwrap();
+
         // Should validate successfully using basic validation
         assert!(result.is_valid);
         assert_eq!(result.error_count, 0);

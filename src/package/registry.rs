@@ -223,11 +223,11 @@ impl PackageRegistry {
     pub async fn rebuild_type_registry(&self) -> Result<()> {
         let schemas = self.get_all_schemas().await;
         let new_registry = ResourceTypeRegistry::build_from_schemas(&schemas).await?;
-        
+
         // Replace the registry atomically using papaya HashMap
         let guard = self.type_registry.pin();
         guard.insert((), new_registry);
-        
+
         Ok(())
     }
 
@@ -547,7 +547,7 @@ impl SchemaIndex {
         let guard = self.by_package.pin();
         if let Some(schemas) = guard.remove(package_id) {
             for schema in schemas {
-                self.remove_schema_from_indexes(&schema).await;
+                self.remove_schema_from_indexes(schema).await;
             }
         }
     }
@@ -591,6 +591,12 @@ impl SchemaIndex {
                 }
             }
         }
+    }
+
+    /// Get first schema by resource type (for path resolution)
+    pub async fn get_schema_by_type(&self, resource_type: &str) -> Option<Arc<FhirSchema>> {
+        let guard = self.by_resource_type.pin();
+        guard.get(resource_type)?.first().cloned()
     }
 
     /// Remove schema from all secondary indexes

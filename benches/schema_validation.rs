@@ -53,7 +53,6 @@ fn bench_schema_serialization(c: &mut Criterion) {
     });
 }
 
-#[cfg(feature = "memory-storage")]
 fn bench_memory_storage(c: &mut Criterion) {
     use std::sync::Arc;
     use tokio::runtime::Runtime;
@@ -88,21 +87,12 @@ fn bench_memory_storage(c: &mut Criterion) {
     });
 }
 
-#[cfg(feature = "memory-storage")]
 criterion_group!(
     benches,
     bench_schema_creation,
     bench_schema_validation,
     bench_schema_serialization,
     bench_memory_storage
-);
-
-#[cfg(not(feature = "memory-storage"))]
-criterion_group!(
-    benches,
-    bench_schema_creation,
-    bench_schema_validation,
-    bench_schema_serialization
 );
 
 criterion_main!(benches);

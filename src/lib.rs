@@ -43,8 +43,8 @@ pub use converter::*;
 pub use error::Result; // Our Result type takes precedence
 pub use error::{ConversionError, FhirSchemaError, LoadError, ValidationError};
 pub use package::{
-    ConversionPipeline, FhirSchemaPackageManager, InstallOptions, ModelProvider, PackageId,
-    PackageInstallResult, PackageManagerConfig, PackageSpec, ProgressTracker,
+    ConversionPipeline, FhirSchemaPackageManager, InstallOptions, PackageId, PackageInstallResult,
+    PackageManagerConfig, PackageSpec, ProgressTracker,
 };
 pub use storage::*;
 pub use types::*;

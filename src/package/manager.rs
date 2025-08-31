@@ -5,9 +5,10 @@ use crate::package::{
     PackageInstallError, PackageInstallResult, PackageRegistry, PackageSpec, RegistryConfig,
 };
 use crate::storage::{EnhancedStorageManager, StorageConfig};
-use crate::types::FhirSchema;
-
-use async_trait::async_trait;
+use crate::types::{
+    BridgeCardinality, BridgeConstraintInfo, BridgeRegistryMetrics, BridgeValidationError,
+    BridgeValidationResult, ElementInfo, FhirSchema, PathResolver, PropertyInfo,
+};
 use chrono::Utc;
 use octofhir_canonical_manager::{CanonicalManager, FcmConfig};
 use std::collections::HashMap;
@@ -33,6 +34,9 @@ pub struct FhirSchemaPackageManager {
 
     /// Installation progress tracking
     progress_tracker: Arc<RwLock<HashMap<String, InstallProgress>>>,
+
+    /// Path resolver for element path resolution
+    path_resolver: Arc<PathResolver>,
 }
 
 /// Package manager configuration
@@ -70,28 +74,6 @@ pub enum InstallStatus {
     Failed,
 }
 
-/// Model provider trait for ecosystem integration
-#[async_trait]
-pub trait ModelProvider: Send + Sync {
-    /// Get schema by canonical URL (O(1) operation)
-    async fn get_schema(&self, canonical_url: &str) -> Option<Arc<FhirSchema>>;
-
-    /// Get schemas by resource type
-    async fn get_schemas_by_type(&self, resource_type: &str) -> Vec<Arc<FhirSchema>>;
-
-    /// Resolve profile for a base type
-    async fn resolve_profile(&self, base_type: &str, profile_url: &str) -> Option<Arc<FhirSchema>>;
-
-    /// Check if a resource type is known
-    async fn has_resource_type(&self, resource_type: &str) -> bool;
-
-    /// Get all known resource types
-    async fn get_resource_types(&self) -> Vec<String>;
-
-    /// Search schemas by query
-    async fn search_schemas(&self, query: &str) -> Vec<Arc<FhirSchema>>;
-}
-
 impl FhirSchemaPackageManager {
     /// Create a new package manager with the specified configurations
     pub async fn new(fcm_config: FcmConfig, config: PackageManagerConfig) -> Result<Self> {
@@ -126,6 +108,10 @@ impl FhirSchemaPackageManager {
 
         let progress_tracker = Arc::new(RwLock::new(HashMap::new()));
 
+        // Create path resolver using the registry's schema index
+        let schema_index = registry.read().await.get_schema_index().clone();
+        let path_resolver = Arc::new(PathResolver::new(schema_index));
+
         Ok(Self {
             canonical_manager,
             storage,
@@ -133,6 +119,7 @@ impl FhirSchemaPackageManager {
             converter,
             config,
             progress_tracker,
+            path_resolver,
         })
     }
 
@@ -668,40 +655,59 @@ impl FhirSchemaPackageManager {
             _ => ErrorCategory::Network,
         }
     }
-}
 
-// Implement ModelProvider trait for ecosystem integration
-#[async_trait]
-impl ModelProvider for FhirSchemaPackageManager {
-    async fn get_schema(&self, canonical_url: &str) -> Option<Arc<FhirSchema>> {
+    // ============================================================================
+    // BRIDGE SUPPORT METHODS
+    // These methods provide comprehensive support for external bridge libraries
+    // ============================================================================
+
+    // === SCHEMA ACCESS METHODS ===
+
+    /// Get schema by canonical URL - O(1) operation
+    pub async fn get_schema(&self, canonical_url: &str) -> Option<Arc<FhirSchema>> {
         let registry = self.registry.read().await;
         registry.get_schema(canonical_url).await
     }
 
-    async fn get_schemas_by_type(&self, resource_type: &str) -> Vec<Arc<FhirSchema>> {
+    /// Get all schemas for a resource type
+    pub async fn get_schemas_by_type(&self, resource_type: &str) -> Vec<Arc<FhirSchema>> {
         let registry = self.registry.read().await;
         registry.get_schemas_by_type(resource_type).await
     }
 
-    async fn resolve_profile(&self, base_type: &str, profile_url: &str) -> Option<Arc<FhirSchema>> {
-        // First try to get the profile directly
-        if let Some(profile_schema) = self.get_schema(profile_url).await {
-            return Some(profile_schema);
-        }
-
-        // If not found, search for profiles of the base type
-        let schemas = self.get_schemas_by_type(base_type).await;
-        schemas.into_iter().find(|schema| {
-            schema
-                .url
-                .as_ref()
-                .map(|url| url.as_str() == profile_url)
-                .unwrap_or(false)
-        })
+    /// Get schema by type name (first match)
+    pub async fn get_schema_by_type(&self, type_name: &str) -> Option<Arc<FhirSchema>> {
+        self.get_schemas_by_type(type_name).await.into_iter().next()
     }
 
-    async fn has_resource_type(&self, resource_type: &str) -> bool {
-        // O(1) lookup using type registry
+    /// Resolve profile for a base type
+    pub async fn resolve_profile(
+        &self,
+        base_type: &str,
+        profile_url: &str,
+    ) -> Option<Arc<FhirSchema>> {
+        // First try direct URL lookup
+        if let Some(schema) = self.get_schema(profile_url).await {
+            return Some(schema);
+        }
+
+        // Then search in base type schemas
+        let base_schemas = self.get_schemas_by_type(base_type).await;
+        base_schemas
+            .into_iter()
+            .find(|s| s.url.as_ref().map(|u| u.as_str()) == Some(profile_url))
+    }
+
+    /// Search schemas by query string
+    pub async fn search_schemas(&self, query: &str) -> Vec<Arc<FhirSchema>> {
+        let registry = self.registry.read().await;
+        registry.search_schemas(query).await
+    }
+
+    // === RESOURCE TYPE METHODS ===
+
+    /// Check if a resource type is known - O(1) operation
+    pub async fn has_resource_type(&self, resource_type: &str) -> bool {
         let registry = self.registry.read().await;
         let guard = registry.type_registry.pin();
         if let Some(type_registry) = guard.get(&()) {
@@ -711,8 +717,8 @@ impl ModelProvider for FhirSchemaPackageManager {
         }
     }
 
-    async fn get_resource_types(&self) -> Vec<String> {
-        // O(1) access instead of iterating through schemas
+    /// Get all known resource types - O(1) operation
+    pub async fn get_resource_types(&self) -> Vec<String> {
         let registry = self.registry.read().await;
         let guard = registry.type_registry.pin();
         if let Some(type_registry) = guard.get(&()) {
@@ -726,10 +732,379 @@ impl ModelProvider for FhirSchemaPackageManager {
         }
     }
 
-    async fn search_schemas(&self, query: &str) -> Vec<Arc<FhirSchema>> {
+    /// Check if type is primitive - O(1) operation
+    pub async fn is_primitive_type(&self, type_name: &str) -> bool {
         let registry = self.registry.read().await;
-        registry.search_schemas(query).await
+        let guard = registry.type_registry.pin();
+        if let Some(type_registry) = guard.get(&()) {
+            type_registry.is_primitive_type(type_name)
+        } else {
+            false
+        }
     }
+
+    /// Check if type is complex - O(1) operation
+    pub async fn is_complex_type(&self, type_name: &str) -> bool {
+        let registry = self.registry.read().await;
+        let guard = registry.type_registry.pin();
+        if let Some(type_registry) = guard.get(&()) {
+            type_registry.is_complex_type(type_name)
+        } else {
+            false
+        }
+    }
+
+    /// Get base type for inheritance
+    pub async fn get_base_type(&self, type_name: &str) -> Option<String> {
+        let registry = self.registry.read().await;
+        let guard = registry.type_registry.pin();
+        if let Some(type_registry) = guard.get(&()) {
+            type_registry.get_base_type(type_name)
+        } else {
+            None
+        }
+    }
+
+    /// Check if one type is subtype of another
+    pub async fn is_subtype_of(&self, child_type: &str, parent_type: &str) -> bool {
+        let registry = self.registry.read().await;
+        let guard = registry.type_registry.pin();
+        if let Some(type_registry) = guard.get(&()) {
+            type_registry.is_subtype_of(child_type, parent_type)
+        } else {
+            false
+        }
+    }
+
+    // === CHOICE TYPES METHODS ===
+
+    /// Get all possible choice type expansions for a base path
+    pub async fn get_choice_type_options(&self, base_path: &str) -> Vec<String> {
+        if !base_path.ends_with("[x]") {
+            return Vec::new();
+        }
+
+        // Try to find schemas that contain this choice type
+        let schemas = self.search_schemas(base_path).await;
+
+        let mut options = std::collections::HashSet::new();
+
+        for schema in schemas {
+            if let Some(element) = schema.elements.get(base_path) {
+                if let Some(element_types) = &element.element_type {
+                    for element_type in element_types {
+                        options.insert(element_type.code.clone());
+                    }
+                }
+            }
+        }
+
+        options.into_iter().collect()
+    }
+
+    /// Resolve choice type from base path and actual type
+    pub async fn resolve_choice_type(&self, base_path: &str, value_type: &str) -> Option<String> {
+        if base_path.ends_with("[x]") {
+            let base_without_choice = base_path.trim_end_matches("[x]");
+            let capitalized_type = capitalize_first_letter(value_type);
+            Some(format!("{base_without_choice}{capitalized_type}"))
+        } else {
+            None
+        }
+    }
+
+    /// Check if a path is a choice type expansion
+    pub async fn is_choice_type_expansion(&self, path: &str) -> bool {
+        // Check if this path could be a choice type expansion
+        for type_name in &[
+            "String",
+            "Integer",
+            "Boolean",
+            "DateTime",
+            "Code",
+            "Uri",
+            "Coding",
+            "CodeableConcept",
+            "Reference",
+            "Quantity",
+        ] {
+            if let Some(base_without_suffix) = path.strip_suffix(type_name) {
+                let potential_base = format!("{base_without_suffix}[x]");
+                if self
+                    .get_choice_type_options(&potential_base)
+                    .await
+                    .contains(&type_name.to_lowercase())
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Get the base path for a choice type expansion
+    pub async fn get_choice_type_base(&self, expanded_path: &str) -> Option<String> {
+        for type_name in &[
+            "String",
+            "Integer",
+            "Boolean",
+            "DateTime",
+            "Code",
+            "Uri",
+            "Coding",
+            "CodeableConcept",
+            "Reference",
+            "Quantity",
+        ] {
+            if let Some(base_without_suffix) = expanded_path.strip_suffix(type_name) {
+                let potential_base = format!("{base_without_suffix}[x]");
+                if self
+                    .get_choice_type_options(&potential_base)
+                    .await
+                    .contains(&type_name.to_lowercase())
+                {
+                    return Some(potential_base);
+                }
+            }
+        }
+        None
+    }
+
+    // === PATH RESOLUTION METHODS ===
+
+    /// Resolve element path within a type
+    pub async fn resolve_element_path(&self, base_type: &str, path: &str) -> Option<ElementInfo> {
+        self.path_resolver
+            .resolve_path(base_type, path)
+            .await
+            .map(|res| res.element_info)
+    }
+
+    /// Get element cardinality for a specific path
+    pub async fn get_element_cardinality(
+        &self,
+        type_name: &str,
+        path: &str,
+    ) -> Option<BridgeCardinality> {
+        let resolution = self.path_resolver.resolve_path(type_name, path).await?;
+        Some(BridgeCardinality {
+            min: resolution.cardinality.min,
+            max: resolution.cardinality.max,
+        })
+    }
+
+    /// Check if a path exists in a type
+    pub async fn has_element_path(&self, type_name: &str, path: &str) -> bool {
+        self.path_resolver
+            .resolve_path(type_name, path)
+            .await
+            .is_some()
+    }
+
+    /// Get all available paths for a type (for auto-completion)
+    pub async fn get_available_paths(&self, type_name: &str) -> Vec<String> {
+        self.path_resolver.get_available_paths(type_name).await
+    }
+
+    /// Get element type for a specific path
+    pub async fn get_element_type(&self, base_type: &str, path: &str) -> Option<String> {
+        self.path_resolver
+            .resolve_path(base_type, path)
+            .await
+            .map(|res| res.target_type)
+    }
+
+    // === TYPE REFLECTION METHODS ===
+
+    /// Get all properties/elements for a type
+    pub async fn get_type_properties(&self, type_name: &str) -> Vec<PropertyInfo> {
+        let Some(schema) = self.get_schema_by_type(type_name).await else {
+            return Vec::new();
+        };
+
+        schema
+            .elements
+            .iter()
+            .map(|(path, element)| PropertyInfo {
+                name: path.clone(),
+                element_type: element
+                    .element_type
+                    .as_ref()
+                    .and_then(|types| types.first())
+                    .map(|t| t.code.clone())
+                    .unwrap_or_default(),
+                cardinality: BridgeCardinality {
+                    min: element.min.unwrap_or(0),
+                    max: element
+                        .max
+                        .as_ref()
+                        .and_then(|m| if m == "*" { None } else { m.parse().ok() }),
+                },
+                is_collection: element
+                    .max
+                    .as_ref()
+                    .map(|m| m == "*" || m.parse::<u32>().unwrap_or(1) > 1)
+                    .unwrap_or(false),
+                is_required: element.min.unwrap_or(0) > 0,
+                is_choice_type: element
+                    .element_type
+                    .as_ref()
+                    .map(|types| types.len() > 1)
+                    .unwrap_or(false),
+                definition: element.definition.clone(),
+            })
+            .collect()
+    }
+
+    // === CONSTRAINT METHODS ===
+
+    /// Get all constraints for a type
+    pub async fn get_type_constraints(&self, type_name: &str) -> Vec<BridgeConstraintInfo> {
+        let Some(schema) = self.get_schema_by_type(type_name).await else {
+            return Vec::new();
+        };
+
+        let mut constraints = Vec::new();
+
+        // Schema-level constraints
+        for constraint in &schema.constraints {
+            constraints.push(BridgeConstraintInfo {
+                key: constraint.key.clone(),
+                severity: constraint.severity.clone(),
+                human_description: constraint.human.clone(),
+                fhirpath_expression: constraint.expression.clone(),
+                source: Some(schema.name.clone().unwrap_or_default()),
+                xpath: constraint.xpath.clone(),
+                requires_fhirpath: self.is_complex_fhirpath_expression(&constraint.expression),
+            });
+        }
+
+        // Element-level constraints
+        for element in schema.elements.values() {
+            for constraint in &element.constraints {
+                constraints.push(BridgeConstraintInfo {
+                    key: constraint.key.clone(),
+                    severity: constraint.severity.clone(),
+                    human_description: constraint.human.clone(),
+                    fhirpath_expression: constraint.expression.clone(),
+                    source: Some(schema.name.clone().unwrap_or_default()),
+                    xpath: constraint.xpath.clone(),
+                    requires_fhirpath: self.is_complex_fhirpath_expression(&constraint.expression),
+                });
+            }
+        }
+
+        constraints
+    }
+
+    /// Get constraints for a specific element path
+    pub async fn get_element_constraints(
+        &self,
+        type_name: &str,
+        path: &str,
+    ) -> Vec<BridgeConstraintInfo> {
+        let Some(schema) = self.get_schema_by_type(type_name).await else {
+            return Vec::new();
+        };
+
+        if let Some(element) = schema.elements.get(path) {
+            element
+                .constraints
+                .iter()
+                .map(|c| BridgeConstraintInfo {
+                    key: c.key.clone(),
+                    severity: c.severity.clone(),
+                    human_description: c.human.clone(),
+                    fhirpath_expression: c.expression.clone(),
+                    source: Some(format!("{type_name}.{path}")),
+                    xpath: c.xpath.clone(),
+                    requires_fhirpath: self.is_complex_fhirpath_expression(&c.expression),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Validate constraint expression syntax
+    pub async fn validate_constraint_expression(&self, expression: &str) -> BridgeValidationResult {
+        // Simple validation - could be enhanced with FHIRPath parser
+        if expression.is_empty() {
+            return BridgeValidationResult::invalid(vec![BridgeValidationError::new(
+                "Expression cannot be empty".to_string(),
+                "empty-expression".to_string(),
+            )]);
+        }
+
+        BridgeValidationResult::valid()
+    }
+
+    // === UTILITY METHODS ===
+
+    /// Get registry metrics and statistics
+    pub async fn get_registry_metrics(&self) -> BridgeRegistryMetrics {
+        let registry = self.registry.read().await;
+
+        // Get basic stats from registry
+        let stats = registry.get_stats();
+        let path_metrics = self.path_resolver.get_metrics().await;
+
+        BridgeRegistryMetrics {
+            total_schemas: stats.total_schemas,
+            resource_types: stats.total_schemas, // Approximate
+            profiles: 0,                         // Would need more sophisticated counting
+            extensions: 0,                       // Would need more sophisticated counting
+            memory_usage_bytes: (stats.memory_usage_mb * 1024.0 * 1024.0) as u64,
+            index_rebuild_time_ms: 0, // Would need tracking
+            cache_stats: crate::types::BridgeCacheStats {
+                schema_cache_hits: 0,   // Would need tracking
+                schema_cache_misses: 0, // Would need tracking
+                path_cache_hits: path_metrics.cache_hits,
+                path_cache_misses: path_metrics.cache_misses,
+                type_cache_hits: 0,   // Would need tracking
+                type_cache_misses: 0, // Would need tracking
+            },
+        }
+    }
+
+    /// Refresh/rebuild internal caches and indexes
+    pub async fn rebuild_indexes(&self) -> Result<()> {
+        // Rebuild type registry from current schemas
+        self.registry.write().await.rebuild_type_registry().await?;
+
+        // Rebuild path resolver common paths
+        let resource_types = self.get_resource_types().await;
+        self.path_resolver
+            .precompute_common_paths(&resource_types)
+            .await?;
+
+        Ok(())
+    }
+
+    // === PRIVATE HELPER METHODS ===
+
+    /// Check if a FHIRPath expression is complex and requires full evaluation
+    fn is_complex_fhirpath_expression(&self, expression: &str) -> bool {
+        // Simple heuristic to detect complex expressions
+        expression.contains("where(")
+            || expression.contains("select(")
+            || expression.contains("all(")
+            || expression.contains("any(")
+            || expression.contains("implies")
+            || expression.contains("and ")
+            || expression.contains(" or ")
+            || expression.contains("extension(")
+    }
+}
+
+// Helper function for choice type resolution
+fn capitalize_first_letter(s: &str) -> String {
+    if s.is_empty() {
+        return s.to_string();
+    }
+    let mut chars: Vec<char> = s.chars().collect();
+    chars[0] = chars[0].to_uppercase().next().unwrap_or(chars[0]);
+    chars.into_iter().collect()
 }
 
 impl Default for PackageManagerConfig {

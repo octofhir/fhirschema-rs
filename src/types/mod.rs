@@ -1,12 +1,22 @@
+mod bridge_support;
+mod choice_type_info;
+mod choice_type_resolver;
 mod constraint;
 mod element;
+mod path_navigation;
+mod path_resolver;
 mod resource_type_registry;
 mod schema;
 mod slicing;
 mod type_definitions;
 
+pub use bridge_support::*;
+pub use choice_type_info::*;
+pub use choice_type_resolver::*;
 pub use constraint::*;
 pub use element::*;
+pub use path_navigation::*;
+pub use path_resolver::*;
 pub use resource_type_registry::*;
 pub use schema::*;
 pub use slicing::*;

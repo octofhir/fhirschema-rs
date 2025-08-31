@@ -1,6 +1,6 @@
 [package]
 name = "octofhir-fhirschema"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 authors = ["OctoFHIR Team <funyloony@gmail.com>"]
 description = "A high-performance FHIR schema management and validation library"
@@ -58,7 +58,7 @@ sha2 = "0.10"
 octofhir-canonical-manager = { version = "0.1.6" }
 
 # FhirPathEngine trait for constraint evaluation (avoiding circular dependencies)
-octofhir-fhir-model = { path = "../fhir-model-rs", features = ["serde"] }
+octofhir-fhir-model = { version = "0.1.2", features = ["serde"] }
 
 lz4_flex = "0.11"
 bincode = "2"
@@ -78,7 +78,7 @@ tokio-test = "0.4"
 criterion = "0.7"
 tempfile = "3.8"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
-zip = "4.3.0"
+zip = "4.6.0"
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.9"
 

@@ -1,8 +1,8 @@
 use crate::error::Result;
 use crate::storage::SchemaStorage;
 use crate::types::FhirSchema;
-use papaya::HashMap as PapayaMap;
 use lru::LruCache;
+use papaya::HashMap as PapayaMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -90,7 +90,7 @@ impl Default for CacheConfig {
 pub struct HierarchicalCache {
     l1_hot: Arc<PapayaMap<Url, CacheEntry>>, // Frequently accessed
     l2_warm: Arc<RwLock<LruCache<Url, CacheEntry>>>, // Recently accessed
-    l3_storage: Arc<dyn SchemaStorage>,    // Persistent storage
+    l3_storage: Arc<dyn SchemaStorage>,      // Persistent storage
 
     l1_max_size: usize,
     l2_capacity: usize,
@@ -217,7 +217,7 @@ impl HierarchicalCache {
             let l1_guard = self.l1_hot.pin_owned();
             l1_guard.len() >= self.l1_max_size
         };
-        
+
         if should_evict {
             self.evict_from_l1().await;
         }
@@ -247,7 +247,7 @@ impl HierarchicalCache {
                 let l1_guard = self.l1_hot.pin_owned();
                 l1_guard.remove(&url).cloned()
             };
-            
+
             if let Some(entry) = entry {
                 // Demote to L2
                 self.l2_warm.write().await.put(url, entry);

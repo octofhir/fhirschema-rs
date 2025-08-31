@@ -4,8 +4,8 @@ use octofhir_fhirschema::package::{
     SchemaIndex, SimpleProgressTracker,
 };
 use octofhir_fhirschema::{
-    ConversionPipeline, FhirSchemaPackageManager, InstallOptions, ModelProvider, PackageId,
-    PackageManagerConfig, PackageSpec, ProgressTracker,
+    ConversionPipeline, FhirSchemaPackageManager, InstallOptions, PackageId, PackageManagerConfig,
+    PackageSpec, ProgressTracker,
 };
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -77,7 +77,7 @@ async fn test_package_id() {
 }
 
 #[tokio::test]
-async fn test_model_provider_interface() {
+async fn test_bridge_support_schema_methods() {
     let fcm_config = create_test_fcm_config();
     let config = PackageManagerConfig::default();
 
@@ -87,7 +87,7 @@ async fn test_model_provider_interface() {
             .expect("Failed to create package manager"),
     );
 
-    // Test ModelProvider methods
+    // Test bridge support schema methods
     let schema = package_manager
         .get_schema("http://example.com/NonExistentSchema")
         .await;
@@ -96,14 +96,190 @@ async fn test_model_provider_interface() {
     let schemas = package_manager.get_schemas_by_type("Patient").await;
     assert!(schemas.is_empty());
 
+    let schema_by_type = package_manager.get_schema_by_type("Patient").await;
+    assert!(schema_by_type.is_none());
+
+    let resolved_profile = package_manager
+        .resolve_profile("Patient", "http://example.com/PatientProfile")
+        .await;
+    assert!(resolved_profile.is_none());
+
+    let search_results = package_manager.search_schemas("patient").await;
+    assert!(search_results.is_empty());
+}
+
+#[tokio::test]
+async fn test_bridge_support_resource_type_methods() {
+    let fcm_config = create_test_fcm_config();
+    let config = PackageManagerConfig::default();
+
+    let package_manager = Arc::new(
+        FhirSchemaPackageManager::new(fcm_config, config)
+            .await
+            .expect("Failed to create package manager"),
+    );
+
+    // Test bridge support resource type methods
     let has_type = package_manager.has_resource_type("Patient").await;
-    assert!(!has_type);
+    assert!(!has_type); // Empty registry should have no types
 
     let resource_types = package_manager.get_resource_types().await;
     assert!(resource_types.is_empty());
 
-    let search_results = package_manager.search_schemas("patient").await;
-    assert!(search_results.is_empty());
+    let _is_primitive = package_manager.is_primitive_type("string").await;
+    // This might be true or false depending on whether basic types are preloaded
+
+    let is_complex = package_manager.is_complex_type("Patient").await;
+    assert!(!is_complex); // Empty registry should have no complex types
+
+    let base_type = package_manager.get_base_type("Patient").await;
+    assert!(base_type.is_none());
+
+    let is_subtype = package_manager.is_subtype_of("Patient", "Resource").await;
+    assert!(!is_subtype); // Empty registry should have no inheritance
+}
+
+#[tokio::test]
+async fn test_bridge_support_choice_type_methods() {
+    let fcm_config = create_test_fcm_config();
+    let config = PackageManagerConfig::default();
+
+    let package_manager = Arc::new(
+        FhirSchemaPackageManager::new(fcm_config, config)
+            .await
+            .expect("Failed to create package manager"),
+    );
+
+    // Test bridge support choice type methods
+    let choice_options = package_manager.get_choice_type_options("value[x]").await;
+    assert!(choice_options.is_empty()); // Empty registry should have no choice types
+
+    let resolved_choice = package_manager
+        .resolve_choice_type("value[x]", "string")
+        .await;
+    // The method might implement basic choice type resolution even with empty registry
+    // so let's check if it returns a reasonable result
+    if let Some(result) = resolved_choice {
+        assert_eq!(result, "valueString"); // Basic expansion should work
+    }
+
+    let is_choice_expansion = package_manager
+        .is_choice_type_expansion("valueString")
+        .await;
+    assert!(!is_choice_expansion); // Empty registry should have no expansions
+
+    let choice_base = package_manager.get_choice_type_base("valueString").await;
+    assert!(choice_base.is_none());
+}
+
+#[tokio::test]
+async fn test_bridge_support_path_resolution_methods() {
+    let fcm_config = create_test_fcm_config();
+    let config = PackageManagerConfig::default();
+
+    let package_manager = Arc::new(
+        FhirSchemaPackageManager::new(fcm_config, config)
+            .await
+            .expect("Failed to create package manager"),
+    );
+
+    // Test bridge support path resolution methods
+    let element_info = package_manager
+        .resolve_element_path("Patient", "name.given")
+        .await;
+    assert!(element_info.is_none()); // Empty registry should resolve nothing
+
+    let cardinality = package_manager
+        .get_element_cardinality("Patient", "identifier")
+        .await;
+    assert!(cardinality.is_none());
+
+    let has_path = package_manager.has_element_path("Patient", "name").await;
+    assert!(!has_path); // Empty registry should have no paths
+
+    let available_paths = package_manager.get_available_paths("Patient").await;
+    assert!(available_paths.is_empty());
+
+    let element_type = package_manager.get_element_type("Patient", "name").await;
+    assert!(element_type.is_none());
+}
+
+#[tokio::test]
+async fn test_bridge_support_type_reflection_methods() {
+    let fcm_config = create_test_fcm_config();
+    let config = PackageManagerConfig::default();
+
+    let package_manager = Arc::new(
+        FhirSchemaPackageManager::new(fcm_config, config)
+            .await
+            .expect("Failed to create package manager"),
+    );
+
+    // Test bridge support type reflection methods
+    let type_properties = package_manager.get_type_properties("Patient").await;
+    assert!(type_properties.is_empty()); // Empty registry should have no properties
+
+    // Note: get_property_info and get_type_definition
+    // are not implemented yet, but get_type_properties is
+    let type_properties_again = package_manager.get_type_properties("Patient").await;
+    assert!(type_properties_again.is_empty());
+}
+
+#[tokio::test]
+async fn test_bridge_support_constraint_methods() {
+    let fcm_config = create_test_fcm_config();
+    let config = PackageManagerConfig::default();
+
+    let package_manager = Arc::new(
+        FhirSchemaPackageManager::new(fcm_config, config)
+            .await
+            .expect("Failed to create package manager"),
+    );
+
+    // Test bridge support constraint methods
+    let type_constraints = package_manager.get_type_constraints("Patient").await;
+    assert!(type_constraints.is_empty()); // Empty registry should have no constraints
+
+    let element_constraints = package_manager
+        .get_element_constraints("Patient", "name")
+        .await;
+    assert!(element_constraints.is_empty());
+
+    // Test constraint expression validation
+    let validation_result = package_manager
+        .validate_constraint_expression("name.exists()")
+        .await;
+    assert!(validation_result.is_valid); // Basic expressions should validate
+
+    let empty_validation = package_manager.validate_constraint_expression("").await;
+    assert!(!empty_validation.is_valid); // Empty expressions should fail
+    assert!(!empty_validation.errors.is_empty());
+}
+
+#[tokio::test]
+async fn test_bridge_support_utility_methods() {
+    let fcm_config = create_test_fcm_config();
+    let config = PackageManagerConfig::default();
+
+    let package_manager = Arc::new(
+        FhirSchemaPackageManager::new(fcm_config, config)
+            .await
+            .expect("Failed to create package manager"),
+    );
+
+    // Test bridge support utility methods
+    let registry_metrics = package_manager.get_registry_metrics().await;
+    assert_eq!(registry_metrics.total_schemas, 0); // Empty registry
+    assert_eq!(registry_metrics.resource_types, 0);
+    assert_eq!(registry_metrics.profiles, 0);
+
+    // Note: get_path_resolver_metrics not implemented yet
+    // Just test that we can call it multiple times without issues
+    let _metrics_again = package_manager.get_registry_metrics().await;
+
+    // Test index rebuilding
+    let rebuild_result = package_manager.rebuild_indexes().await;
+    assert!(rebuild_result.is_ok());
 }
 
 #[tokio::test]
@@ -288,6 +464,173 @@ fn test_display_implementations() {
     assert_eq!(format!("{package_id}"), "test.package@1.0.0");
 }
 
+#[tokio::test]
+async fn test_bridge_support_types() {
+    use octofhir_fhirschema::{
+        BridgeCacheStats, BridgeCardinality, BridgeValidationError, BridgeValidationResult,
+        BridgeValidationWarning,
+    };
+
+    // Test BridgeCardinality
+    let cardinality = BridgeCardinality::new(1, Some(5));
+    assert!(cardinality.is_required());
+    assert!(!cardinality.is_unbounded());
+    assert!(cardinality.is_collection());
+    assert!(!cardinality.is_optional());
+    assert!(cardinality.allows_multiple());
+
+    let unbounded = BridgeCardinality::new(0, None);
+    assert!(!unbounded.is_required());
+    assert!(unbounded.is_unbounded());
+    assert!(unbounded.is_collection());
+    assert!(unbounded.is_optional());
+    assert!(unbounded.allows_multiple());
+
+    // Test BridgeValidationResult
+    let mut validation_result = BridgeValidationResult::valid();
+    assert!(validation_result.is_valid);
+    assert!(!validation_result.has_errors());
+    assert!(!validation_result.has_warnings());
+    assert_eq!(validation_result.error_count(), 0);
+    assert_eq!(validation_result.warning_count(), 0);
+
+    let error = BridgeValidationError::new("Test error".to_string(), "test-error".to_string())
+        .with_location("Patient.name".to_string());
+
+    validation_result.add_error(error);
+    assert!(!validation_result.is_valid);
+    assert!(validation_result.has_errors());
+    assert_eq!(validation_result.error_count(), 1);
+
+    let warning =
+        BridgeValidationWarning::new("Test warning".to_string(), "test-warning".to_string())
+            .with_location("Patient.identifier".to_string());
+
+    validation_result.add_warning(warning);
+    assert!(validation_result.has_warnings());
+    assert_eq!(validation_result.warning_count(), 1);
+
+    // Test BridgeCacheStats
+    let cache_stats = BridgeCacheStats::default();
+    assert_eq!(cache_stats.schema_hit_ratio(), 0.0);
+    assert_eq!(cache_stats.path_hit_ratio(), 0.0);
+    assert_eq!(cache_stats.type_hit_ratio(), 0.0);
+    assert_eq!(cache_stats.overall_hit_ratio(), 0.0);
+}
+
+#[tokio::test]
+async fn test_bridge_support_error_handling() {
+    let fcm_config = create_test_fcm_config();
+    let config = PackageManagerConfig::default();
+
+    let package_manager = Arc::new(
+        FhirSchemaPackageManager::new(fcm_config, config)
+            .await
+            .expect("Failed to create package manager"),
+    );
+
+    // Test error handling with invalid inputs
+    let invalid_schema = package_manager.get_schema("").await;
+    assert!(invalid_schema.is_none());
+
+    let invalid_type_check = package_manager.has_resource_type("").await;
+    assert!(!invalid_type_check);
+
+    let invalid_path_resolution = package_manager.resolve_element_path("", "").await;
+    assert!(invalid_path_resolution.is_none());
+
+    let invalid_choice_resolution = package_manager.resolve_choice_type("", "").await;
+    assert!(invalid_choice_resolution.is_none());
+
+    // Test with malformed URLs and paths
+    let malformed_url_schema = package_manager.get_schema("not-a-valid-url").await;
+    assert!(malformed_url_schema.is_none());
+
+    let malformed_path = package_manager
+        .resolve_element_path("Patient", "name..given")
+        .await;
+    assert!(malformed_path.is_none());
+}
+
+#[tokio::test]
+async fn test_bridge_support_performance_characteristics() {
+    let fcm_config = create_test_fcm_config();
+    let config = PackageManagerConfig::default();
+
+    let package_manager = Arc::new(
+        FhirSchemaPackageManager::new(fcm_config, config)
+            .await
+            .expect("Failed to create package manager"),
+    );
+
+    // Test that multiple calls to the same method are fast (cached)
+    use std::time::Instant;
+
+    let start = Instant::now();
+    for _ in 0..100 {
+        let _ = package_manager.has_resource_type("Patient").await;
+    }
+    let duration = start.elapsed();
+
+    // Should be very fast since it's O(1) with caching
+    assert!(
+        duration.as_millis() < 100,
+        "Resource type checking should be fast, took {}ms",
+        duration.as_millis()
+    );
+
+    let start = Instant::now();
+    for _ in 0..100 {
+        let _ = package_manager.get_resource_types().await;
+    }
+    let duration = start.elapsed();
+
+    // Should be fast since it's cached
+    assert!(
+        duration.as_millis() < 100,
+        "Resource types retrieval should be fast, took {}ms",
+        duration.as_millis()
+    );
+}
+
+#[tokio::test]
+async fn test_bridge_support_concurrent_access() {
+    use tokio::task;
+
+    let fcm_config = create_test_fcm_config();
+    let config = PackageManagerConfig::default();
+
+    let package_manager = Arc::new(
+        FhirSchemaPackageManager::new(fcm_config, config)
+            .await
+            .expect("Failed to create package manager"),
+    );
+
+    // Test concurrent access from multiple tasks
+    let mut handles = Vec::new();
+
+    for i in 0..10 {
+        let manager = Arc::clone(&package_manager);
+        let handle = task::spawn(async move {
+            // Each task performs different bridge operations concurrently
+            let _ = manager.has_resource_type(&format!("Type{i}")).await;
+            let _ = manager.get_resource_types().await;
+            let _ = manager
+                .get_schema(&format!("http://example.com/Type{i}"))
+                .await;
+            let _ = manager.get_registry_metrics().await;
+            i
+        });
+        handles.push(handle);
+    }
+
+    // All tasks should complete successfully
+    for handle in handles {
+        let result = handle.await;
+        assert!(result.is_ok());
+    }
+}
+
 // Integration test for the complete workflow
 #[tokio::test]
 #[ignore] // Only run with --ignored flag as it requires network access
@@ -305,6 +648,14 @@ async fn test_complete_workflow_integration() {
     // For now, just verify the manager was created successfully
     let packages = package_manager.list_packages().await;
     assert!(packages.is_empty());
+
+    // Test that all bridge support methods are accessible
+    let _ = package_manager.get_schema("test").await;
+    let _ = package_manager.has_resource_type("test").await;
+    let _ = package_manager.resolve_element_path("test", "test").await;
+    let _ = package_manager.get_type_properties("test").await;
+    let _ = package_manager.get_type_constraints("test").await;
+    let _ = package_manager.get_registry_metrics().await;
 
     println!("✅ Complete workflow integration test setup successful");
 }

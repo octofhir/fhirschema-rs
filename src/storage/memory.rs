@@ -1,5 +1,5 @@
-use papaya::HashMap as PapayaMap;
 use lru::LruCache;
+use papaya::HashMap as PapayaMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::RwLock;
@@ -51,7 +51,7 @@ impl SchemaStorage for MemoryStorage {
             let guard = self.schemas.pin_owned();
             guard.get(&url).is_some()
         };
-        
+
         self.update_stats(|s| {
             s.storage_operations += 1;
             if !exists {
@@ -72,7 +72,7 @@ impl SchemaStorage for MemoryStorage {
             let guard = self.schemas.pin_owned();
             guard.remove(url).is_some()
         };
-        
+
         if removed {
             self.update_stats(|s| s.schemas_count = s.schemas_count.saturating_sub(1))
                 .await;

@@ -149,7 +149,6 @@ fn bench_memory_preallocation(c: &mut Criterion) {
 }
 
 /// Benchmark hierarchical cache with our optimizations
-#[cfg(feature = "memory-storage")]
 fn bench_hierarchical_cache_optimizations(c: &mut Criterion) {
     use octofhir_fhirschema::storage::{CacheConfig, HierarchicalCache, MemoryStorage};
 
@@ -360,22 +359,11 @@ fn create_large_schema() -> FhirSchema {
 }
 
 // Group all benchmarks
-#[cfg(feature = "memory-storage")]
 criterion_group!(
     performance_benches,
     bench_arc_vs_direct_cloning,
     bench_memory_preallocation,
     bench_hierarchical_cache_optimizations,
-    bench_streaming_vs_batch,
-    bench_package_manager_performance,
-    bench_schema_registry_access
-);
-
-#[cfg(not(feature = "memory-storage"))]
-criterion_group!(
-    performance_benches,
-    bench_arc_vs_direct_cloning,
-    bench_memory_preallocation,
     bench_streaming_vs_batch,
     bench_package_manager_performance,
     bench_schema_registry_access

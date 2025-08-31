@@ -5,7 +5,7 @@
 //! the FHIRSchema definitions.
 
 use crate::error::Result;
-use crate::package::ModelProvider;
+use crate::package::FhirSchemaPackageManager;
 use crate::types::FhirSchema;
 use std::sync::Arc;
 
@@ -39,13 +39,13 @@ pub struct FieldValidationContext {
 
 /// Field validator that uses FHIRSchema to validate field existence
 pub struct FhirSchemaFieldValidator {
-    model_provider: Arc<dyn ModelProvider>,
+    package_manager: Arc<FhirSchemaPackageManager>,
 }
 
 impl FhirSchemaFieldValidator {
     /// Create a new field validator
-    pub fn new(model_provider: Arc<dyn ModelProvider>) -> Self {
-        Self { model_provider }
+    pub fn new(package_manager: Arc<FhirSchemaPackageManager>) -> Self {
+        Self { package_manager }
     }
 
     /// Validate that a field exists in the given resource type
@@ -124,12 +124,12 @@ impl FhirSchemaFieldValidator {
 
     /// Check if a resource type is valid
     pub async fn validate_resource_type(&self, resource_type: &str) -> Result<bool> {
-        Ok(self.model_provider.has_resource_type(resource_type).await)
+        Ok(self.package_manager.has_resource_type(resource_type).await)
     }
 
     /// Get all available resource types
     pub async fn get_available_resource_types(&self) -> Result<Vec<String>> {
-        Ok(self.model_provider.get_resource_types().await)
+        Ok(self.package_manager.get_resource_types().await)
     }
 
     /// Get all fields available for a resource type
@@ -137,9 +137,9 @@ impl FhirSchemaFieldValidator {
         let schema = self.get_schema_for_resource(resource_type).await?;
         let mut fields = Vec::new();
 
-        for (field_path, _element) in &schema.elements {
+        for field_path in schema.elements.keys() {
             // Extract just the field name from the full path (e.g., "Patient.name" -> "name")
-            if let Some(field_name) = field_path.split('.').last() {
+            if let Some(field_name) = field_path.split('.').next_back() {
                 if !fields.contains(&field_name.to_string()) {
                     fields.push(field_name.to_string());
                 }
@@ -160,13 +160,16 @@ impl FhirSchemaFieldValidator {
         ];
 
         for url in possible_urls {
-            if let Some(schema) = self.model_provider.get_schema(&url).await {
+            if let Some(schema) = self.package_manager.get_schema(&url).await {
                 return Ok(schema);
             }
         }
 
         // Try by resource type
-        let schemas = self.model_provider.get_schemas_by_type(resource_type).await;
+        let schemas = self
+            .package_manager
+            .get_schemas_by_type(resource_type)
+            .await;
         if let Some(schema) = schemas.first() {
             return Ok(schema.clone());
         }
@@ -220,14 +223,14 @@ impl FhirSchemaFieldValidator {
     /// Check if a field exists in the schema
     async fn check_field_exists(&self, schema: &FhirSchema, field_name: &str) -> bool {
         // If this is a placeholder schema (empty elements), be permissive
-        if schema.elements.is_empty() && schema.extensions.get("placeholder_marker").is_some() {
+        if schema.elements.is_empty() && schema.extensions.contains_key("placeholder_marker") {
             // For placeholder schemas, accept common FHIR field patterns
             return self.is_likely_valid_fhir_field(field_name);
         }
 
         // Check direct field references
-        for (element_path, _element) in &schema.elements {
-            if let Some(path_field_name) = element_path.split('.').last() {
+        for element_path in schema.elements.keys() {
+            if let Some(path_field_name) = element_path.split('.').next_back() {
                 if path_field_name == field_name {
                     return true;
                 }
@@ -260,7 +263,7 @@ impl FhirSchemaFieldValidator {
     /// Get detailed information about a field
     async fn get_field_info(&self, schema: &FhirSchema, field_name: &str) -> Option<FieldInfo> {
         for (element_path, element) in &schema.elements {
-            if let Some(path_field_name) = element_path.split('.').last() {
+            if let Some(path_field_name) = element_path.split('.').next_back() {
                 if path_field_name == field_name {
                     let element_types = element
                         .element_type
@@ -298,8 +301,8 @@ impl FhirSchemaFieldValidator {
         let mut scored_fields = Vec::new();
         let target_lower = target_field.to_lowercase();
 
-        for (element_path, _element) in &schema.elements {
-            if let Some(field_name) = element_path.split('.').last() {
+        for element_path in schema.elements.keys() {
+            if let Some(field_name) = element_path.split('.').next_back() {
                 let field_lower = field_name.to_lowercase();
                 let mut score = 0i32;
 

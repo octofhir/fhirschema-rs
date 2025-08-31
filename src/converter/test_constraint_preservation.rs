@@ -52,25 +52,25 @@ mod tests {
                 "pat-5",
                 "error",
                 "Extension validation",
-                Some("extension.where(url = 'http://example.com/patient-type').value.as(CodeableConcept).coding.code.exists()"), // Deep navigation
+                Some(
+                    "extension.where(url = 'http://example.com/patient-type').value.as(CodeableConcept).coding.code.exists()",
+                ), // Deep navigation
                 None,
             ),
         ];
 
         // Process constraints
         let result = processor.process_constraints(&test_elements, &mut context);
-        
+
         assert!(result.is_ok(), "Constraint processing should succeed");
         let constraints = result.unwrap();
-        
+
         // Verify all constraints were processed
         assert_eq!(constraints.len(), 5, "Should process all 5 constraints");
 
         // Verify each constraint preserved the correct FHIRPath expression
-        let constraint_by_key: std::collections::HashMap<String, _> = constraints
-            .iter()
-            .map(|c| (c.key.clone(), c))
-            .collect();
+        let constraint_by_key: std::collections::HashMap<String, _> =
+            constraints.iter().map(|c| (c.key.clone(), c)).collect();
 
         // Test 1: Simple exists check
         let pat1 = constraint_by_key.get("pat-1").expect("pat-1 should exist");
@@ -107,11 +107,14 @@ mod tests {
 
         // Verify context collected appropriate warnings/info
         let stats = context.get_stats();
-        let warnings = &stats.warnings;
+        let _warnings = &stats.warnings;
         let errors = &stats.errors;
-        
+
         // Should have no errors for valid constraints
-        assert!(errors.is_empty(), "Should have no errors for valid constraints");
+        assert!(
+            errors.is_empty(),
+            "Should have no errors for valid constraints"
+        );
 
         println!("✅ All FHIRPath expressions correctly preserved:");
         for constraint in &constraints {
@@ -130,30 +133,35 @@ mod tests {
             "pat-xpath",
             "error",
             "Birth date validation",
-            None, // No FHIRPath expression
+            None,                               // No FHIRPath expression
             Some("@value castable as xs:date"), // Only XPath
         )];
 
         let result = processor.process_constraints(&test_elements, &mut context);
-        
+
         assert!(result.is_ok(), "Should handle XPath fallback gracefully");
         let constraints = result.unwrap();
-        
+
         assert_eq!(constraints.len(), 1);
         let constraint = &constraints[0];
-        
+
         // Should use XPath as expression when FHIRPath is not available
         assert_eq!(constraint.expression, "@value castable as xs:date");
         assert_eq!(constraint.key, "pat-xpath");
-        
+
         // Should have a warning about using XPath instead of FHIRPath
         let warnings = &context.get_stats().warnings;
         assert!(
-            warnings.iter().any(|msg| msg.contains("XPath instead of FHIRPath")),
+            warnings
+                .iter()
+                .any(|msg| msg.contains("XPath instead of FHIRPath")),
             "Should warn about XPath fallback"
         );
 
-        println!("✅ XPath fallback working correctly: {}", constraint.expression);
+        println!(
+            "✅ XPath fallback working correctly: {}",
+            constraint.expression
+        );
     }
 
     #[test]
@@ -172,13 +180,18 @@ mod tests {
         )];
 
         let result = processor.process_constraints(&test_elements, &mut context);
-        
+
         // Should fail because there's no expression at all
-        assert!(result.is_err(), "Should error when no expression is provided");
-        
+        assert!(
+            result.is_err(),
+            "Should error when no expression is provided"
+        );
+
         let errors = &context.get_stats().errors;
         assert!(
-            errors.iter().any(|msg| msg.contains("neither expression nor xpath")),
+            errors
+                .iter()
+                .any(|msg| msg.contains("neither expression nor xpath")),
             "Should report missing expression error"
         );
 
@@ -235,31 +248,37 @@ mod tests {
         ];
 
         let result = processor.process_constraints(&test_elements, &mut context);
-        
-        assert!(result.is_ok(), "Should process complex patterns successfully");
+
+        assert!(
+            result.is_ok(),
+            "Should process complex patterns successfully"
+        );
         let constraints = result.unwrap();
         assert_eq!(constraints.len(), 5);
 
         // Check that appropriate info/warning messages were generated
         let warnings = &context.get_stats().warnings;
 
-        
         // Should warn about resolve() function
         assert!(
-            warnings.iter().any(|msg| msg.contains("resolve() function")),
+            warnings
+                .iter()
+                .any(|msg| msg.contains("resolve() function")),
             "Should warn about resolve() usage"
         );
 
         // Should warn about conformsTo() function
         assert!(
-            warnings.iter().any(|msg| msg.contains("conformsTo() function")),
+            warnings
+                .iter()
+                .any(|msg| msg.contains("conformsTo() function")),
             "Should warn about conformsTo() usage"
         );
 
         println!("✅ Complex FHIRPath patterns correctly detected:");
         for msg in warnings {
             if msg.contains("FHIRPath expression") {
-                println!("  ⚠️ {}", msg);
+                println!("  ⚠️ {msg}");
             }
         }
     }
@@ -282,7 +301,7 @@ mod tests {
             create_element_with_constraint(
                 "Patient.contact",
                 "pat-unmatched-2",
-                "error", 
+                "error",
                 "Unmatched closing paren",
                 Some("contact.all(name.exists()))"), // Extra closing paren
                 None,
@@ -298,15 +317,20 @@ mod tests {
         ];
 
         let result = processor.process_constraints(&test_elements, &mut context);
-        
+
         // Should still succeed (warnings, not errors)
-        assert!(result.is_ok(), "Should process with paren validation warnings");
+        assert!(
+            result.is_ok(),
+            "Should process with paren validation warnings"
+        );
 
         let errors = &context.get_stats().errors;
-        
+
         // Should detect unmatched parentheses
         assert!(
-            errors.iter().any(|msg| msg.contains("Unmatched parentheses")),
+            errors
+                .iter()
+                .any(|msg| msg.contains("Unmatched parentheses")),
             "Should detect unmatched parentheses"
         );
 
@@ -315,11 +339,15 @@ mod tests {
             .iter()
             .filter(|msg| msg.contains("Unmatched parentheses"))
             .collect();
-        assert_eq!(unmatched_errors.len(), 2, "Should detect both unmatched parentheses cases");
+        assert_eq!(
+            unmatched_errors.len(),
+            2,
+            "Should detect both unmatched parentheses cases"
+        );
 
         println!("✅ Parentheses validation working correctly:");
         for error in &unmatched_errors {
-            println!("  ❌ {}", error);
+            println!("  ❌ {error}");
         }
     }
 

@@ -1,8 +1,7 @@
 // New package management CLI functions using FhirSchemaPackageManager
 
 use crate::{
-    FhirSchemaPackageManager, InstallOptions, ModelProvider, PackageId, PackageManagerConfig,
-    PackageSpec,
+    FhirSchemaPackageManager, InstallOptions, PackageId, PackageManagerConfig, PackageSpec,
 };
 use octofhir_canonical_manager::{FcmConfig, RegistryConfig, StorageConfig};
 use std::sync::Arc;

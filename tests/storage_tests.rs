@@ -1,6 +1,5 @@
 mod common;
 
-#[cfg(feature = "memory-storage")]
 mod memory_storage_tests {
     use super::common::*;
     use octofhir_fhirschema::*;
