@@ -1,9 +1,9 @@
 [package]
 name = "octofhir-fhirschema"
-version = "0.2.6"
-edition = "2024"
+version = "0.3.0-alpha"
+edition = "2021"
 authors = ["OctoFHIR Team <funyloony@gmail.com>"]
-description = "A high-performance FHIR schema management and validation library"
+description = "A high-performance async-first FHIR schema management and validation library"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/octofhir/fhirschema-rs"
@@ -11,61 +11,73 @@ keywords = ["fhir", "healthcare", "schema", "validation", "interoperability"]
 categories = ["api-bindings", "data-structures", "parser-implementations"]
 
 [features]
-default = ["tokio", "bincode"]
-cli = ["clap", "tokio"]
+default = ["memory-storage", "lru-cache", "embedded-providers", "tracing"]
+memory-storage = []
 disk-storage = ["tokio/fs"]
-server = ["axum", "tokio", "tracing"]
-bincode = []
-all = ["cli", "disk-storage", "server", "bincode"]
+lru-cache = ["lru"]
+compression = ["lz4_flex", "zstd"]
+full-validation = []
+performance-metrics = ["metrics"]
+embedded-providers = ["bincode"]
+dynamic-caching = ["tokio/fs", "bincode"]
+precompiled-schemas = ["embedded-providers"]
+tracing = []
 
 [dependencies]
 # Core serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# Async utilities for concurrent streams
-futures = "0.3"
-
-# Error handling
-thiserror = "2"
-async-trait = "0.1"
-
-# Memory storage (always available)
-papaya = { version = "0.2.3" }
-lru = { version = "0.16" }
-
-# CLI dependencies
-clap = { version = "4", features = ["derive"], optional = true }
-
-# Async runtime
+# Async runtime (always required for async-first design)
 tokio = { version = "1.0", features = [
     "macros",
     "rt-multi-thread",
     "sync",
-], optional = true }
+    "time",
+] }
 
-# Server dependencies
-axum = { version = "0.8", optional = true }
-tracing = { version = "0.1", optional = true }
+# Async utilities for concurrent streams
+futures = "0.3"
+async-trait = "0.1"
+
+# Error handling
+thiserror = "2"
+
+# Memory storage and caching
+papaya = { version = "0.2.3" }
+lru = { version = "0.16", optional = true }
+
+# Optional compression support
+lz4_flex = { version = "0.11", optional = true }
+zstd = { version = "0.13", optional = true }
+
+# Optional performance metrics and logging
+metrics = { version = "0.24", optional = true }
+tracing = "0.1"
 
 # Validation
 regex = "1.10"
 url = { version = "2.4", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
+uuid = { version = "1", features = ["v4", "serde"] }
 
-# OctoFHIR ecosystem - Official canonical manager (using local version with fix)
-octofhir-canonical-manager = { version = "0.1.6" }
+# OctoFHIR ecosystem integration
+octofhir-canonical-manager = { version = "0.1.7" }
+octofhir-fhir-model = { path = "../fhir-model-rs", features = ["serde"] }
 
-# FhirPathEngine trait for constraint evaluation (avoiding circular dependencies)
-octofhir-fhir-model = { version = "0.1.2", features = ["serde"] }
-
-lz4_flex = "0.11"
-bincode = "2"
-
-rayon = "1.11"
-crossbeam-channel = "0.5"
+# Concurrency and performance
 num_cpus = "1.16"
+
+# Serialization for efficient storage (optional)
+bincode = { version = "2", optional = true }
+
+# Directory creation for caching
+dirs = "6.0"
+
+# CLI support for schema builder
+clap = { version = "4.0", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tokio = { version = "1.0", features = [
@@ -78,23 +90,28 @@ tokio-test = "0.4"
 criterion = "0.7"
 tempfile = "3.8"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
-zip = "4.6.0"
+zip = "5"
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.9"
-
-[[bench]]
-name = "schema_validation"
-harness = false
-
-[[bench]]
-name = "performance_optimizations"
-harness = false
 
 [lib]
 name = "octofhir_fhirschema"
 path = "src/lib.rs"
 
 [[bin]]
-name = "octofhir-fhirschema"
-path = "src/bin/cli.rs"
-required-features = ["cli"]
+name = "schema-builder"
+path = "src/bin/schema_builder.rs"
+
+# Include precompiled schema binaries in the library package
+[package.metadata]
+docs.rs.features = ["embedded-providers", "precompiled-schemas"]
+
+# Ensure precompiled schemas are included in the package
+include = [
+    "src/**/*",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE*",
+    "precompiled_schemas/*.bin",
+    "build.rs"
+]

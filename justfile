@@ -1,9 +1,9 @@
 # Build and test commands for octofhir-fhirschema
 #
-# Key FHIR download commands:
-#   just download-r4-core                              # Download all HL7 FHIR R4 core schemas
-#   just download-r4-core-filtered "Patient,Observation"  # Download specific resource types
-#   just download-package <pkg> <version> <output>     # Download any FHIR package
+# Core development commands:
+#   just check                 # Check formatting and linting
+#   just test                  # Run all tests
+#   just ci                    # Run CI checks (format, lint, test, docs, audit)
 
 # Default task - run tests and check
 default: test check
@@ -45,7 +45,7 @@ check-tests:
 
 # Check with strict clippy (deny warnings)
 check-strict:
-    cargo clippy --all-targets -- -D warnings
+    cargo clippy --all-features --all-targets -- -D warnings
 
 # Check formatting without fixing
 check-format:
@@ -61,7 +61,7 @@ format-check:
 
 # Run clippy lints
 clippy:
-    cargo clippy --all-features -- -D warnings
+    cargo clippy --all-features
 
 # Fix clippy issues automatically
 clippy-fix:
@@ -141,24 +141,91 @@ pre-commit: fix-all check-all test
 full-check: fix-all check-all test-all
     @echo "✓ Full development cycle completed"
 
-# Download and convert HL7 FHIR R4 core package
-download-r4-core:
-    @echo "🚀 Downloading and converting HL7 FHIR R4 core package..."
-    mkdir -p schemas/r4-core
-    cargo run --features cli -- download --package hl7.fhir.r4.core --version 4.0.1 --output schemas/r4-core
-    @echo "✅ HL7 FHIR R4 core schemas saved to schemas/r4-core/"
+# Example usage - create sample test
+example-usage:
+    @echo "🚀 Running example usage of the FHIR schema library..."
+    cargo run --example simple_trait_test
+    @echo "✅ Example completed successfully"
 
-# Download and convert HL7 FHIR R4 core package with specific resource types
-download-r4-core-filtered types:
-    @echo "🚀 Downloading and converting HL7 FHIR R4 core package (filtered: {{types}})..."
-    mkdir -p schemas/r4-core-filtered
-    cargo run --features cli -- download --package hl7.fhir.r4.core --version 4.0.1 --output schemas/r4-core-filtered --resource-types {{types}}
-    @echo "✅ HL7 FHIR R4 core schemas ({{types}}) saved to schemas/r4-core-filtered/"
+# Resource type extraction test
+test-resource-types:
+    @echo "🧪 Testing resource type extraction and O(1) checking..."
+    cargo test --test resource_type_extraction_tests -- --nocapture
+    @echo "✅ Resource type tests completed"
 
-# Download and convert any FHIR package
-download-package package version output:
-    @echo "🚀 Downloading and converting FHIR package: {{package}}@{{version}}..."
-    mkdir -p {{output}}
-    cargo run --features cli -- download --package {{package}} --version {{version}} --output {{output}}
-    @echo "✅ FHIR package {{package}}@{{version}} schemas saved to {{output}}/"
+# Generate precompiled FHIR schemas for fast startup
+build-precompiled-schemas:
+    @echo "🚀 Building Precompiled FHIR Schemas with Real Conversion"
+    @echo "========================================================"
+    
+    # Build the schema builder first
+    @echo "🔧 Building schema-builder binary..."
+    cargo build --bin schema-builder --release
+    @echo "  ✅ Schema builder ready"
+    
+    # Run the schema builder to generate real schemas
+    @echo "🏭 Generating schemas from FHIR StructureDefinitions..."
+    ./target/release/schema-builder --output-dir precompiled_schemas --version all
+    @echo "  ✅ Schema conversion completed"
+    
+    @echo ""
+    @echo "✅ Precompiled schemas generation completed!"
+    @echo ""
+    @echo "🚀 Next steps:"
+    @echo "  1. Build with: cargo build --features embedded-providers"  
+    @echo "  2. Use CompositeModelProvider for best performance"
+    @echo "  3. Test with: just test-embedded"
+
+# Test the embedded provider with precompiled schemas
+test-embedded:
+    @echo "🧪 Testing EmbeddedModelProvider with precompiled schemas..."
+    just build-precompiled-schemas
+    cargo test --example embedded_provider_usage --features embedded-providers -- --nocapture
+    @echo "✅ Embedded provider tests completed"
+
+# Build with all performance optimizations
+build-optimized:
+    @echo "🚀 Building with all performance optimizations..."
+    just build-precompiled-schemas
+    cargo build --release --features embedded-providers,dynamic-caching
+    @echo "✅ Optimized build completed"
+
+# Build precompiled schemas for a specific FHIR version
+build-precompiled-version version:
+    @echo "🚀 Building Precompiled FHIR Schemas for {{version}}"
+    @echo "=================================================="
+    
+    # Build the schema builder first
+    @echo "🔧 Building schema-builder binary..."
+    cargo build --bin schema-builder --release
+    @echo "  ✅ Schema builder ready"
+    
+    # Run the schema builder for specific version
+    @echo "🏭 Generating schemas for FHIR {{version}}..."
+    ./target/release/schema-builder --output-dir precompiled_schemas --version {{version}}
+    @echo "  ✅ Schema conversion completed for {{version}}"
+
+# Clean precompiled schemas
+clean-precompiled-schemas:
+    @echo "🧹 Cleaning precompiled schemas..."
+    rm -rf precompiled_schemas/
+    @echo "  ✅ Precompiled schemas cleaned"
+
+# Show schema statistics
+schema-stats:
+    @echo "📊 Precompiled Schema Statistics"
+    @echo "================================"
+    @if [ -d precompiled_schemas ]; then \
+        for file in precompiled_schemas/*.bin; do \
+            if [ -f "$file" ]; then \
+                size=$$(wc -c < "$file" | tr -d ' '); \
+                human_size=$$(numfmt --to=iec-i --suffix=B "$size" 2>/dev/null || echo "$size bytes"); \
+                echo "  📁 $$(basename "$file"): $$human_size"; \
+            fi; \
+        done; \
+        total_size=$$(du -sh precompiled_schemas 2>/dev/null | cut -f1 || echo "0"); \
+        echo "  📦 Total: $$total_size"; \
+    else \
+        echo "  ❌ No precompiled schemas found. Run 'just build-precompiled-schemas' first."; \
+    fi
 

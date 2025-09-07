@@ -1,23 +1,15 @@
-mod bridge_support;
-mod choice_type_info;
-mod choice_type_resolver;
-mod constraint;
-mod element;
-mod path_navigation;
-mod path_resolver;
-mod resource_type_registry;
-mod schema;
-mod slicing;
-mod type_definitions;
+pub mod choice_types;
+pub mod element;
+pub mod path_navigation;
+pub mod schema;
+pub mod type_hierarchy;
+pub mod type_resolver;
 
-pub use bridge_support::*;
-pub use choice_type_info::*;
-pub use choice_type_resolver::*;
-pub use constraint::*;
+pub use choice_types::*;
 pub use element::*;
-pub use path_navigation::*;
-pub use path_resolver::*;
-pub use resource_type_registry::*;
-pub use schema::*;
-pub use slicing::*;
-pub use type_definitions::*;
+pub use path_navigation::{
+    FhirPath, PathNavigationResult, PathNavigator, PathSegment, TypeInferenceResult,
+};
+pub use schema::{ConstraintSeverity, FhirConstraint, FhirSchema, FhirSchemaProperty};
+pub use type_hierarchy::{RelationshipType, TypeHierarchy, TypeHierarchyBuilder, TypeRelationship};
+pub use type_resolver::TypeResolver;

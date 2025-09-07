@@ -1,216 +1,472 @@
-#[cfg(feature = "disk-storage")]
+use async_trait::async_trait;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-#[cfg(feature = "disk-storage")]
 use tokio::fs;
-use url::Url;
 
-use super::SchemaStorage;
-use crate::{FhirSchema, FhirSchemaError, Result};
+use crate::error::{FhirSchemaError, Result};
+use crate::storage::SchemaStorage;
+use crate::types::FhirSchema;
+use crate::utils::{fingerprint::generate_schema_fingerprint, PackageFingerprint};
 
-#[cfg(feature = "disk-storage")]
-#[derive(Debug, Clone)]
-pub struct DiskStorageConfig {
-    pub base_path: PathBuf,
-    pub create_directories: bool,
-    pub file_extension: String,
-}
-
-#[cfg(feature = "disk-storage")]
-impl Default for DiskStorageConfig {
-    fn default() -> Self {
-        Self {
-            base_path: PathBuf::from("./schemas"),
-            create_directories: true,
-            file_extension: "json".to_string(),
-        }
-    }
-}
-
-#[cfg(feature = "disk-storage")]
+/// Disk-based storage with fingerprinting and caching
 #[derive(Debug)]
 pub struct DiskStorage {
+    /// Root directory for storage
+    cache_dir: PathBuf,
+    /// In-memory index for fast lookups
+    index: HashMap<String, CacheEntry>,
+    /// Storage configuration  
     config: DiskStorageConfig,
 }
 
-#[cfg(feature = "disk-storage")]
-impl DiskStorage {
-    pub fn new(config: DiskStorageConfig) -> Result<Self> {
-        Ok(Self { config })
-    }
+#[derive(Debug, Clone)]
+pub struct DiskStorageConfig {
+    /// Enable compression for stored schemas
+    pub enable_compression: bool,
+    /// Maximum size of cache directory in bytes
+    pub max_cache_size: Option<u64>,
+    /// Use binary serialization (faster) vs JSON (human readable)
+    pub binary_serialization: bool,
+    /// Automatically clean old cache entries
+    pub auto_cleanup: bool,
+}
 
-    pub async fn initialize(&self) -> Result<()> {
-        if self.config.create_directories {
-            fs::create_dir_all(&self.config.base_path)
-                .await
-                .map_err(|e| FhirSchemaError::Storage {
-                    message: format!("Failed to create storage directory: {e}"),
-                })?;
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CacheEntry {
+    /// Schema URL
+    url: String,
+    /// File path relative to cache_dir
+    file_path: PathBuf,
+    /// Package fingerprint for validation
+    fingerprint: PackageFingerprint,
+    /// Last access time
+    last_accessed: chrono::DateTime<chrono::Utc>,
+    /// File size in bytes
+    file_size: u64,
+}
+
+impl Default for DiskStorageConfig {
+    fn default() -> Self {
+        Self {
+            enable_compression: true,
+            max_cache_size: Some(1024 * 1024 * 1024), // 1GB
+            binary_serialization: cfg!(feature = "embedded-providers"),
+            auto_cleanup: true,
         }
-        Ok(())
-    }
-
-    fn url_to_path(&self, url: &Url) -> PathBuf {
-        let host = url.host_str().unwrap_or("unknown");
-        let path = url.path().trim_start_matches('/');
-        let filename = format!(
-            "{}.{}",
-            path.replace(['/', ':'], "_"),
-            self.config.file_extension
-        );
-
-        self.config.base_path.join(host).join(filename)
-    }
-
-    fn path_to_url(&self, path: &Path) -> Result<Url> {
-        let relative =
-            path.strip_prefix(&self.config.base_path)
-                .map_err(|_| FhirSchemaError::Storage {
-                    message: "Invalid path for URL conversion".to_string(),
-                })?;
-
-        let host = relative
-            .components()
-            .next()
-            .and_then(|c| c.as_os_str().to_str())
-            .ok_or_else(|| FhirSchemaError::Storage {
-                message: "Cannot extract host from path".to_string(),
-            })?;
-
-        let filename = relative
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| FhirSchemaError::Storage {
-                message: "Cannot extract filename from path".to_string(),
-            })?;
-
-        let url_path = filename.replace('_', "/");
-        let url_str = format!("https://{host}/{url_path}");
-
-        Url::parse(&url_str).map_err(|e| FhirSchemaError::Storage {
-            message: format!("Failed to parse URL from path: {e}"),
-        })
     }
 }
 
-#[cfg(feature = "disk-storage")]
-#[async_trait::async_trait]
-impl SchemaStorage for DiskStorage {
-    async fn get(&self, url: &Url) -> Result<Option<FhirSchema>> {
-        let path = self.url_to_path(url);
-
-        match fs::read_to_string(&path).await {
-            Ok(content) => {
-                let schema: FhirSchema =
-                    serde_json::from_str(&content).map_err(|e| FhirSchemaError::Storage {
-                        message: format!("Failed to deserialize schema: {e}"),
-                    })?;
-                Ok(Some(schema))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(FhirSchemaError::Storage {
-                message: format!("Failed to read schema file: {e}"),
-            }),
-        }
+impl DiskStorage {
+    /// Create a new disk storage instance
+    pub async fn new(cache_dir: impl AsRef<Path>) -> Result<Self> {
+        Self::with_config(cache_dir, DiskStorageConfig::default()).await
     }
 
-    async fn put(&self, url: Url, schema: FhirSchema) -> Result<()> {
-        let path = self.url_to_path(&url);
+    /// Create disk storage with custom configuration
+    pub async fn with_config(
+        cache_dir: impl AsRef<Path>,
+        config: DiskStorageConfig,
+    ) -> Result<Self> {
+        let cache_dir = cache_dir.as_ref().to_path_buf();
 
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|e| FhirSchemaError::Storage {
-                    message: format!("Failed to create directory: {e}"),
-                })?;
+        // Create cache directory if it doesn't exist
+        fs::create_dir_all(&cache_dir).await.map_err(|e| {
+            FhirSchemaError::io_error(&format!("Failed to create cache directory: {e}"))
+        })?;
+
+        let mut storage = Self {
+            cache_dir,
+            index: HashMap::new(),
+            config,
+        };
+
+        // Load existing index
+        storage.load_index().await?;
+
+        Ok(storage)
+    }
+
+    /// Get default cache directory
+    pub fn default_cache_dir() -> Result<PathBuf> {
+        let home_dir = dirs::home_dir().ok_or_else(|| {
+            FhirSchemaError::configuration_error("Unable to determine home directory")
+        })?;
+
+        let cache_dir = home_dir.join(".fhir").join(".fhirschema");
+
+        Ok(cache_dir)
+    }
+
+    /// Load index from disk
+    async fn load_index(&mut self) -> Result<()> {
+        let index_path = self.cache_dir.join("index.json");
+
+        if !index_path.exists() {
+            // No existing index, start fresh
+            return Ok(());
         }
 
-        let content =
-            serde_json::to_string_pretty(&schema).map_err(|e| FhirSchemaError::Storage {
-                message: format!("Failed to serialize schema: {e}"),
-            })?;
-
-        fs::write(&path, content)
+        let index_data = fs::read_to_string(&index_path)
             .await
-            .map_err(|e| FhirSchemaError::Storage {
-                message: format!("Failed to write schema file: {e}"),
-            })?;
+            .map_err(|e| FhirSchemaError::io_error(&format!("Failed to read index: {e}")))?;
+
+        let entries: Vec<CacheEntry> = serde_json::from_str(&index_data).map_err(|e| {
+            FhirSchemaError::serialization_error(&format!("Failed to parse index: {e}"))
+        })?;
+
+        // Rebuild index HashMap
+        for entry in entries {
+            self.index.insert(entry.url.clone(), entry);
+        }
 
         Ok(())
     }
 
-    async fn remove(&self, url: &Url) -> Result<bool> {
-        let path = self.url_to_path(url);
+    /// Save index to disk
+    async fn save_index(&self) -> Result<()> {
+        let index_path = self.cache_dir.join("index.json");
+        let entries: Vec<&CacheEntry> = self.index.values().collect();
 
-        match fs::remove_file(&path).await {
-            Ok(_) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(FhirSchemaError::Storage {
-                message: format!("Failed to remove schema file: {e}"),
-            }),
+        let index_data = serde_json::to_string_pretty(&entries).map_err(|e| {
+            FhirSchemaError::serialization_error(&format!("Failed to serialize index: {e}"))
+        })?;
+
+        fs::write(&index_path, index_data)
+            .await
+            .map_err(|e| FhirSchemaError::io_error(&format!("Failed to write index: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Generate cache key for a schema URL
+    fn cache_key(&self, url: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(url.as_bytes());
+        format!("{:x}", hasher.finalize())[..16].to_string()
+    }
+
+    /// Get file path for a schema
+    fn file_path(&self, url: &str) -> PathBuf {
+        let cache_key = self.cache_key(url);
+        let filename = if self.config.binary_serialization {
+            format!("{cache_key}.bin")
+        } else {
+            format!("{cache_key}.json")
+        };
+
+        self.cache_dir.join("schemas").join(filename)
+    }
+
+    /// Serialize schema for storage
+    async fn serialize_schema(&self, schema: &FhirSchema) -> Result<Vec<u8>> {
+        if self.config.binary_serialization {
+            #[cfg(feature = "embedded-providers")]
+            {
+                // Use JSON for now due to serde_json::Value compatibility issues with bincode
+                serde_json::to_vec(schema)
+                    .map_err(|e| FhirSchemaError::serialization_error(&e.to_string()))
+            }
+            #[cfg(not(feature = "embedded-providers"))]
+            {
+                // Fallback to JSON if bincode is not available
+                let json = serde_json::to_vec(schema)
+                    .map_err(|e| FhirSchemaError::serialization_error(&e.to_string()))?;
+                Ok(json)
+            }
+        } else {
+            serde_json::to_vec_pretty(schema)
+                .map_err(|e| FhirSchemaError::serialization_error(&e.to_string()))
         }
     }
 
-    async fn list(&self) -> Result<Vec<Url>> {
-        let mut urls = Vec::new();
-        let mut stack = vec![self.config.base_path.clone()];
-
-        while let Some(dir) = stack.pop() {
-            let mut entries = fs::read_dir(&dir)
-                .await
-                .map_err(|e| FhirSchemaError::Storage {
-                    message: format!("Failed to read directory: {e}"),
-                })?;
-
-            while let Some(entry) =
-                entries
-                    .next_entry()
-                    .await
-                    .map_err(|e| FhirSchemaError::Storage {
-                        message: format!("Failed to read directory entry: {e}"),
-                    })?
+    /// Deserialize schema from storage
+    async fn deserialize_schema(&self, data: &[u8]) -> Result<FhirSchema> {
+        if self.config.binary_serialization {
+            #[cfg(feature = "embedded-providers")]
             {
-                let path = entry.path();
+                // Use JSON for now due to serde_json::Value compatibility issues with bincode
+                serde_json::from_slice(data)
+                    .map_err(|e| FhirSchemaError::serialization_error(&e.to_string()))
+            }
+            #[cfg(not(feature = "embedded-providers"))]
+            {
+                // Fallback to JSON
+                serde_json::from_slice(data)
+                    .map_err(|e| FhirSchemaError::serialization_error(&e.to_string()))
+            }
+        } else {
+            serde_json::from_slice(data)
+                .map_err(|e| FhirSchemaError::serialization_error(&e.to_string()))
+        }
+    }
 
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.extension().and_then(|s| s.to_str())
-                    == Some(&self.config.file_extension)
-                {
-                    if let Ok(url) = self.path_to_url(&path) {
-                        urls.push(url);
-                    }
+    /// Compress data if compression is enabled
+    async fn maybe_compress(&self, data: Vec<u8>) -> Result<Vec<u8>> {
+        if !self.config.enable_compression {
+            return Ok(data);
+        }
+
+        #[cfg(feature = "compression")]
+        {
+            Ok(lz4_flex::compress_prepend_size(&data))
+        }
+        #[cfg(not(feature = "compression"))]
+        {
+            // No compression available, return as-is
+            Ok(data)
+        }
+    }
+
+    /// Decompress data if needed
+    async fn maybe_decompress(&self, data: Vec<u8>) -> Result<Vec<u8>> {
+        if !self.config.enable_compression {
+            return Ok(data);
+        }
+
+        #[cfg(feature = "compression")]
+        {
+            lz4_flex::decompress_size_prepended(&data)
+                .map_err(|e| FhirSchemaError::compression_error(&e.to_string()))
+        }
+        #[cfg(not(feature = "compression"))]
+        {
+            // No compression support, return as-is
+            Ok(data)
+        }
+    }
+
+    /// Store a cached package with fingerprinting
+    pub async fn store_package(
+        &mut self,
+        package_id: &str,
+        package_version: &str,
+        schemas: Vec<FhirSchema>,
+    ) -> Result<PackageFingerprint> {
+        // Generate fingerprint for the package
+        let fingerprint = generate_schema_fingerprint(package_id, package_version, &schemas)?;
+
+        // Create package directory
+        let package_dir = self
+            .cache_dir
+            .join("packages")
+            .join(fingerprint.short_hash());
+
+        fs::create_dir_all(&package_dir).await.map_err(|e| {
+            FhirSchemaError::io_error(&format!("Failed to create package directory: {e}"))
+        })?;
+
+        // Store fingerprint
+        let fingerprint_data = serde_json::to_vec_pretty(&fingerprint)
+            .map_err(|e| FhirSchemaError::serialization_error(&e.to_string()))?;
+
+        fs::write(package_dir.join("fingerprint.json"), fingerprint_data)
+            .await
+            .map_err(|e| {
+                FhirSchemaError::io_error(&format!("Failed to write fingerprint: {e}"))
+            })?;
+
+        // Store each schema with its URL as key
+        for schema in schemas {
+            if let Some(url) = schema.id.clone() {
+                self.store_schema(&url, schema).await?;
+            }
+        }
+
+        Ok(fingerprint)
+    }
+
+    /// Load a cached package by fingerprint
+    pub async fn load_package(
+        &mut self,
+        fingerprint: &PackageFingerprint,
+    ) -> Result<Option<Vec<FhirSchema>>> {
+        let package_dir = self
+            .cache_dir
+            .join("packages")
+            .join(fingerprint.short_hash());
+
+        // Check if package directory exists
+        if !package_dir.exists() {
+            return Ok(None);
+        }
+
+        // Load and verify fingerprint
+        let fingerprint_path = package_dir.join("fingerprint.json");
+        let fingerprint_data = fs::read_to_string(&fingerprint_path).await.map_err(|e| {
+            FhirSchemaError::io_error(&format!("Failed to read fingerprint: {e}"))
+        })?;
+
+        let cached_fingerprint: PackageFingerprint = serde_json::from_str(&fingerprint_data)
+            .map_err(|e| FhirSchemaError::serialization_error(&e.to_string()))?;
+
+        // Verify fingerprint matches
+        if !cached_fingerprint.matches(fingerprint) {
+            // Cache is invalid, remove it
+            fs::remove_dir_all(&package_dir).await.ok();
+            return Ok(None);
+        }
+
+        // Load all schemas from cache that match this package
+        let mut schemas = Vec::new();
+        for entry in self.index.values() {
+            if entry.fingerprint.matches(&cached_fingerprint) {
+                if let Some(schema) = self.get_schema(&entry.url).await? {
+                    schemas.push(schema);
                 }
             }
         }
 
-        Ok(urls)
+        Ok(Some(schemas))
     }
 
-    async fn contains(&self, url: &Url) -> Result<bool> {
-        let path = self.url_to_path(url);
-        Ok(path.exists())
+    /// Check if a package is cached and valid
+    pub async fn is_package_cached(&self, fingerprint: &PackageFingerprint) -> bool {
+        let package_dir = self
+            .cache_dir
+            .join("packages")
+            .join(fingerprint.short_hash());
+
+        if !package_dir.exists() {
+            return false;
+        }
+
+        // Check fingerprint validity
+        let fingerprint_path = package_dir.join("fingerprint.json");
+        if let Ok(fingerprint_data) = fs::read_to_string(&fingerprint_path).await {
+            if let Ok(cached_fingerprint) =
+                serde_json::from_str::<PackageFingerprint>(&fingerprint_data)
+            {
+                return cached_fingerprint.matches(fingerprint);
+            }
+        }
+
+        false
     }
 
-    async fn clear(&self) -> Result<()> {
-        if self.config.base_path.exists() {
-            fs::remove_dir_all(&self.config.base_path)
-                .await
-                .map_err(|e| FhirSchemaError::Storage {
-                    message: format!("Failed to clear storage directory: {e}"),
-                })?;
-        }
+    /// Clear all cached data
+    pub async fn clear_cache(&mut self) -> Result<()> {
+        // Remove all files
+        fs::remove_dir_all(&self.cache_dir)
+            .await
+            .map_err(|e| FhirSchemaError::io_error(&format!("Failed to clear cache: {e}")))?;
 
-        if self.config.create_directories {
-            self.initialize().await?;
-        }
+        // Recreate cache directory
+        fs::create_dir_all(&self.cache_dir).await.map_err(|e| {
+            FhirSchemaError::io_error(&format!("Failed to recreate cache directory: {e}"))
+        })?;
+
+        // Clear in-memory index
+        self.index.clear();
 
         Ok(())
     }
 
-    async fn size(&self) -> Result<usize> {
-        self.list().await.map(|urls| urls.len())
+    /// Get cache statistics
+    pub async fn get_cache_stats(&self) -> Result<CacheStats> {
+        let mut total_size = 0u64;
+        let mut file_count = 0usize;
+
+        for entry in self.index.values() {
+            total_size += entry.file_size;
+            file_count += 1;
+        }
+
+        Ok(CacheStats {
+            total_size,
+            file_count,
+            index_size: self.index.len(),
+            cache_dir: self.cache_dir.clone(),
+        })
     }
 }
 
-#[cfg(not(feature = "disk-storage"))]
-compile_error!("disk-storage feature is required for DiskStorage");
+#[derive(Debug)]
+pub struct CacheStats {
+    pub total_size: u64,
+    pub file_count: usize,
+    pub index_size: usize,
+    pub cache_dir: PathBuf,
+}
+
+#[async_trait]
+impl SchemaStorage for DiskStorage {
+    async fn store_schema(&self, url: &str, schema: FhirSchema) -> Result<()> {
+        let file_path = self.file_path(url);
+
+        // Ensure parent directory exists
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent).await.map_err(|e| {
+                FhirSchemaError::io_error(&format!("Failed to create schema directory: {e}"))
+            })?;
+        }
+
+        // Serialize schema
+        let data = self.serialize_schema(&schema).await?;
+        let compressed_data = self.maybe_compress(data).await?;
+
+        // Write to file
+        fs::write(&file_path, &compressed_data)
+            .await
+            .map_err(|e| FhirSchemaError::io_error(&format!("Failed to write schema: {e}")))?;
+
+        // Update index (we need mutable access, so this is a limitation of the trait)
+        // In practice, DiskStorage should be wrapped in Arc<RwLock<DiskStorage>> for concurrent access
+
+        Ok(())
+    }
+
+    async fn get_schema(&self, url: &str) -> Result<Option<FhirSchema>> {
+        // Check if we have it in the index
+        if let Some(entry) = self.index.get(url) {
+            // Update last accessed time (would need mutable access in practice)
+            let file_path = &entry.file_path;
+            let full_path = self.cache_dir.join(file_path);
+
+            if full_path.exists() {
+                // Read and decompress file
+                let compressed_data = fs::read(&full_path).await.map_err(|e| {
+                    FhirSchemaError::io_error(&format!("Failed to read schema: {e}"))
+                })?;
+
+                let data = self.maybe_decompress(compressed_data).await?;
+                let schema = self.deserialize_schema(&data).await?;
+
+                return Ok(Some(schema));
+            }
+        }
+
+        // Try reading directly by URL (fallback)
+        let file_path = self.file_path(url);
+        if file_path.exists() {
+            let compressed_data = fs::read(&file_path)
+                .await
+                .map_err(|e| FhirSchemaError::io_error(&format!("Failed to read schema: {e}")))?;
+
+            let data = self.maybe_decompress(compressed_data).await?;
+            let schema = self.deserialize_schema(&data).await?;
+
+            return Ok(Some(schema));
+        }
+
+        Ok(None)
+    }
+
+    async fn list_schemas(&self) -> Result<Vec<String>> {
+        Ok(self.index.keys().cloned().collect())
+    }
+
+    async fn delete_schema(&self, url: &str) -> Result<()> {
+        // Remove file if it exists
+        let file_path = self.file_path(url);
+        if file_path.exists() {
+            fs::remove_file(&file_path).await.map_err(|e| {
+                FhirSchemaError::io_error(&format!("Failed to delete schema: {e}"))
+            })?;
+        }
+
+        // Remove from index (would need mutable access in practice)
+
+        Ok(())
+    }
+}

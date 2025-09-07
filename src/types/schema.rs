@@ -1,171 +1,287 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
-use std::fmt;
-use url::Url;
 
-use super::{Constraint, Element, Slicing};
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FhirSchema {
-    #[serde(rename = "$schema")]
-    pub schema_version: Option<String>,
-
-    pub url: Option<Url>,
-    pub name: Option<String>,
-    pub title: Option<String>,
-    pub description: Option<String>,
-    pub version: Option<String>,
-    pub status: Option<String>,
-
     #[serde(rename = "type")]
     pub schema_type: String,
 
-    // Classification fields according to converter specification
-    pub kind: Option<String>,
-    pub class: Option<String>,
-    pub base: Option<Url>,
-    #[serde(rename = "abstract")]
-    pub abstract_type: Option<bool>,
+    pub properties: HashMap<String, FhirSchemaProperty>,
 
-    // Legacy fields for backward compatibility
-    pub base_definition: Option<Url>,
-    pub derivation: Option<String>,
+    pub required: Vec<String>,
 
-    pub elements: HashMap<String, Element>,
+    pub additional_properties: Option<bool>,
 
-    #[serde(default)]
-    pub constraints: Vec<Constraint>,
+    #[serde(rename = "$schema")]
+    pub json_schema_version: Option<String>,
 
-    #[serde(default)]
-    pub slicing: HashMap<String, Slicing>,
+    pub title: Option<String>,
 
-    #[serde(flatten)]
-    pub extensions: HashMap<String, serde_json::Value>,
+    pub description: Option<String>,
+
+    #[serde(rename = "$id")]
+    pub id: Option<String>,
+
+    pub constraints: Vec<FhirConstraint>,
+
+    pub metadata: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FhirSchemaProperty {
+    #[serde(rename = "type")]
+    pub property_type: Option<String>,
+
+    #[serde(rename = "$ref")]
+    pub reference: Option<String>,
+
+    pub items: Option<Box<FhirSchemaProperty>>,
+
+    pub properties: Option<HashMap<String, FhirSchemaProperty>>,
+
+    pub description: Option<String>,
+
+    pub required: Option<Vec<String>>,
+
+    pub minimum: Option<f64>,
+    pub maximum: Option<f64>,
+
+    pub min_length: Option<usize>,
+    pub max_length: Option<usize>,
+
+    pub pattern: Option<String>,
+
+    #[serde(rename = "enum")]
+    pub enum_values: Option<Vec<Value>>,
+
+    pub format: Option<String>,
+
+    pub constraints: Vec<FhirConstraint>,
+
+    pub metadata: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FhirConstraint {
+    pub key: String,
+
+    pub severity: ConstraintSeverity,
+
+    pub human: String,
+
+    pub expression: Option<String>,
+
+    pub xpath: Option<String>,
+
+    pub source: Option<String>,
+
+    pub metadata: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ConstraintSeverity {
+    #[serde(rename = "error")]
+    Error,
+    #[serde(rename = "warning")]
+    Warning,
+    #[serde(rename = "information")]
+    Information,
 }
 
 impl FhirSchema {
-    pub fn new(schema_type: impl Into<String>) -> Self {
+    pub fn new(schema_type: &str) -> Self {
         Self {
-            schema_version: Some("https://json-schema.org/draft/2020-12/schema".to_string()),
-            url: None,
-            name: None,
+            schema_type: schema_type.to_string(),
+            properties: HashMap::new(),
+            required: Vec::new(),
+            additional_properties: Some(false),
+            json_schema_version: Some("https://json-schema.org/draft/2020-12/schema".to_string()),
             title: None,
             description: None,
-            version: None,
-            status: None,
-            schema_type: schema_type.into(),
-            kind: None,
-            class: None,
-            base: None,
-            abstract_type: None,
-            base_definition: None,
-            derivation: None,
-            elements: HashMap::new(),
+            id: None,
             constraints: Vec::new(),
-            slicing: HashMap::new(),
-            extensions: HashMap::new(),
+            metadata: HashMap::new(),
         }
     }
 
-    pub fn with_url(mut self, url: Url) -> Self {
-        self.url = Some(url);
+    pub fn with_title(mut self, title: &str) -> Self {
+        self.title = Some(title.to_string());
         self
     }
 
-    pub fn with_name(mut self, name: impl Into<String>) -> Self {
-        self.name = Some(name.into());
+    pub fn with_description(mut self, description: &str) -> Self {
+        self.description = Some(description.to_string());
         self
     }
 
-    pub fn with_element(mut self, path: impl Into<String>, element: Element) -> Self {
-        self.elements.insert(path.into(), element);
+    pub fn with_id(mut self, id: &str) -> Self {
+        self.id = Some(id.to_string());
         self
     }
 
-    pub fn with_kind(mut self, kind: impl Into<String>) -> Self {
-        self.kind = Some(kind.into());
-        self
+    pub fn add_property(&mut self, name: &str, property: FhirSchemaProperty) {
+        self.properties.insert(name.to_string(), property);
     }
 
-    pub fn with_class(mut self, class: impl Into<String>) -> Self {
-        self.class = Some(class.into());
-        self
-    }
-
-    pub fn with_base(mut self, base: Url) -> Self {
-        self.base = Some(base);
-        self
-    }
-
-    pub fn with_abstract(mut self, abstract_type: bool) -> Self {
-        self.abstract_type = Some(abstract_type);
-        self
-    }
-
-    pub fn validate_structure(&self) -> crate::Result<()> {
-        if self.schema_type.is_empty() {
-            return Err(crate::FhirSchemaError::Validation {
-                message: "Schema type cannot be empty".to_string(),
-            });
+    pub fn add_required(&mut self, field_name: &str) {
+        if !self.required.contains(&field_name.to_string()) {
+            self.required.push(field_name.to_string());
         }
+    }
 
-        for (path, element) in &self.elements {
-            element.validate()?;
-            if path.is_empty() {
-                return Err(crate::FhirSchemaError::Validation {
-                    message: "Element path cannot be empty".to_string(),
-                });
-            }
-        }
+    pub fn add_constraint(&mut self, constraint: FhirConstraint) {
+        self.constraints.push(constraint);
+    }
 
-        for constraint in &self.constraints {
-            constraint.validate()?;
-        }
+    pub fn get_property(&self, name: &str) -> Option<&FhirSchemaProperty> {
+        self.properties.get(name)
+    }
 
-        Ok(())
+    pub fn is_required(&self, field_name: &str) -> bool {
+        self.required.contains(&field_name.to_string())
+    }
+
+    pub fn apply_metadata(&mut self, metadata: HashMap<String, Value>) {
+        self.metadata.extend(metadata);
+    }
+
+    pub fn apply_elements(&mut self, elements: HashMap<String, FhirSchemaProperty>) {
+        self.properties.extend(elements);
+    }
+
+    pub fn apply_constraints(&mut self, constraints: Vec<FhirConstraint>) {
+        self.constraints.extend(constraints);
     }
 }
 
-impl fmt::Display for FhirSchema {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "FhirSchema({})", self.schema_type)?;
-        if let Some(name) = &self.name {
-            write!(f, " - {name}")?;
+impl FhirSchemaProperty {
+    pub fn string() -> Self {
+        Self {
+            property_type: Some("string".to_string()),
+            reference: None,
+            items: None,
+            properties: None,
+            description: None,
+            required: None,
+            minimum: None,
+            maximum: None,
+            min_length: None,
+            max_length: None,
+            pattern: None,
+            enum_values: None,
+            format: None,
+            constraints: Vec::new(),
+            metadata: HashMap::new(),
         }
-        if let Some(url) = &self.url {
-            write!(f, " [{url}]")?;
+    }
+
+    pub fn integer() -> Self {
+        Self {
+            property_type: Some("integer".to_string()),
+            ..Self::string()
         }
-        Ok(())
+    }
+
+    pub fn number() -> Self {
+        Self {
+            property_type: Some("number".to_string()),
+            ..Self::string()
+        }
+    }
+
+    pub fn boolean() -> Self {
+        Self {
+            property_type: Some("boolean".to_string()),
+            ..Self::string()
+        }
+    }
+
+    pub fn object() -> Self {
+        Self {
+            property_type: Some("object".to_string()),
+            properties: Some(HashMap::new()),
+            ..Self::string()
+        }
+    }
+
+    pub fn array(item_type: FhirSchemaProperty) -> Self {
+        Self {
+            property_type: Some("array".to_string()),
+            items: Some(Box::new(item_type)),
+            ..Self::string()
+        }
+    }
+
+    pub fn reference(ref_url: &str) -> Self {
+        Self {
+            property_type: None,
+            reference: Some(ref_url.to_string()),
+            ..Self::string()
+        }
+    }
+
+    pub fn with_description(mut self, description: &str) -> Self {
+        self.description = Some(description.to_string());
+        self
+    }
+
+    pub fn with_pattern(mut self, pattern: &str) -> Self {
+        self.pattern = Some(pattern.to_string());
+        self
+    }
+
+    pub fn with_min_length(mut self, min_length: usize) -> Self {
+        self.min_length = Some(min_length);
+        self
+    }
+
+    pub fn with_max_length(mut self, max_length: usize) -> Self {
+        self.max_length = Some(max_length);
+        self
+    }
+
+    pub fn with_format(mut self, format: &str) -> Self {
+        self.format = Some(format.to_string());
+        self
+    }
+
+    pub fn add_constraint(&mut self, constraint: FhirConstraint) {
+        self.constraints.push(constraint);
     }
 }
 
-impl bincode::Encode for FhirSchema {
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        let json_bytes = serde_json::to_vec(self)
-            .map_err(|_| bincode::error::EncodeError::Other("JSON serialization failed"))?;
-        json_bytes.encode(encoder)
+impl FhirConstraint {
+    pub fn new(key: &str, severity: ConstraintSeverity, human: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            severity,
+            human: human.to_string(),
+            expression: None,
+            xpath: None,
+            source: None,
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn with_expression(mut self, expression: &str) -> Self {
+        self.expression = Some(expression.to_string());
+        self
+    }
+
+    pub fn with_xpath(mut self, xpath: &str) -> Self {
+        self.xpath = Some(xpath.to_string());
+        self
+    }
+
+    pub fn with_source(mut self, source: &str) -> Self {
+        self.source = Some(source.to_string());
+        self
     }
 }
 
-impl<Context> bincode::Decode<Context> for FhirSchema {
-    fn decode<D: bincode::de::Decoder>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let json_bytes = Vec::<u8>::decode(decoder)?;
-        serde_json::from_slice(&json_bytes)
-            .map_err(|_| bincode::error::DecodeError::Other("JSON deserialization failed"))
-    }
-}
-
-impl<'de, Context> bincode::BorrowDecode<'de, Context> for FhirSchema {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let json_bytes = Vec::<u8>::borrow_decode(decoder)?;
-        serde_json::from_slice(&json_bytes)
-            .map_err(|_| bincode::error::DecodeError::Other("JSON deserialization failed"))
+impl Default for FhirSchema {
+    fn default() -> Self {
+        Self::new("object")
     }
 }
