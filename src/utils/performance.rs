@@ -13,27 +13,7 @@ pub struct PerformanceMetrics {
     pub metadata: std::collections::HashMap<String, String>,
 }
 
-impl PerformanceMetrics {
-    pub fn start(operation_name: &str) -> Self {
-        Self {
-            operation_name: operation_name.to_string(),
-            start_time: Instant::now(),
-            duration: None,
-            success: false,
-            metadata: std::collections::HashMap::new(),
-        }
-    }
-
-    pub fn finish(mut self, success: bool) -> Self {
-        self.duration = Some(self.start_time.elapsed());
-        self.success = success;
-        self
-    }
-
-    pub fn add_metadata(&mut self, key: &str, value: &str) {
-        self.metadata.insert(key.to_string(), value.to_string());
-    }
-}
+impl PerformanceMetrics {}
 
 /// Simple performance timer
 pub struct Timer {

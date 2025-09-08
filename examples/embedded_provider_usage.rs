@@ -144,9 +144,7 @@ async fn demonstrate_type_hierarchy() -> Result<(), Box<dyn std::error::Error>> 
     for (from_type, to_type) in compatibility_tests {
         let compatible = provider.is_type_compatible(from_type, to_type).await?;
         let status = if compatible { "✅" } else { "❌" };
-        println!(
-            "      {status} {from_type} -> {to_type}: {compatible}"
-        );
+        println!("      {status} {from_type} -> {to_type}: {compatible}");
     }
 
     println!();
@@ -214,9 +212,7 @@ async fn demonstrate_performance() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let elapsed = start.elapsed();
-    println!(
-        "      Resource type check: {elapsed:?} (100 ops, {success_count}% success)"
-    );
+    println!("      Resource type check: {elapsed:?} (100 ops, {success_count}% success)");
 
     // Schema retrieval
     let start = std::time::Instant::now();
@@ -227,9 +223,7 @@ async fn demonstrate_performance() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let elapsed = start.elapsed();
-    println!(
-        "      Schema retrieval: {elapsed:?} (100 ops, {success_count}% success)"
-    );
+    println!("      Schema retrieval: {elapsed:?} (100 ops, {success_count}% success)");
 
     // Type hierarchy
     let start = std::time::Instant::now();
@@ -240,9 +234,7 @@ async fn demonstrate_performance() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let elapsed = start.elapsed();
-    println!(
-        "      Type hierarchy: {elapsed:?} (100 ops, {success_count}% success)"
-    );
+    println!("      Type hierarchy: {elapsed:?} (100 ops, {success_count}% success)");
 
     println!();
     Ok(())

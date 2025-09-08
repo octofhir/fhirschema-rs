@@ -21,8 +21,8 @@ async fn main() -> Result<()> {
 
     // Demo 1: Access Advanced Type System Components
     println!("\n📋 Demo 1: Advanced Type System Components");
-    let type_resolver = manager.type_resolver();
-    let path_navigator = manager.path_navigator();
+    let _type_resolver = manager.type_resolver();
+    let _path_navigator = manager.path_navigator();
     println!("  ✅ Type resolver and path navigator initialized");
 
     // Demo 2: Use context for type operations

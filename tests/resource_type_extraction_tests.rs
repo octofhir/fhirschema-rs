@@ -10,7 +10,7 @@ async fn test_resource_type_extraction_and_o1_check() {
     // Initially, no resource types should be available (empty schema storage)
     let initial_types = provider.get_supported_resource_types().await.unwrap();
     let initial_count = initial_types.len();
-    println!("Initial resource types count: {}", initial_count);
+    println!("Initial resource types count: {initial_count}");
 
     // Test O(1) existence check - should be false for non-existent type
     assert!(!provider.resource_type_exists("Patient"));
@@ -106,7 +106,7 @@ async fn test_resource_type_url_extraction() {
 
     for (url, expected) in test_cases {
         let result = FhirSchemaModelProvider::extract_resource_type_from_url(url);
-        assert_eq!(result, expected, "Failed for URL: {}", url);
+        assert_eq!(result, expected, "Failed for URL: {url}");
     }
 
     println!("✅ URL extraction tests passed!");
@@ -141,7 +141,7 @@ async fn test_multiple_resource_types() {
         provider
             .schema_manager()
             .store_schema(
-                &format!("http://hl7.org/fhir/StructureDefinition/{}", resource_type),
+                &format!("http://hl7.org/fhir/StructureDefinition/{resource_type}"),
                 schema,
             )
             .await
@@ -155,8 +155,7 @@ async fn test_multiple_resource_types() {
     for resource_type in &resource_types {
         assert!(
             provider.resource_type_exists(resource_type),
-            "Resource type {} should exist",
-            resource_type
+            "Resource type {resource_type} should exist"
         );
     }
 

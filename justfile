@@ -49,15 +49,15 @@ check-strict:
 
 # Check formatting without fixing
 check-format:
-    cargo fmt -- --check
+    cargo fmt --all -- --check
 
 # Format code
 format:
-    cargo fmt
+    cargo fmt --all
 
 # Check if code is formatted
 format-check:
-    cargo fmt -- --check
+    cargo fmt --all -- --check
 
 # Run clippy lints
 clippy:
@@ -213,19 +213,25 @@ clean-precompiled-schemas:
 
 # Show schema statistics
 schema-stats:
-    @echo "📊 Precompiled Schema Statistics"
-    @echo "================================"
-    @if [ -d precompiled_schemas ]; then \
-        for file in precompiled_schemas/*.bin; do \
-            if [ -f "$file" ]; then \
-                size=$$(wc -c < "$file" | tr -d ' '); \
-                human_size=$$(numfmt --to=iec-i --suffix=B "$size" 2>/dev/null || echo "$size bytes"); \
-                echo "  📁 $$(basename "$file"): $$human_size"; \
-            fi; \
-        done; \
-        total_size=$$(du -sh precompiled_schemas 2>/dev/null | cut -f1 || echo "0"); \
-        echo "  📦 Total: $$total_size"; \
-    else \
-        echo "  ❌ No precompiled schemas found. Run 'just build-precompiled-schemas' first."; \
+    #!/bin/bash
+    echo "📊 Precompiled Schema Statistics"
+    echo "================================"
+    if [ -d precompiled_schemas ]; then
+        for file in precompiled_schemas/*.bin; do
+            if [ -f "$file" ]; then
+                size=$(wc -c < "$file" | tr -d ' ')
+                if command -v numfmt >/dev/null 2>&1; then
+                    human_size=$(numfmt --to=iec-i --suffix=B "$size" 2>/dev/null || echo "$size bytes")
+                else
+                    human_size="$size bytes"
+                fi
+                filename=$(basename "$file")
+                echo "  📁 $filename: $human_size"
+            fi
+        done
+        total_size=$(du -sh precompiled_schemas 2>/dev/null | cut -f1 || echo "0")
+        echo "  📦 Total: $total_size"
+    else
+        echo "  ❌ No precompiled schemas found. Run 'just build-precompiled-schemas' first."
     fi
 

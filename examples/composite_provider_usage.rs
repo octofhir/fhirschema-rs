@@ -78,9 +78,7 @@ async fn demonstrate_multi_version() -> Result<(), Box<dyn std::error::Error>> {
             Ok(provider) => {
                 let fhir_version = provider.get_fhir_version();
                 let resource_count = provider.get_supported_resource_types().await?.len();
-                println!(
-                    "✅ FHIR {version_name} ({fhir_version:?}): {resource_count} resources"
-                );
+                println!("✅ FHIR {version_name} ({fhir_version:?}): {resource_count} resources");
 
                 // Test a common operation
                 if let Ok(Some(hierarchy)) = provider.get_type_hierarchy("Patient").await {
@@ -225,8 +223,8 @@ async fn demonstrate_integration_patterns() -> Result<(), Box<dyn std::error::Er
 
     static GLOBAL_PROVIDER: OnceCell<Arc<CompositeModelProvider>> = OnceCell::const_new();
 
-    async fn get_global_provider(
-    ) -> Result<&'static Arc<CompositeModelProvider>, Box<dyn std::error::Error>> {
+    async fn get_global_provider()
+    -> Result<&'static Arc<CompositeModelProvider>, Box<dyn std::error::Error>> {
         GLOBAL_PROVIDER
             .get_or_try_init(|| async { CompositeModelProvider::r4().await.map(Arc::new) })
             .await
@@ -236,9 +234,7 @@ async fn demonstrate_integration_patterns() -> Result<(), Box<dyn std::error::Er
     let lazy_provider = get_global_provider().await?;
     println!("✅ Lazy provider initialized");
     let resource_count = lazy_provider.get_supported_resource_types().await?.len();
-    println!(
-        "   📊 {resource_count} resources available via lazy provider"
-    );
+    println!("   📊 {resource_count} resources available via lazy provider");
 
     println!();
     Ok(())

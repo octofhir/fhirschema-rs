@@ -6,7 +6,7 @@ use tokio::fs;
 use crate::error::{FhirSchemaError, Result};
 use crate::storage::SchemaStorage;
 use crate::types::FhirSchema;
-use crate::utils::{fingerprint::generate_schema_fingerprint, PackageFingerprint};
+use crate::utils::{PackageFingerprint, fingerprint::generate_package_fingerprint};
 
 /// Disk-based storage with fingerprinting and caching
 #[derive(Debug)]
@@ -122,22 +122,6 @@ impl DiskStorage {
         Ok(())
     }
 
-    /// Save index to disk
-    async fn save_index(&self) -> Result<()> {
-        let index_path = self.cache_dir.join("index.json");
-        let entries: Vec<&CacheEntry> = self.index.values().collect();
-
-        let index_data = serde_json::to_string_pretty(&entries).map_err(|e| {
-            FhirSchemaError::serialization_error(&format!("Failed to serialize index: {e}"))
-        })?;
-
-        fs::write(&index_path, index_data)
-            .await
-            .map_err(|e| FhirSchemaError::io_error(&format!("Failed to write index: {e}")))?;
-
-        Ok(())
-    }
-
     /// Generate cache key for a schema URL
     fn cache_key(&self, url: &str) -> String {
         use sha2::{Digest, Sha256};
@@ -244,7 +228,9 @@ impl DiskStorage {
         schemas: Vec<FhirSchema>,
     ) -> Result<PackageFingerprint> {
         // Generate fingerprint for the package
-        let fingerprint = generate_schema_fingerprint(package_id, package_version, &schemas)?;
+        let serialized = serde_json::to_vec(&schemas)
+            .map_err(|e| FhirSchemaError::serialization_error(&e.to_string()))?;
+        let fingerprint = generate_package_fingerprint(package_id, package_version, &serialized);
 
         // Create package directory
         let package_dir = self
@@ -262,9 +248,7 @@ impl DiskStorage {
 
         fs::write(package_dir.join("fingerprint.json"), fingerprint_data)
             .await
-            .map_err(|e| {
-                FhirSchemaError::io_error(&format!("Failed to write fingerprint: {e}"))
-            })?;
+            .map_err(|e| FhirSchemaError::io_error(&format!("Failed to write fingerprint: {e}")))?;
 
         // Store each schema with its URL as key
         for schema in schemas {
@@ -293,9 +277,9 @@ impl DiskStorage {
 
         // Load and verify fingerprint
         let fingerprint_path = package_dir.join("fingerprint.json");
-        let fingerprint_data = fs::read_to_string(&fingerprint_path).await.map_err(|e| {
-            FhirSchemaError::io_error(&format!("Failed to read fingerprint: {e}"))
-        })?;
+        let fingerprint_data = fs::read_to_string(&fingerprint_path)
+            .await
+            .map_err(|e| FhirSchemaError::io_error(&format!("Failed to read fingerprint: {e}")))?;
 
         let cached_fingerprint: PackageFingerprint = serde_json::from_str(&fingerprint_data)
             .map_err(|e| FhirSchemaError::serialization_error(&e.to_string()))?;
@@ -460,9 +444,9 @@ impl SchemaStorage for DiskStorage {
         // Remove file if it exists
         let file_path = self.file_path(url);
         if file_path.exists() {
-            fs::remove_file(&file_path).await.map_err(|e| {
-                FhirSchemaError::io_error(&format!("Failed to delete schema: {e}"))
-            })?;
+            fs::remove_file(&file_path)
+                .await
+                .map_err(|e| FhirSchemaError::io_error(&format!("Failed to delete schema: {e}")))?;
         }
 
         // Remove from index (would need mutable access in practice)

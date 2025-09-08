@@ -1,7 +1,7 @@
 [package]
 name = "octofhir-fhirschema"
-version = "0.3.0-alpha"
-edition = "2021"
+version = "0.3.0"
+edition = "2024"
 authors = ["OctoFHIR Team <funyloony@gmail.com>"]
 description = "A high-performance async-first FHIR schema management and validation library"
 license = "MIT OR Apache-2.0"
@@ -76,7 +76,7 @@ bincode = { version = "2", optional = true }
 dirs = "6.0"
 
 # CLI support for schema builder
-clap = { version = "4.0", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
@@ -106,12 +106,17 @@ path = "src/bin/schema_builder.rs"
 [package.metadata]
 docs.rs.features = ["embedded-providers", "precompiled-schemas"]
 
-# Ensure precompiled schemas are included in the package
+# Ensure precompiled schemas are included in the package, but exclude schema-builder binary
 include = [
-    "src/**/*",
+    "src/lib.rs",
+    "src/core/**/*",
+    "src/provider/**/*",
+    "src/storage/**/*",
+    "src/types/**/*",
+    "src/utils/**/*",
+    "src/error.rs",
     "Cargo.toml",
     "README.md",
     "LICENSE*",
     "precompiled_schemas/*.bin",
-    "build.rs"
 ]

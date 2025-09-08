@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use crate::core::FhirVersion;
 use crate::error::{FhirSchemaError, Result};
-use crate::types::{FhirSchema, TypeHierarchy, TypeResolver};
-use octofhir_fhir_model::provider::{FhirVersion as ModelProviderFhirVersion, ModelProvider};
+use crate::types::{FhirSchema, TypeHierarchy};
 use octofhir_fhir_model::NavigationResult;
+use octofhir_fhir_model::provider::{FhirVersion as ModelProviderFhirVersion, ModelProvider};
 
 // Include generated precompiled schemas
 #[cfg(feature = "embedded-providers")]
@@ -17,7 +17,6 @@ include!("embedded_schemas.rs");
 pub struct EmbeddedModelProvider {
     fhir_version: FhirVersion,
     schemas: HashMap<String, FhirSchema>,
-    type_resolver: Arc<TypeResolver>,
     /// O(1) resource type existence check
     available_resource_types: Arc<papaya::HashMap<String, ()>>,
 }
@@ -81,20 +80,9 @@ impl EmbeddedModelProvider {
                 );
             }
 
-            // Create a minimal TypeResolver for embedded schemas
-            // We'll use a simple in-memory resolver since we have all schemas loaded
-            let canonical_manager = octofhir_canonical_manager::CanonicalManager::new(
-                octofhir_canonical_manager::FcmConfig::default(),
-            )
-            .await
-            .map_err(|e| FhirSchemaError::conversion_failed("CanonicalManager", &e.to_string()))?;
-
-            let type_resolver = Arc::new(TypeResolver::new(Arc::new(canonical_manager)).await?);
-
             Ok(Self {
                 fhir_version,
                 schemas,
-                type_resolver,
                 available_resource_types,
             })
         }
@@ -113,7 +101,8 @@ impl EmbeddedModelProvider {
         let version_str = fhir_version.short_name();
 
         // Get precompiled schema data
-        let schema_data = embedded::get_schemas(version_str).ok_or_else(|| {
+        let schema_data = schemas::get_schemas(version_str).ok_or_else(|| {
+            eprintln!("❌ No embedded schemas available for FHIR version: {version_str}");
             FhirSchemaError::configuration_error(&format!(
                 "No embedded schemas available for FHIR version: {version_str}"
             ))
@@ -122,7 +111,6 @@ impl EmbeddedModelProvider {
         // Deserialize schemas
         if schema_data.is_empty() {
             // Empty placeholder - return minimal set of schemas
-            tracing::warn!("Using placeholder schemas for FHIR {}", version_str);
             return Ok(Self::create_minimal_schemas(fhir_version));
         }
 
@@ -144,7 +132,6 @@ impl EmbeddedModelProvider {
         if schema_map.is_empty() {
             return Ok(Self::create_minimal_schemas(fhir_version));
         }
-
         Ok(schema_map)
     }
 
@@ -353,30 +340,38 @@ impl EmbeddedModelProvider {
         base_type: &str,
         path: &str,
     ) -> Result<NavigationResult> {
-        // Simple navigation - in practice this would use the full navigation engine
-        let _target_type = if path.contains('.') {
-            // For nested paths, assume string type as fallback
-            "string".to_string()
-        } else {
-            // Single property navigation
-            if let Some(schema) = self.get_schema_by_type(base_type).await {
-                if let Some(property) = schema.properties.get(path) {
-                    property
-                        .property_type
-                        .clone()
-                        .unwrap_or_else(|| "string".to_string())
-                } else {
-                    "string".to_string()
-                }
-            } else {
-                "string".to_string()
-            }
-        };
+        // Handle nested paths (contains '.')
+        if path.contains('.') {
+            // For nested paths, we would need full navigation engine
+            // For now, return error for nested paths as they're not yet supported
+            return Err(FhirSchemaError::navigation_failed(&format!(
+                "Nested path navigation not yet implemented for path: {path}"
+            )));
+        }
 
-        // For now, return an error - navigation not yet implemented
-        Err(FhirSchemaError::navigation_failed(&format!(
-            "Navigation not yet implemented for path: {path}"
-        )))
+        // Single property navigation
+        if let Some(schema) = self.get_schema_by_type(base_type).await {
+            if let Some(property) = schema.properties.get(path) {
+                // Property exists - return success using octofhir_fhir_model::NavigationResult
+                use octofhir_fhir_model::reflection::TypeReflectionInfo;
+
+                let target_type = property
+                    .property_type
+                    .clone()
+                    .unwrap_or_else(|| "string".to_string());
+
+                let result_type = TypeReflectionInfo::simple_type("FHIR", &target_type);
+                Ok(NavigationResult::success(result_type))
+            } else {
+                // Property doesn't exist on this type - return error
+                Err(FhirSchemaError::navigation_failed(&format!(
+                    "Property '{path}' does not exist on type '{base_type}'"
+                )))
+            }
+        } else {
+            // Base type not found - return error
+            Err(FhirSchemaError::type_not_found(base_type))
+        }
     }
 
     /// Get FHIR version
@@ -519,9 +514,8 @@ impl ModelProvider for EmbeddedModelProvider {
                 format!("{base_type}.{path}"),
             ))
         } else {
-            let mut validation = octofhir_fhir_model::navigation::PathValidation::new(format!(
-                "{base_type}.{path}"
-            ));
+            let mut validation =
+                octofhir_fhir_model::navigation::PathValidation::new(format!("{base_type}.{path}"));
             validation
                 .validation_errors
                 .push(octofhir_fhir_model::navigation::ValidationError {
@@ -704,13 +698,21 @@ impl ModelProvider for EmbeddedModelProvider {
     ) -> octofhir_fhir_model::error::Result<
         Option<octofhir_fhir_model::reflection::TypeReflectionInfo>,
     > {
-        if self.resource_type_exists(type_name) {
-            Ok(Some(
-                octofhir_fhir_model::reflection::TypeReflectionInfo::simple_type("FHIR", type_name),
-            ))
-        } else {
-            Ok(None)
+        use octofhir_fhir_model::reflection::TypeReflectionInfo;
+
+        if !self.resource_type_exists(type_name) {
+            return Ok(None);
         }
+
+        // Create basic FHIR resource properties for the given type
+        let elements = self.create_common_resource_properties(type_name);
+
+        Ok(Some(TypeReflectionInfo::ClassInfo {
+            namespace: "FHIR".to_string(),
+            name: type_name.to_string(),
+            base_type: Some("Resource".to_string()),
+            elements,
+        }))
     }
 
     async fn get_constraints(
@@ -745,11 +747,100 @@ impl ModelProvider for EmbeddedModelProvider {
         &self,
         resource_type: &str,
     ) -> octofhir_fhir_model::error::Result<bool> {
-        Ok(self.resource_type_exists(resource_type))
+        let guard = self.available_resource_types.pin();
+        Ok(guard.contains_key(resource_type))
     }
 
     async fn refresh_resource_types(&self) -> octofhir_fhir_model::error::Result<()> {
         // No-op for embedded provider - types are static
         Ok(())
+    }
+}
+
+impl EmbeddedModelProvider {
+    /// Create common FHIR resource properties for a given resource type
+    fn create_common_resource_properties(
+        &self,
+        resource_type: &str,
+    ) -> Vec<octofhir_fhir_model::reflection::ElementInfo> {
+        use octofhir_fhir_model::reflection::{ElementInfo, TypeReflectionInfo};
+
+        let mut elements = Vec::new();
+
+        // Add common properties that most FHIR resources have
+        let common_properties = match resource_type {
+            "Patient" => vec![
+                ("name", "HumanName", 0, None),
+                ("gender", "code", 0, Some(1)),
+                ("birthDate", "date", 0, Some(1)),
+                ("address", "Address", 0, None),
+                ("telecom", "ContactPoint", 0, None),
+                ("identifier", "Identifier", 0, None),
+                ("active", "boolean", 0, Some(1)),
+                ("deceased", "boolean", 0, Some(1)),
+                ("maritalStatus", "CodeableConcept", 0, Some(1)),
+                ("contact", "PatientContact", 0, None),
+                ("communication", "PatientCommunication", 0, None),
+                ("generalPractitioner", "Reference", 0, None),
+                ("managingOrganization", "Reference", 0, Some(1)),
+                ("link", "PatientLink", 0, None),
+            ],
+            "Observation" => vec![
+                ("status", "code", 1, Some(1)),
+                ("code", "CodeableConcept", 1, Some(1)),
+                ("subject", "Reference", 0, Some(1)),
+                ("value", "Quantity", 0, Some(1)),
+                ("valueQuantity", "Quantity", 0, Some(1)),
+                ("valueString", "string", 0, Some(1)),
+                ("valueBoolean", "boolean", 0, Some(1)),
+                ("effectiveDateTime", "dateTime", 0, Some(1)),
+                ("issued", "instant", 0, Some(1)),
+                ("performer", "Reference", 0, None),
+                ("interpretation", "CodeableConcept", 0, None),
+                ("bodySite", "CodeableConcept", 0, Some(1)),
+                ("method", "CodeableConcept", 0, Some(1)),
+                ("component", "ObservationComponent", 0, None),
+            ],
+            "Procedure" => vec![
+                ("status", "code", 1, Some(1)),
+                ("code", "CodeableConcept", 1, Some(1)),
+                ("subject", "Reference", 1, Some(1)),
+                ("performedDateTime", "dateTime", 0, Some(1)),
+                ("performer", "Reference", 0, None),
+                ("location", "Reference", 0, Some(1)),
+                ("bodySite", "CodeableConcept", 0, None),
+                ("outcome", "CodeableConcept", 0, Some(1)),
+                ("reasonCode", "CodeableConcept", 0, None),
+                ("note", "Annotation", 0, None),
+            ],
+            _ => vec![
+                // Generic resource properties
+                ("id", "id", 0, Some(1)),
+                ("meta", "Meta", 0, Some(1)),
+                ("implicitRules", "uri", 0, Some(1)),
+                ("language", "code", 0, Some(1)),
+                ("text", "Narrative", 0, Some(1)),
+                ("extension", "Extension", 0, None),
+                ("modifierExtension", "Extension", 0, None),
+            ],
+        };
+
+        for (name, type_name, min, max) in common_properties {
+            elements.push(ElementInfo {
+                name: name.to_string(),
+                type_info: TypeReflectionInfo::SimpleType {
+                    namespace: "FHIR".to_string(),
+                    name: type_name.to_string(),
+                    base_type: None,
+                },
+                min_cardinality: min,
+                max_cardinality: max,
+                is_summary: name == "id" || name == "meta",
+                is_modifier: false,
+                documentation: None,
+            });
+        }
+
+        elements
     }
 }

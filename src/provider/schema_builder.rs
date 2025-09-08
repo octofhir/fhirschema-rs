@@ -159,7 +159,10 @@ impl SchemaBuilder {
             })?;
 
         // Search for ALL StructureDefinitions across all installed packages, not just the target package
-        tracing::info!("Searching for ALL StructureDefinitions across all installed packages for FHIR version {}", self.fhir_version);
+        tracing::info!(
+            "Searching for ALL StructureDefinitions across all installed packages for FHIR version {}",
+            self.fhir_version
+        );
         let search_query = octofhir_canonical_manager::search::SearchQuery {
             text: None,
             resource_types: vec!["StructureDefinition".to_string()],
@@ -212,34 +215,65 @@ impl SchemaBuilder {
                         .unwrap_or("");
 
                     // Include if:
-                    // 1. Kind is "resource"
-                    // 2. URL starts with http://hl7.org/fhir/StructureDefinition/ (official FHIR resources)
+                    // 1. Kind is "resource" OR "complex-type" (includes both resources and complex data types)
+                    // 2. URL starts with http://hl7.org/fhir/StructureDefinition/ (official FHIR types)
                     // 3. NOT a constraint/profile (derivation != "constraint")
-                    // 4. Base definition indicates it's a proper FHIR resource
-                    let is_fhir_resource = kind == "resource"
+                    // 4. Base definition indicates it's a proper FHIR type
+                    let is_fhir_type = (kind == "resource" || kind == "complex-type")
                         && url.starts_with("http://hl7.org/fhir/StructureDefinition/")
                         && derivation != "constraint"
                         && (base_definition.contains("Resource")
                             || base_definition.contains("Element")
+                            || base_definition.contains("DataType")     // Complex types often extend DataType
+                            || base_definition.contains("BackboneElement")  // Nested complex types
+                            || base_definition.contains("Base")        // Some base types
+                            || base_definition.is_empty()  // Some complex types have empty baseDefinition
                             || abstract_field);
 
-                    if is_fhir_resource {
-                        tracing::info!("✅ Including FHIR resource: {} (kind: {}, type: {}, abstract: {}, derivation: {}, base: {})", 
-                            resource.get("name").and_then(|n| n.as_str()).unwrap_or("unknown"),
-                            kind, type_name, abstract_field, derivation,
-                            base_definition.split('/').next_back().unwrap_or("unknown"));
-                        structure_definitions.push(resource.clone());
-                    } else {
-                        tracing::debug!(
-                            "❌ Skipping non-resource: {} (kind: {}, derivation: {}, url: {})",
+                    if is_fhir_type {
+                        tracing::info!(
+                            "✅ Including FHIR type: {} (kind: {}, type: {}, abstract: {}, derivation: {}, base: {})",
                             resource
                                 .get("name")
                                 .and_then(|n| n.as_str())
                                 .unwrap_or("unknown"),
                             kind,
+                            type_name,
+                            abstract_field,
                             derivation,
-                            url.chars().take(40).collect::<String>()
+                            base_definition.split('/').next_back().unwrap_or("unknown")
                         );
+                        structure_definitions.push(resource.clone());
+                    } else {
+                        // Log info for complex types to see why they're being excluded
+                        if kind == "complex-type"
+                            && url.starts_with("http://hl7.org/fhir/StructureDefinition/")
+                        {
+                            tracing::info!(
+                                "❌ Excluding complex-type: {} (kind: {}, type: {}, URL: {}, derivation: {}, base: {}, abstract: {})",
+                                resource
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("unknown"),
+                                kind,
+                                type_name,
+                                url,
+                                derivation,
+                                base_definition,
+                                abstract_field
+                            );
+                        } else {
+                            tracing::debug!(
+                                "❌ Skipping non-resource: {} (kind: {}, derivation: {}, url: {})",
+                                resource
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("unknown"),
+                                kind,
+                                derivation,
+                                url.chars().take(40).collect::<String>()
+                            );
+                        }
                     }
                 } else {
                     tracing::debug!(
@@ -270,6 +304,7 @@ impl SchemaBuilder {
     }
 
     /// Create a minimal StructureDefinition for a resource type
+    #[allow(dead_code)]
     fn create_minimal_structure_definition(
         &self,
         resource_type: &str,
@@ -299,6 +334,7 @@ impl SchemaBuilder {
     }
 
     /// Get base definition URL for a resource type
+    #[allow(dead_code)]
     fn get_base_definition(&self, resource_type: &str) -> &'static str {
         match resource_type {
             "Resource" => "http://hl7.org/fhir/StructureDefinition/Element",
@@ -308,6 +344,7 @@ impl SchemaBuilder {
     }
 
     /// Create minimal elements for a resource type
+    #[allow(dead_code)]
     fn create_minimal_elements(&self, resource_type: &str) -> Vec<serde_json::Value> {
         let mut elements = vec![serde_json::json!({
             "id": resource_type,

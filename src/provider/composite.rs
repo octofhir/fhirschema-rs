@@ -1,5 +1,8 @@
 use async_trait::async_trait;
+
+#[cfg(feature = "dynamic-caching")]
 use std::sync::Arc;
+#[cfg(feature = "dynamic-caching")]
 use tokio::sync::RwLock;
 
 use crate::core::FhirVersion;
@@ -358,6 +361,29 @@ impl ModelProvider for CompositeModelProvider {
     async fn get_supported_resource_types(
         &self,
     ) -> octofhir_fhir_model::error::Result<Vec<String>> {
+        // Try embedded provider first (fastest, zero I/O)
+        #[cfg(feature = "embedded-providers")]
+        if let Some(ref embedded) = self.embedded_provider {
+            if let Ok(types) = embedded.get_supported_resource_types().await {
+                if !types.is_empty() {
+                    return Ok(types);
+                }
+            }
+        }
+
+        // Try dynamic provider next
+        #[cfg(feature = "dynamic-caching")]
+        if let Some(ref dynamic_arc) = self.dynamic_provider {
+            if let Ok(dynamic_guard) = dynamic_arc.try_read() {
+                if let Ok(types) = dynamic_guard.get_supported_resource_types().await {
+                    if !types.is_empty() {
+                        return Ok(types);
+                    }
+                }
+            }
+        }
+
+        // Fallback to traditional provider
         self.fallback_provider.get_supported_resource_types().await
     }
 
@@ -365,6 +391,24 @@ impl ModelProvider for CompositeModelProvider {
         &self,
         resource_type: &str,
     ) -> octofhir_fhir_model::error::Result<bool> {
+        // Try embedded provider first (fastest, zero I/O)
+        #[cfg(feature = "embedded-providers")]
+        if let Some(ref embedded) = self.embedded_provider {
+            let exists = embedded.resource_type_exists(resource_type);
+            return Ok(exists);
+        }
+
+        // Try dynamic provider next
+        #[cfg(feature = "dynamic-caching")]
+        if let Some(ref dynamic_arc) = self.dynamic_provider {
+            if let Ok(dynamic_guard) = dynamic_arc.try_read() {
+                if let Ok(exists) = dynamic_guard.resource_type_exists(resource_type) {
+                    return Ok(exists);
+                }
+            }
+        }
+
+        // Fallback to traditional provider
         Ok(self.fallback_provider.resource_type_exists(resource_type))
     }
 }

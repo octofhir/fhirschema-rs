@@ -3,7 +3,7 @@
 // DO NOT EDIT MANUALLY
 
 #[cfg(feature = "embedded-providers")]
-pub mod embedded {
+pub mod schemas {
     /// Precompiled schemas for FHIR R4
     pub static R4_SCHEMAS: &[u8] = include_bytes!("../../precompiled_schemas/r4_schemas.bin");
     

@@ -245,6 +245,7 @@ impl FhirSchemaModelProvider {
     /// 2. Convert them to FhirSchema using the conversion engine (NOT manual creation!)
     /// 3. Store converted schemas in storage
     /// 4. Extract resource types and update HashMap (done in initialize_resource_types)
+    #[allow(dead_code)]
     async fn load_core_fhir_schemas_with_converter(
         &self,
         canonical_manager: Arc<octofhir_canonical_manager::CanonicalManager>,

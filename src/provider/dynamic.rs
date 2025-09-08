@@ -8,7 +8,7 @@ use crate::error::{FhirSchemaError, Result};
 use crate::provider::FhirSchemaModelProvider;
 use crate::storage::{DiskStorage, DiskStorageConfig};
 use crate::types::FhirSchema;
-use crate::utils::{fingerprint::generate_fhir_package_fingerprint, PackageFingerprint};
+use crate::utils::{PackageFingerprint, fingerprint::generate_package_fingerprint};
 use octofhir_fhir_model::provider::{FhirVersion as ModelProviderFhirVersion, ModelProvider};
 
 /// Dynamic ModelProvider with disk caching for fast subsequent startups
@@ -22,8 +22,6 @@ pub struct DynamicModelProvider {
     fallback_provider: Option<Arc<FhirSchemaModelProvider>>,
     /// Cache directory path
     cache_dir: PathBuf,
-    /// Configuration
-    config: DynamicProviderConfig,
     /// Current package fingerprint (if loaded)
     current_fingerprint: Option<PackageFingerprint>,
 }
@@ -96,7 +94,6 @@ impl DynamicModelProvider {
             disk_storage,
             fallback_provider: None,
             cache_dir,
-            config,
             current_fingerprint: None,
         })
     }
@@ -133,8 +130,9 @@ impl DynamicModelProvider {
             .await?;
 
         // Generate fingerprint from StructureDefinitions
-        let fingerprint =
-            generate_fhir_package_fingerprint(package_id, package_version, &structure_definitions)?;
+        let serialized = serde_json::to_vec(&structure_definitions)
+            .map_err(|e| FhirSchemaError::serialization_error(&e.to_string()))?;
+        let fingerprint = generate_package_fingerprint(package_id, package_version, &serialized);
 
         // Check if we have this exact version cached
         {
@@ -305,31 +303,6 @@ impl DynamicModelProvider {
         } else {
             Ok(None)
         }
-    }
-
-    /// Get or create fallback provider
-    async fn get_fallback_provider(&mut self) -> Result<&FhirSchemaModelProvider> {
-        if self.fallback_provider.is_none() && self.config.auto_fallback {
-            #[cfg(feature = "tracing")]
-            tracing::info!(
-                "Creating fallback provider for FHIR {}",
-                self.fhir_version.short_name()
-            );
-
-            let provider = match self.fhir_version {
-                FhirVersion::R4 => FhirSchemaModelProvider::r4().await?,
-                FhirVersion::R4B => FhirSchemaModelProvider::r4b().await?,
-                FhirVersion::R5 => FhirSchemaModelProvider::r5().await?,
-                FhirVersion::R6 => FhirSchemaModelProvider::r6().await?,
-            };
-
-            self.fallback_provider = Some(Arc::new(provider));
-        }
-
-        self.fallback_provider
-            .as_ref()
-            .map(|p| p.as_ref())
-            .ok_or_else(|| FhirSchemaError::configuration_error("No fallback provider available"))
     }
 
     /// Initialize with standard FHIR package

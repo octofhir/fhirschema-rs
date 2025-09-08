@@ -234,7 +234,7 @@ async fn main() -> Result<()> {
 
     // Test collection semantics via trait
     match model_provider.get_collection_semantics("Patient").await {
-        Ok(semantics) => {
+        Ok(_semantics) => {
             println!("  ✅ Collection semantics retrieved for Patient");
             println!("    Default semantics applied");
         }

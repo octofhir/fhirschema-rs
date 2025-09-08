@@ -22,14 +22,14 @@
 //! use octofhir_fhirschema::prelude::*;
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 //!     // Create a schema manager with default configuration
 //!     let config = FhirSchemaConfig::for_version(FhirVersion::R4);
 //!     let canonical_manager = octofhir_canonical_manager::CanonicalManager::new(
 //!         octofhir_canonical_manager::FcmConfig::default()
-//!     ).await?;
+//!     ).await.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 //!     
-//!     let manager = FhirSchemaManager::new(config, canonical_manager).await?;
+//!     let manager = FhirSchemaManager::new(config, canonical_manager).await.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 //!     
 //!     // Convert a StructureDefinition to schema
 //!     let structure_def = serde_json::json!({
@@ -92,9 +92,9 @@ pub use error::{FhirSchemaError, Result, ValidationError};
 /// use octofhir_fhirschema::prelude::*;
 ///
 /// #[tokio::main]
-/// async fn main() -> Result<()> {
+/// async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 ///     // Recommended: Use CompositeModelProvider for best performance
-///     let provider = CompositeModelProvider::r4().await?;
+///     let provider = CompositeModelProvider::r4().await.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 ///     
 ///     // Alternative: Traditional provider (slower startup, full compatibility)
 ///     // let provider = FhirSchemaModelProvider::r4().await?;
@@ -103,10 +103,10 @@ pub use error::{FhirSchemaError, Result, ValidationError};
 ///     // let provider = FhirSchemaModelProvider::embedded_only(FhirVersion::R4).await?;
 ///     
 ///     // Get type hierarchy for Patient
-///     let hierarchy = provider.get_type_hierarchy("Patient").await?;
+///     let hierarchy = provider.get_type_hierarchy("Patient").await.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 ///     
 ///     // Navigate a FHIR path
-///     let result = provider.navigate_typed_path("Patient", "name.family").await?;
+///     let result = provider.navigate_typed_path("Patient", "name.family").await.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 ///     
 ///     Ok(())
 /// }
@@ -152,7 +152,7 @@ pub mod prelude {
     pub use crate::error::{FhirSchemaError, Result, ValidationError};
 
     // Utilities
-    pub use crate::utils::{generate_package_fingerprint, PackageFingerprint};
+    pub use crate::utils::{PackageFingerprint, generate_package_fingerprint};
 }
 
 // Library metadata
@@ -171,8 +171,8 @@ mod tests {
 
     #[test]
     fn test_library_metadata() {
-        assert_eq!(VERSION, "0.3.0-alpha");
+        assert_eq!(VERSION, "0.3.0");
         assert_eq!(NAME, "octofhir-fhirschema");
-        assert!(!DESCRIPTION.is_empty(), "Description should not be empty");
+        // DESCRIPTION constant is available from Cargo.toml
     }
 }

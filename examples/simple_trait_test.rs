@@ -63,7 +63,9 @@ async fn main() -> Result<()> {
     }
 
     println!("\n🎉 ModelProvider trait implementation test completed successfully!");
-    println!("The FhirSchemaModelProvider correctly implements the ModelProvider trait from fhir-model-rs");
+    println!(
+        "The FhirSchemaModelProvider correctly implements the ModelProvider trait from fhir-model-rs"
+    );
 
     Ok(())
 }

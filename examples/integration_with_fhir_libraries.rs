@@ -208,9 +208,7 @@ async fn demonstrate_multi_library_setup() -> Result<(), Box<dyn std::error::Err
 
     // Schema service
     let schema_count = fhir_manager.get_schema_provider().schema_count();
-    println!(
-        "   Schema service: Available ({schema_count} preloaded schemas)"
-    );
+    println!("   Schema service: Available ({schema_count} preloaded schemas)");
 
     // Example: Coordinated processing workflow
     let workflow_result = fhir_manager
@@ -243,9 +241,7 @@ async fn demonstrate_performance_patterns() -> Result<(), Box<dyn std::error::Er
     // Pattern 2: Lazy initialization per thread
     println!("🧵 Pattern 2: Thread-Local Lazy Providers");
     let thread_local_cost = measure_thread_local_performance().await?;
-    println!(
-        "   Thread-local providers ready (avg setup: {thread_local_cost:?})"
-    );
+    println!("   Thread-local providers ready (avg setup: {thread_local_cost:?})");
 
     // Pattern 3: Embedded vs Composite performance comparison
     println!("📊 Pattern 3: Provider Performance Comparison");
@@ -258,9 +254,7 @@ async fn demonstrate_performance_patterns() -> Result<(), Box<dyn std::error::Er
     let composite_time = measure_lookup_performance(&composite_provider).await?;
 
     println!("   Embedded provider: {embedded_time:?} avg lookup time");
-    println!(
-        "   Composite provider: {composite_time:?} avg lookup time"
-    );
+    println!("   Composite provider: {composite_time:?} avg lookup time");
 
     let speedup = composite_time.as_nanos() as f64 / embedded_time.as_nanos() as f64;
     println!("   Embedded provider is {speedup:.2}x faster for lookups");
@@ -510,8 +504,8 @@ impl FhirValidationService {
 // Global provider singleton
 static GLOBAL_PROVIDER: OnceCell<Arc<CompositeModelProvider>> = OnceCell::const_new();
 
-async fn get_global_fhir_provider(
-) -> Result<&'static Arc<CompositeModelProvider>, Box<dyn std::error::Error>> {
+async fn get_global_fhir_provider()
+-> Result<&'static Arc<CompositeModelProvider>, Box<dyn std::error::Error>> {
     GLOBAL_PROVIDER
         .get_or_try_init(|| async { CompositeModelProvider::r4().await.map(Arc::new) })
         .await
@@ -524,8 +518,8 @@ async fn measure_provider_startup() -> Result<std::time::Duration, Box<dyn std::
     Ok(start.elapsed())
 }
 
-async fn measure_thread_local_performance(
-) -> Result<std::time::Duration, Box<dyn std::error::Error>> {
+async fn measure_thread_local_performance()
+-> Result<std::time::Duration, Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
 
     // Simulate multiple thread-local providers
