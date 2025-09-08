@@ -64,7 +64,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 # OctoFHIR ecosystem integration
 octofhir-canonical-manager = { version = "0.1.7" }
-octofhir-fhir-model = { path = "../fhir-model-rs", features = ["serde"] }
+octofhir-fhir-model = { version = "0.1.3", features = ["serde"] }
 
 # Concurrency and performance
 num_cpus = "1.16"
