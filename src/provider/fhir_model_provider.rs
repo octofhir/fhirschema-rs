@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::core::{FhirSchemaConfig, FhirSchemaManager, FhirVersion, ResolutionContext};
@@ -80,6 +80,10 @@ pub struct NavigationResult {
     pub path_segments: Vec<PathSegment>,
     pub choice_resolution: Option<ChoiceResolution>,
     pub confidence: f64,
+    /// Whether the result type is an array/collection
+    pub is_array: bool,
+    /// Element type for arrays (same as target_type for scalars)
+    pub element_type: String,
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +242,43 @@ impl FhirSchemaModelProvider {
         provider.initialize_resource_types().await?;
 
         Ok(provider)
+    }
+
+    /// Register embedded schemas and resource types from EmbeddedModelProvider
+    /// This ensures the FhirSchemaModelProvider has access to the same schemas and resource types
+    pub async fn register_embedded_schemas(
+        &mut self,
+        schemas: &HashMap<String, crate::types::FhirSchema>,
+        embedded_resource_types: &Arc<papaya::HashMap<String, ()>>,
+    ) -> Result<()> {
+        // Copy all resource types from embedded provider
+        {
+            let embedded_guard = embedded_resource_types.pin();
+            let our_guard = self.available_resource_types.pin();
+
+            for (resource_type, _) in embedded_guard.iter() {
+                our_guard.insert(resource_type.clone(), ());
+
+                if std::env::var("FHIRPATH_DEBUG_PERF").is_ok() {
+                    eprintln!(
+                        "🔧 RESOURCE TYPE SHARING: Copied resource type {resource_type} from embedded provider"
+                    );
+                }
+            }
+        }
+
+        // Add embedded schemas to our schema manager
+        for (schema_id, schema) in schemas {
+            self.schema_manager
+                .store_schema(schema_id, schema.clone())
+                .await?;
+
+            if std::env::var("FHIRPATH_DEBUG_PERF").is_ok() {
+                eprintln!("🔧 SCHEMA SHARING: Registered embedded schema {schema_id}");
+            }
+        }
+
+        Ok(())
     }
 
     /// Load core FHIR resource schemas following the proper flow:
@@ -543,6 +584,9 @@ impl FhirSchemaModelProvider {
     ) -> Result<TypeHierarchy> {
         let mut properties = HashMap::new();
 
+        // First pass: detect choice types by analyzing property patterns
+        let choice_type_info = self.extract_choice_types_from_schema(schema);
+
         // Extract properties from schema
         for (prop_name, prop) in &schema.properties {
             let is_required = schema.required.contains(prop_name);
@@ -553,26 +597,39 @@ impl FhirSchemaModelProvider {
                 max: if is_array { None } else { Some(1) },
             };
 
-            // Try to extract choice types from property type or reference
-            let mut choice_types = Vec::new();
-            if let Some(properties) = &prop.properties {
-                for prop_key in properties.keys() {
-                    if prop_key != "type" {
-                        choice_types.push(prop_key.clone());
-                    }
-                }
-            }
+            // Determine if this is a choice type and get its variants
+            let (is_choice_type, choice_types) = if let Some((_base_name, variants)) =
+                choice_type_info
+                    .iter()
+                    .find(|(base_name, _)| *base_name == prop_name)
+            {
+                // This is a choice type base
+                (true, variants.iter().cloned().collect())
+            } else if choice_type_info
+                .values()
+                .any(|variants| variants.contains(prop_name))
+            {
+                // This is a concrete choice type variant, skip it in favor of the base
+                continue;
+            } else {
+                // Regular property
+                (false, Vec::new())
+            };
 
             properties.insert(
-                prop_name.clone(),
+                if is_choice_type {
+                    format!("{prop_name}[x]") // Add [x] suffix for choice types
+                } else {
+                    prop_name.clone()
+                },
                 PropertyInfo {
                     name: prop_name.clone(),
                     property_type: prop
                         .property_type
                         .clone()
-                        .unwrap_or_else(|| "string".to_string()),
+                        .unwrap_or_else(|| "Element".to_string()), // Choice types default to Element
                     cardinality,
-                    is_choice_type: prop_name.contains("[x]") || prop_name.ends_with("[x]"),
+                    is_choice_type,
                     choice_types,
                 },
             );
@@ -603,6 +660,52 @@ impl FhirSchemaModelProvider {
             properties,
             constraints,
         })
+    }
+
+    /// Extract choice type information directly from schema metadata
+    fn extract_choice_types_from_schema(
+        &self,
+        schema: &crate::types::FhirSchema,
+    ) -> HashMap<String, HashSet<String>> {
+        let mut choice_types = HashMap::new();
+
+        // Look for properties that are explicitly marked as choice types in the schema
+        for (property_name, property) in &schema.properties {
+            // Skip underscore properties (metadata)
+            if property_name.starts_with('_') {
+                continue;
+            }
+
+            // Check if this property is marked as a choice type in the metadata
+            if let Some(metadata_value) = property.metadata.get("is_choice_type") {
+                if let Some(is_choice) = metadata_value.as_bool() {
+                    if is_choice {
+                        // Extract the allowed choice types from metadata
+                        if let Some(choice_types_value) = property.metadata.get("choice_types") {
+                            if let Some(choice_types_array) = choice_types_value.as_array() {
+                                let mut variants = HashSet::new();
+
+                                for choice_type in choice_types_array {
+                                    if let Some(type_name) = choice_type.as_str() {
+                                        // Create concrete property name: base + TypeName
+                                        // e.g., "value" + "Quantity" = "valueQuantity"
+                                        let concrete_property =
+                                            format!("{property_name}{type_name}");
+                                        variants.insert(concrete_property);
+                                    }
+                                }
+
+                                if !variants.is_empty() {
+                                    choice_types.insert(property_name.clone(), variants);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        choice_types
     }
 
     /// Get schema manager reference
@@ -1009,10 +1112,18 @@ impl ModelProvider for FhirSchemaModelProvider {
         base_type: &str,
         path: &str,
     ) -> ModelResult<ModelNavigationResult> {
-        match self.navigate_typed_path(base_type, path).await {
+        match FhirSchemaModelProvider::navigate_typed_path(self, base_type, path).await {
             Ok(result) => {
                 // Convert our NavigationResult to fhir-model-rs NavigationResult
-                let type_info = TypeReflectionInfo::simple_type("FHIR", &result.target_type);
+                let type_info = if result.is_array {
+                    // For arrays, create ListType with the element type
+                    let element_type =
+                        TypeReflectionInfo::simple_type("FHIR", &result.element_type);
+                    TypeReflectionInfo::list_type(element_type)
+                } else {
+                    // For scalars, create SimpleType
+                    TypeReflectionInfo::simple_type("FHIR", &result.target_type)
+                };
                 Ok(ModelNavigationResult::success(type_info))
             }
             Err(e) => Err(ModelError::generic(e.to_string())),
@@ -1777,7 +1888,13 @@ impl ModelProvider for FhirSchemaModelProvider {
         type_name: &str,
     ) -> ModelResult<Option<TypeReflectionInfo>> {
         match self.get_type_hierarchy(type_name).await {
-            Ok(Some(_hierarchy)) => Ok(Some(TypeReflectionInfo::simple_type("FHIR", type_name))),
+            Ok(Some(hierarchy)) => {
+                // Create ClassInfo with elements from the schema for proper polymorphic resolution
+                let elements = self.convert_hierarchy_to_elements(&hierarchy).await?;
+                Ok(Some(TypeReflectionInfo::class_type(
+                    "FHIR", type_name, elements,
+                )))
+            }
             Ok(None) => Ok(None),
             Err(e) => Err(ModelError::generic(e.to_string())),
         }
@@ -1855,5 +1972,46 @@ impl FhirSchemaModelProvider {
             derivation: octofhir_fhir_model::type_system::DerivationType::Specialization, // Default derivation
             hierarchy_depth: 1, // TODO: Calculate actual depth
         })
+    }
+
+    /// Convert TypeHierarchy to ElementInfo vector for ClassInfo creation
+    async fn convert_hierarchy_to_elements(
+        &self,
+        hierarchy: &TypeHierarchy,
+    ) -> ModelResult<Vec<octofhir_fhir_model::reflection::ElementInfo>> {
+        let mut elements = Vec::new();
+
+        // Convert properties from hierarchy to ElementInfo
+        for (property_name, property_info) in &hierarchy.properties {
+            if property_info.is_choice_type {
+                // For choice types, create elements for all concrete choice variants
+                // The polymorphic resolution logic expects concrete property names like "valueQuantity", "valueString", etc.
+                for choice_variant in &property_info.choice_types {
+                    let element = octofhir_fhir_model::reflection::ElementInfo::new(
+                        choice_variant,
+                        octofhir_fhir_model::reflection::TypeReflectionInfo::simple_type(
+                            "FHIR", "Element",
+                        ),
+                    )
+                    .with_cardinality(property_info.cardinality.min, property_info.cardinality.max);
+
+                    elements.push(element);
+                }
+            } else {
+                // Regular non-choice property
+                let element = octofhir_fhir_model::reflection::ElementInfo::new(
+                    property_name,
+                    octofhir_fhir_model::reflection::TypeReflectionInfo::simple_type(
+                        "FHIR",
+                        &property_info.property_type,
+                    ),
+                )
+                .with_cardinality(property_info.cardinality.min, property_info.cardinality.max);
+
+                elements.push(element);
+            }
+        }
+
+        Ok(elements)
     }
 }

@@ -9,6 +9,13 @@ use crate::provider::fhir_model_provider::{
 };
 use crate::types::TypeResolver;
 
+#[derive(Debug, Clone)]
+struct PropertyTypeInfo {
+    type_name: String,
+    is_array: bool,
+    element_type: String,
+}
+
 #[derive(Debug)]
 pub struct NavigationEngine {
     type_resolver: Arc<TypeResolver>,
@@ -175,6 +182,8 @@ impl NavigationEngine {
         let mut path_segments = Vec::new();
         let mut confidence = 1.0;
         let mut choice_resolution = None;
+        let mut final_is_array = false;
+        let mut final_element_type = base_type.to_string();
 
         for (index, segment) in parsing_result.segments.iter().enumerate() {
             // Handle choice types
@@ -206,24 +215,30 @@ impl NavigationEngine {
             // Handle array access
             else if segment.contains('[') && segment.contains(']') {
                 let base_segment = segment.split('[').next().unwrap_or(segment);
-                current_type = self
+                let prop_info = self
                     .resolve_property_type(&current_type, base_segment)
                     .await?;
+                current_type = prop_info.type_name;
+                final_is_array = prop_info.is_array;
+                final_element_type = prop_info.element_type;
                 confidence *= 0.95; // Slight reduction for array access
             }
             // Handle regular properties
             else {
-                current_type = self.resolve_property_type(&current_type, segment).await?;
+                let prop_info = self.resolve_property_type(&current_type, segment).await?;
+                current_type = prop_info.type_name;
+                final_is_array = prop_info.is_array;
+                final_element_type = prop_info.element_type;
             }
 
             // Create path segment info
             let segment_info = PathSegment {
                 name: segment.clone(),
                 segment_type: current_type.clone(),
-                is_array: segment.contains('[') && segment.contains(']'),
+                is_array: final_is_array || (segment.contains('[') && segment.contains(']')),
                 cardinality: Cardinality {
                     min: 0, // TODO: Get actual cardinality from schema
-                    max: if segment.contains('[') { None } else { Some(1) },
+                    max: if final_is_array { None } else { Some(1) },
                 },
             };
 
@@ -231,11 +246,13 @@ impl NavigationEngine {
         }
 
         Ok(NavigationResult {
-            target_type: current_type,
+            target_type: current_type.clone(),
             is_valid_path: true,
             path_segments,
             choice_resolution,
             confidence,
+            is_array: final_is_array,
+            element_type: final_element_type,
         })
     }
 
@@ -244,32 +261,65 @@ impl NavigationEngine {
         &self,
         parent_type: &str,
         property_name: &str,
-    ) -> Result<String> {
+    ) -> Result<PropertyTypeInfo> {
         let context = ResolutionContext::new(parent_type);
 
+        // First try to get schema and analyze property structure
+        if let Some(schema) = self.schema_manager.get_schema_by_type(parent_type).await? {
+            for (prop_name, prop) in &schema.properties {
+                if prop_name == property_name {
+                    let property_type = prop
+                        .property_type
+                        .clone()
+                        .unwrap_or_else(|| "string".to_string());
+                    let is_array = property_type == "array";
+
+                    if is_array {
+                        // For arrays, extract the element type from items.reference
+                        let element_type = if let Some(ref items) = prop.items {
+                            if let Some(ref reference) = items.reference {
+                                // Extract type from reference like "#/definitions/HumanName"
+                                reference
+                                    .strip_prefix("#/definitions/")
+                                    .unwrap_or("string")
+                                    .to_string()
+                            } else {
+                                "string".to_string()
+                            }
+                        } else {
+                            "string".to_string()
+                        };
+
+                        return Ok(PropertyTypeInfo {
+                            type_name: element_type.clone(),
+                            is_array: true,
+                            element_type,
+                        });
+                    } else {
+                        return Ok(PropertyTypeInfo {
+                            type_name: property_type.clone(),
+                            is_array: false,
+                            element_type: property_type,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Fallback: try the schema manager inference
         match self
             .schema_manager
             .infer_element_type(parent_type, property_name, &context)
             .await
         {
-            Ok(resolved_type) => Ok(resolved_type),
-            Err(_) => {
-                // Fallback: try to get schema and extract property type
-                if let Some(schema) = self.schema_manager.get_schema_by_type(parent_type).await? {
-                    for (prop_name, prop) in &schema.properties {
-                        if prop_name == property_name {
-                            return Ok(prop
-                                .property_type
-                                .clone()
-                                .unwrap_or_else(|| "string".to_string()));
-                        }
-                    }
-                }
-
-                Err(FhirSchemaError::navigation_failed(&format!(
-                    "Property '{property_name}' not found in type '{parent_type}'"
-                )))
-            }
+            Ok(resolved_type) => Ok(PropertyTypeInfo {
+                type_name: resolved_type.clone(),
+                is_array: false,
+                element_type: resolved_type,
+            }),
+            Err(_) => Err(FhirSchemaError::navigation_failed(&format!(
+                "Property '{property_name}' not found in type '{parent_type}'"
+            ))),
         }
     }
 

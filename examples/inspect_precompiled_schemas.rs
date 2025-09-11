@@ -1,3 +1,4 @@
+use octofhir_fhir_model::provider::ModelProvider;
 use octofhir_fhirschema::provider::EmbeddedModelProvider;
 use std::collections::HashMap;
 

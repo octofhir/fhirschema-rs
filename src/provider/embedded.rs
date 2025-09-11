@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use crate::core::FhirVersion;
 use crate::error::{FhirSchemaError, Result};
-use crate::types::{FhirSchema, TypeHierarchy};
-use octofhir_fhir_model::NavigationResult;
+use crate::types::FhirSchema;
 use octofhir_fhir_model::provider::{FhirVersion as ModelProviderFhirVersion, ModelProvider};
 
 // Include generated precompiled schemas
@@ -19,6 +18,8 @@ pub struct EmbeddedModelProvider {
     schemas: HashMap<String, FhirSchema>,
     /// O(1) resource type existence check
     available_resource_types: Arc<papaya::HashMap<String, ()>>,
+    /// Delegate for advanced operations like navigation and inheritance
+    fhir_schema_provider: crate::provider::FhirSchemaModelProvider,
 }
 
 impl EmbeddedModelProvider {
@@ -80,10 +81,21 @@ impl EmbeddedModelProvider {
                 );
             }
 
+            // Create FhirSchemaModelProvider for delegation
+            let mut fhir_schema_provider =
+                crate::provider::FhirSchemaModelProvider::new(fhir_version).await?;
+
+            // CRITICAL: Share the embedded schemas and resource types with the FhirSchemaModelProvider
+            // This ensures both providers have access to the same resource types and schemas
+            fhir_schema_provider
+                .register_embedded_schemas(&schemas, &available_resource_types)
+                .await?;
+
             Ok(Self {
                 fhir_version,
                 schemas,
                 available_resource_types,
+                fhir_schema_provider,
             })
         }
 
@@ -260,120 +272,6 @@ impl EmbeddedModelProvider {
         guard.keys().cloned().collect()
     }
 
-    /// Build type hierarchy for a type
-    async fn build_type_hierarchy(&self, type_name: &str) -> Result<TypeHierarchy> {
-        // Try to get schema for this type
-        if let Some(schema) = self.get_schema_by_type(type_name).await {
-            let mut properties = HashMap::new();
-
-            // Extract properties from schema
-            for (prop_name, prop) in &schema.properties {
-                let is_required = schema.required.contains(prop_name);
-                let is_array = prop.items.is_some();
-
-                let cardinality = crate::provider::fhir_model_provider::Cardinality {
-                    min: if is_required { 1 } else { 0 },
-                    max: if is_array { None } else { Some(1) },
-                };
-
-                // Try to extract choice types from property type or reference
-                let mut choice_types = Vec::new();
-                if let Some(properties) = &prop.properties {
-                    for prop_key in properties.keys() {
-                        if prop_key != "type" {
-                            choice_types.push(prop_key.clone());
-                        }
-                    }
-                }
-
-                properties.insert(
-                    prop_name.clone(),
-                    crate::provider::fhir_model_provider::PropertyInfo {
-                        name: prop_name.clone(),
-                        property_type: prop
-                            .property_type
-                            .clone()
-                            .unwrap_or_else(|| "string".to_string()),
-                        cardinality,
-                        is_choice_type: prop_name.contains("[x]") || prop_name.ends_with("[x]"),
-                        choice_types,
-                    },
-                );
-            }
-
-            // Extract constraints
-            let _constraints: Vec<crate::provider::fhir_model_provider::ConstraintInfo> = schema
-                .constraints
-                .iter()
-                .map(|c| crate::provider::fhir_model_provider::ConstraintInfo {
-                    key: c.key.clone(),
-                    severity: format!("{:?}", c.severity),
-                    human: c.human.clone(),
-                    expression: c.expression.clone(),
-                })
-                .collect();
-
-            return Ok(TypeHierarchy {
-                type_name: type_name.to_string(),
-                parent_type: None,
-                child_types: Vec::new(),
-                interfaces: Vec::new(),
-                is_abstract: false,
-                depth: 0,
-            });
-        }
-
-        // Fallback - create minimal hierarchy
-        Ok(TypeHierarchy {
-            type_name: type_name.to_string(),
-            parent_type: None,
-            child_types: Vec::new(),
-            interfaces: Vec::new(),
-            is_abstract: false,
-            depth: 0,
-        })
-    }
-
-    /// Navigate a typed path
-    pub async fn navigate_typed_path(
-        &self,
-        base_type: &str,
-        path: &str,
-    ) -> Result<NavigationResult> {
-        // Handle nested paths (contains '.')
-        if path.contains('.') {
-            // For nested paths, we would need full navigation engine
-            // For now, return error for nested paths as they're not yet supported
-            return Err(FhirSchemaError::navigation_failed(&format!(
-                "Nested path navigation not yet implemented for path: {path}"
-            )));
-        }
-
-        // Single property navigation
-        if let Some(schema) = self.get_schema_by_type(base_type).await {
-            if let Some(property) = schema.properties.get(path) {
-                // Property exists - return success using octofhir_fhir_model::NavigationResult
-                use octofhir_fhir_model::reflection::TypeReflectionInfo;
-
-                let target_type = property
-                    .property_type
-                    .clone()
-                    .unwrap_or_else(|| "string".to_string());
-
-                let result_type = TypeReflectionInfo::simple_type("FHIR", &target_type);
-                Ok(NavigationResult::success(result_type))
-            } else {
-                // Property doesn't exist on this type - return error
-                Err(FhirSchemaError::navigation_failed(&format!(
-                    "Property '{path}' does not exist on type '{base_type}'"
-                )))
-            }
-        } else {
-            // Base type not found - return error
-            Err(FhirSchemaError::type_not_found(base_type))
-        }
-    }
-
     /// Get FHIR version
     pub fn fhir_version(&self) -> FhirVersion {
         self.fhir_version
@@ -400,24 +298,27 @@ impl ModelProvider for EmbeddedModelProvider {
         type_name: &str,
     ) -> octofhir_fhir_model::error::Result<Option<octofhir_fhir_model::type_system::TypeHierarchy>>
     {
-        match self.build_type_hierarchy(type_name).await {
-            Ok(hierarchy) => {
-                use octofhir_fhir_model::type_system::{
-                    DerivationType, TypeHierarchy as ModelTypeHierarchy,
-                };
-
-                let model_hierarchy = ModelTypeHierarchy {
-                    type_name: hierarchy.type_name.clone(),
+        // Delegate to FhirSchemaModelProvider and convert result
+        match self
+            .fhir_schema_provider
+            .get_type_hierarchy(type_name)
+            .await
+        {
+            Ok(Some(hierarchy)) => {
+                use octofhir_fhir_model::type_system::{DerivationType, TypeHierarchy};
+                let model_hierarchy = TypeHierarchy {
+                    type_name: hierarchy.base_type,
                     ancestors: hierarchy.parent_type.clone().into_iter().collect(),
-                    descendants: Vec::new(),
-                    direct_parent: hierarchy.parent_type.clone(),
-                    direct_children: hierarchy.child_types.clone(),
-                    is_abstract: false,
+                    descendants: hierarchy.child_types,
+                    direct_parent: hierarchy.parent_type,
+                    direct_children: Vec::new(),
+                    is_abstract: false, // Default value
                     derivation: DerivationType::Specialization,
-                    hierarchy_depth: 1,
+                    hierarchy_depth: 1, // Default value
                 };
                 Ok(Some(model_hierarchy))
             }
+            Ok(None) => Ok(None),
             Err(e) => Err(octofhir_fhir_model::error::ModelError::generic(
                 e.to_string(),
             )),
@@ -429,56 +330,28 @@ impl ModelProvider for EmbeddedModelProvider {
         from_type: &str,
         to_type: &str,
     ) -> octofhir_fhir_model::error::Result<bool> {
-        // Basic compatibility check
-        if from_type == to_type {
-            return Ok(true);
-        }
-
-        // Check if from_type is a subtype of to_type
-        if let Ok(hierarchy) = self.build_type_hierarchy(from_type).await {
-            if let Some(parent) = hierarchy.parent_type {
-                if parent == to_type {
-                    return Ok(true);
-                }
-            }
-        }
-
-        // Basic FHIR hierarchy rules
-        if to_type == "Resource" {
-            return Ok(true); // Everything derives from Resource
-        }
-
-        if to_type == "DomainResource" && from_type != "Resource" {
-            return Ok(true); // Most resources derive from DomainResource
-        }
-
-        Ok(false)
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider
+            .is_type_compatible(from_type, to_type)
+            .await
     }
 
     async fn get_common_supertype(
         &self,
         types: &[String],
     ) -> octofhir_fhir_model::error::Result<Option<String>> {
-        if types.is_empty() {
-            return Ok(None);
-        }
-
-        if types.len() == 1 {
-            return Ok(Some(types[0].clone()));
-        }
-
-        // For embedded provider, use simple logic
-        // In practice, this would analyze type hierarchies
-        Ok(Some("Resource".to_string()))
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider.get_common_supertype(types).await
     }
 
     async fn get_type_compatibility_matrix(
         &self,
     ) -> octofhir_fhir_model::error::Result<octofhir_fhir_model::type_system::TypeCompatibilityMatrix>
     {
-        use octofhir_fhir_model::type_system::TypeCompatibilityMatrix;
-        // Return empty matrix - would be populated with FHIR type rules
-        Ok(TypeCompatibilityMatrix::new())
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider
+            .get_type_compatibility_matrix()
+            .await
     }
 
     // Navigation operations
@@ -487,15 +360,43 @@ impl ModelProvider for EmbeddedModelProvider {
         base_type: &str,
         path: &str,
     ) -> octofhir_fhir_model::error::Result<octofhir_fhir_model::navigation::NavigationResult> {
-        match self.navigate_typed_path(base_type, path).await {
-            Ok(_result) => {
+        // Delegate to FhirSchemaModelProvider and convert result
+        match self
+            .fhir_schema_provider
+            .navigate_typed_path(base_type, path)
+            .await
+        {
+            Ok(fhir_result) => {
                 use octofhir_fhir_model::{
-                    navigation::NavigationResult as ModelNavigationResult,
+                    navigation::{NavigationMetadata, NavigationResult},
                     reflection::TypeReflectionInfo,
+                    type_system::CollectionInfo,
                 };
-                Ok(ModelNavigationResult::success(
-                    TypeReflectionInfo::simple_type("FHIR", base_type),
-                ))
+                let result_type = if fhir_result.is_array {
+                    // For arrays, create ListType with the element type
+                    let element_type =
+                        TypeReflectionInfo::simple_type("FHIR", &fhir_result.element_type);
+                    TypeReflectionInfo::list_type(element_type)
+                } else {
+                    // For scalars, create SimpleType
+                    TypeReflectionInfo::simple_type("FHIR", &fhir_result.target_type)
+                };
+                Ok(NavigationResult {
+                    result_type,
+                    collection_info: CollectionInfo::default(),
+                    navigation_metadata: NavigationMetadata {
+                        original_path: path.to_string(),
+                        resolved_path: path.to_string(),
+                        intermediate_types: Vec::new(),
+                        choice_resolutions: Vec::new(),
+                        function_calls: Vec::new(),
+                        type_operations: Vec::new(),
+                    },
+                    validation_results: Vec::new(),
+                    performance_hints: Vec::new(),
+                    is_success: true,
+                    errors: Vec::new(),
+                })
             }
             Err(e) => Err(octofhir_fhir_model::error::ModelError::generic(
                 e.to_string(),
@@ -508,28 +409,10 @@ impl ModelProvider for EmbeddedModelProvider {
         base_type: &str,
         path: &str,
     ) -> octofhir_fhir_model::error::Result<octofhir_fhir_model::navigation::PathValidation> {
-        // Basic validation
-        if self.resource_type_exists(base_type) {
-            Ok(octofhir_fhir_model::navigation::PathValidation::success(
-                format!("{base_type}.{path}"),
-            ))
-        } else {
-            let mut validation =
-                octofhir_fhir_model::navigation::PathValidation::new(format!("{base_type}.{path}"));
-            validation
-                .validation_errors
-                .push(octofhir_fhir_model::navigation::ValidationError {
-                    error_code: "TYPE_NOT_FOUND".to_string(),
-                    message: format!("Type '{base_type}' not found in embedded schemas"),
-                    location: octofhir_fhir_model::navigation::PathLocation {
-                        segment_index: 0,
-                        character_position: 0,
-                        segment_name: base_type.to_string(),
-                    },
-                    severity: octofhir_fhir_model::navigation::ConstraintSeverity::Error,
-                });
-            Ok(validation)
-        }
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider
+            .validate_navigation_safety(base_type, path)
+            .await
     }
 
     async fn get_navigation_result_type(
@@ -539,13 +422,10 @@ impl ModelProvider for EmbeddedModelProvider {
     ) -> octofhir_fhir_model::error::Result<
         Option<octofhir_fhir_model::reflection::TypeReflectionInfo>,
     > {
-        if let Ok(_result) = self.navigate_typed_path(base_type, path).await {
-            Ok(Some(
-                octofhir_fhir_model::reflection::TypeReflectionInfo::simple_type("FHIR", "string"),
-            ))
-        } else {
-            Ok(None)
-        }
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider
+            .get_navigation_result_type(base_type, path)
+            .await
     }
 
     async fn get_navigation_metadata(
@@ -554,75 +434,86 @@ impl ModelProvider for EmbeddedModelProvider {
         path: &str,
     ) -> octofhir_fhir_model::error::Result<octofhir_fhir_model::type_system::NavigationMetadata>
     {
-        use octofhir_fhir_model::type_system::{NavigationMetadata, PerformanceMetadata};
-
-        Ok(NavigationMetadata {
-            path: format!("{base_type}.{path}"),
-            source_type: base_type.to_string(),
-            target_type: "string".to_string(),
-            intermediate_types: vec![base_type.to_string()],
-            collection_info: Default::default(),
-            polymorphic_resolution: None,
-            navigation_warnings: Vec::new(),
-            performance_metadata: PerformanceMetadata {
-                operation_cost: 0.1, // Very fast for embedded
-                is_cacheable: true,
-                cache_key: Some(format!("embedded-{base_type}-{path}")),
-                memory_estimate: Some(64),
-            },
-        })
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider
+            .get_navigation_metadata(base_type, path)
+            .await
     }
 
     // Stub implementations for remaining methods
     async fn resolve_choice_type(
         &self,
-        _base_path: &str,
-        _context: &octofhir_fhir_model::type_system::PolymorphicContext,
+        base_path: &str,
+        context: &octofhir_fhir_model::type_system::PolymorphicContext,
     ) -> octofhir_fhir_model::error::Result<octofhir_fhir_model::type_system::PolymorphicResolution>
     {
-        use octofhir_fhir_model::type_system::{PolymorphicResolution, ResolutionMethod};
-        Ok(PolymorphicResolution {
-            resolved_type: "string".to_string(),
-            confidence_score: 0.5,
-            resolution_method: ResolutionMethod::DefaultFallback,
-            alternative_types: Vec::new(),
-            resolution_context: _context.clone(),
-        })
+        // Convert context and delegate to FhirSchemaModelProvider
+        let fhir_context = crate::core::types::ResolutionContext {
+            base_path: base_path.to_string(),
+            resource_type: Some(context.base_type.clone()),
+            profile_urls: Vec::new(),
+            discriminator_paths: Vec::new(),
+            metadata: std::collections::HashMap::new(),
+        };
+
+        match self
+            .fhir_schema_provider
+            .resolve_choice_type(base_path, &fhir_context)
+            .await
+        {
+            Ok(fhir_result) => {
+                use octofhir_fhir_model::type_system::{PolymorphicResolution, ResolutionMethod};
+                Ok(PolymorphicResolution {
+                    resolved_type: fhir_result.resolved_type,
+                    confidence_score: fhir_result.confidence,
+                    resolution_method: ResolutionMethod::DefaultFallback,
+                    alternative_types: fhir_result
+                        .alternatives
+                        .into_iter()
+                        .map(|alt| octofhir_fhir_model::type_system::AlternativeType {
+                            type_name: alt.type_name,
+                            confidence: alt.confidence,
+                            reasoning: alt.reason,
+                        })
+                        .collect(),
+                    resolution_context: context.clone(),
+                })
+            }
+            Err(e) => Err(octofhir_fhir_model::error::ModelError::generic(
+                e.to_string(),
+            )),
+        }
     }
 
     async fn get_choice_expansions(
         &self,
-        _choice_property: &str,
+        choice_property: &str,
     ) -> octofhir_fhir_model::error::Result<Vec<octofhir_fhir_model::choice_types::ChoiceExpansion>>
     {
-        Ok(Vec::new())
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider
+            .get_choice_expansions(choice_property)
+            .await
     }
 
     async fn infer_choice_type(
         &self,
-        _context: &octofhir_fhir_model::type_system::PolymorphicContext,
+        context: &octofhir_fhir_model::type_system::PolymorphicContext,
     ) -> octofhir_fhir_model::error::Result<octofhir_fhir_model::choice_types::TypeInference> {
-        use octofhir_fhir_model::choice_types::{InferenceContext, TypeInference};
-        Ok(TypeInference {
-            inference_rules: Vec::new(),
-            confidence_threshold: 0.5,
-            inference_context: InferenceContext {
-                polymorphic_context: Some(_context.clone()),
-                analyzed_value: None,
-                resource_context: Some("Resource".to_string()),
-                historical_usage: std::collections::HashMap::new(),
-            },
-            statistical_model: None,
-        })
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider.infer_choice_type(context).await
     }
 
     async fn get_choice_type_definition(
         &self,
-        _base_path: &str,
+        base_path: &str,
     ) -> octofhir_fhir_model::error::Result<
         Option<octofhir_fhir_model::choice_types::ChoiceTypeDefinition>,
     > {
-        Ok(None)
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider
+            .get_choice_type_definition(base_path)
+            .await
     }
 
     async fn conforms_to_profile(
@@ -630,10 +521,10 @@ impl ModelProvider for EmbeddedModelProvider {
         profile_url: &str,
     ) -> octofhir_fhir_model::error::Result<octofhir_fhir_model::conformance::ConformanceResult>
     {
-        Ok(octofhir_fhir_model::conformance::ConformanceResult::new(
-            profile_url,
-            "EmbeddedModelProvider",
-        ))
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider
+            .conforms_to_profile(profile_url)
+            .await
     }
 
     async fn analyze_expression_types(
@@ -642,54 +533,65 @@ impl ModelProvider for EmbeddedModelProvider {
     ) -> octofhir_fhir_model::error::Result<
         octofhir_fhir_model::fhirpath_types::ExpressionTypeAnalysis,
     > {
-        Ok(octofhir_fhir_model::fhirpath_types::ExpressionTypeAnalysis::new(expression))
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider
+            .analyze_expression_types(expression)
+            .await
     }
 
     async fn validate_fhirpath_expression(
         &self,
-        _expression: &str,
-        _base_type: &str,
+        expression: &str,
+        base_type: &str,
     ) -> octofhir_fhir_model::error::Result<octofhir_fhir_model::fhirpath_types::TypeCheckResult>
     {
-        Ok(octofhir_fhir_model::fhirpath_types::TypeCheckResult::success())
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider
+            .validate_fhirpath_expression(expression, base_type)
+            .await
     }
 
     async fn get_expression_dependencies(
         &self,
-        _expression: &str,
+        expression: &str,
     ) -> octofhir_fhir_model::error::Result<Vec<octofhir_fhir_model::fhirpath_types::TypeDependency>>
     {
-        Ok(Vec::new())
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider
+            .get_expression_dependencies(expression)
+            .await
     }
 
     async fn get_collection_semantics(
         &self,
-        _type_name: &str,
+        type_name: &str,
     ) -> octofhir_fhir_model::error::Result<octofhir_fhir_model::type_system::CollectionSemantics>
     {
-        use octofhir_fhir_model::type_system::{
-            CollectionSemantics, EmptyBehavior, IndexingType, SingletonEvaluation,
-        };
-        Ok(CollectionSemantics {
-            is_ordered: true,
-            allows_duplicates: true,
-            indexing_type: IndexingType::ZeroBased,
-            empty_behavior: EmptyBehavior::Propagate,
-            singleton_evaluation: SingletonEvaluation::Automatic,
-        })
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider
+            .get_collection_semantics(type_name)
+            .await
     }
 
     async fn get_optimization_hints(
         &self,
-        _expression: &str,
+        expression: &str,
     ) -> octofhir_fhir_model::error::Result<Vec<octofhir_fhir_model::navigation::OptimizationHint>>
     {
-        Ok(Vec::new())
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider
+            .get_optimization_hints(expression)
+            .await
     }
 
     async fn clear_caches(&self) -> octofhir_fhir_model::error::Result<()> {
-        // No-op for embedded provider - nothing to clear
-        Ok(())
+        // Delegate to FhirSchemaModelProvider and convert error type
+        match self.fhir_schema_provider.clear_caches().await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(octofhir_fhir_model::error::ModelError::generic(
+                e.to_string(),
+            )),
+        }
     }
 
     async fn get_type_reflection(
@@ -698,21 +600,10 @@ impl ModelProvider for EmbeddedModelProvider {
     ) -> octofhir_fhir_model::error::Result<
         Option<octofhir_fhir_model::reflection::TypeReflectionInfo>,
     > {
-        use octofhir_fhir_model::reflection::TypeReflectionInfo;
-
-        if !self.resource_type_exists(type_name) {
-            return Ok(None);
-        }
-
-        // Create basic FHIR resource properties for the given type
-        let elements = self.create_common_resource_properties(type_name);
-
-        Ok(Some(TypeReflectionInfo::ClassInfo {
-            namespace: "FHIR".to_string(),
-            name: type_name.to_string(),
-            base_type: Some("Resource".to_string()),
-            elements,
-        }))
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider
+            .get_type_reflection(type_name)
+            .await
     }
 
     async fn get_constraints(
@@ -720,12 +611,8 @@ impl ModelProvider for EmbeddedModelProvider {
         type_name: &str,
     ) -> octofhir_fhir_model::error::Result<Vec<octofhir_fhir_model::constraints::ConstraintInfo>>
     {
-        if let Ok(_hierarchy) = self.build_type_hierarchy(type_name).await {
-            let constraints: Vec<octofhir_fhir_model::constraints::ConstraintInfo> = Vec::new();
-            Ok(constraints)
-        } else {
-            Ok(Vec::new())
-        }
+        // Delegate to FhirSchemaModelProvider
+        self.fhir_schema_provider.get_constraints(type_name).await
     }
 
     fn get_fhir_version(&self) -> ModelProviderFhirVersion {
@@ -754,93 +641,5 @@ impl ModelProvider for EmbeddedModelProvider {
     async fn refresh_resource_types(&self) -> octofhir_fhir_model::error::Result<()> {
         // No-op for embedded provider - types are static
         Ok(())
-    }
-}
-
-impl EmbeddedModelProvider {
-    /// Create common FHIR resource properties for a given resource type
-    fn create_common_resource_properties(
-        &self,
-        resource_type: &str,
-    ) -> Vec<octofhir_fhir_model::reflection::ElementInfo> {
-        use octofhir_fhir_model::reflection::{ElementInfo, TypeReflectionInfo};
-
-        let mut elements = Vec::new();
-
-        // Add common properties that most FHIR resources have
-        let common_properties = match resource_type {
-            "Patient" => vec![
-                ("name", "HumanName", 0, None),
-                ("gender", "code", 0, Some(1)),
-                ("birthDate", "date", 0, Some(1)),
-                ("address", "Address", 0, None),
-                ("telecom", "ContactPoint", 0, None),
-                ("identifier", "Identifier", 0, None),
-                ("active", "boolean", 0, Some(1)),
-                ("deceased", "boolean", 0, Some(1)),
-                ("maritalStatus", "CodeableConcept", 0, Some(1)),
-                ("contact", "PatientContact", 0, None),
-                ("communication", "PatientCommunication", 0, None),
-                ("generalPractitioner", "Reference", 0, None),
-                ("managingOrganization", "Reference", 0, Some(1)),
-                ("link", "PatientLink", 0, None),
-            ],
-            "Observation" => vec![
-                ("status", "code", 1, Some(1)),
-                ("code", "CodeableConcept", 1, Some(1)),
-                ("subject", "Reference", 0, Some(1)),
-                ("value", "Quantity", 0, Some(1)),
-                ("valueQuantity", "Quantity", 0, Some(1)),
-                ("valueString", "string", 0, Some(1)),
-                ("valueBoolean", "boolean", 0, Some(1)),
-                ("effectiveDateTime", "dateTime", 0, Some(1)),
-                ("issued", "instant", 0, Some(1)),
-                ("performer", "Reference", 0, None),
-                ("interpretation", "CodeableConcept", 0, None),
-                ("bodySite", "CodeableConcept", 0, Some(1)),
-                ("method", "CodeableConcept", 0, Some(1)),
-                ("component", "ObservationComponent", 0, None),
-            ],
-            "Procedure" => vec![
-                ("status", "code", 1, Some(1)),
-                ("code", "CodeableConcept", 1, Some(1)),
-                ("subject", "Reference", 1, Some(1)),
-                ("performedDateTime", "dateTime", 0, Some(1)),
-                ("performer", "Reference", 0, None),
-                ("location", "Reference", 0, Some(1)),
-                ("bodySite", "CodeableConcept", 0, None),
-                ("outcome", "CodeableConcept", 0, Some(1)),
-                ("reasonCode", "CodeableConcept", 0, None),
-                ("note", "Annotation", 0, None),
-            ],
-            _ => vec![
-                // Generic resource properties
-                ("id", "id", 0, Some(1)),
-                ("meta", "Meta", 0, Some(1)),
-                ("implicitRules", "uri", 0, Some(1)),
-                ("language", "code", 0, Some(1)),
-                ("text", "Narrative", 0, Some(1)),
-                ("extension", "Extension", 0, None),
-                ("modifierExtension", "Extension", 0, None),
-            ],
-        };
-
-        for (name, type_name, min, max) in common_properties {
-            elements.push(ElementInfo {
-                name: name.to_string(),
-                type_info: TypeReflectionInfo::SimpleType {
-                    namespace: "FHIR".to_string(),
-                    name: type_name.to_string(),
-                    base_type: None,
-                },
-                min_cardinality: min,
-                max_cardinality: max,
-                is_summary: name == "id" || name == "meta",
-                is_modifier: false,
-                documentation: None,
-            });
-        }
-
-        elements
     }
 }
