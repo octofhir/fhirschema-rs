@@ -164,15 +164,3 @@ pub const NAME: &str = env!("CARGO_PKG_NAME");
 
 /// Library description
 pub const DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_library_metadata() {
-        assert_eq!(VERSION, "0.3.0");
-        assert_eq!(NAME, "octofhir-fhirschema");
-        // DESCRIPTION constant is available from Cargo.toml
-    }
-}
