@@ -1,269 +1,171 @@
 # OctoFHIR FHIRSchema
 
-[![Crates.io](https://img.shields.io/crates/v/octofhir-fhirschema.svg)](https://crates.io/crates/octofhir-fhirschema)
-[![Documentation](https://docs.rs/octofhir-fhirschema/badge.svg)](https://docs.rs/octofhir-fhirschema)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+A fresh Rust implementation of FHIRSchema conversion and validation.
 
-A high-performance Rust library for working with FHIRSchema that provides both library functionality and an optional CLI. This library converts FHIR StructureDefinitions into FHIRSchema format and validates FHIR resources against FHIRSchema definitions.
+## Overview
 
-## Features
+This project provides:
+- **Converter**: Transforms FHIR StructureDefinitions into FHIRSchema format
+- **Validator**: Validates FHIR resources against FHIRSchema definitions  
+- **Schema Generator**: CLI tool for generating precompiled schemas
 
-- 🚀 **High Performance**: Async/await throughout with efficient memory usage and parallel processing
-- 🔄 **Full Conversion**: Convert FHIR StructureDefinitions to FHIRSchema format with parallel batch processing
-- ✅ **Validation**: Validate FHIR resources against FHIRSchema definitions
-- 📦 **Package Management**: Advanced package management with registry, indexing, and pipeline support
-- 🛠️ **CLI Tool**: Optional command-line interface for standalone usage
-- 🌐 **Server Mode**: Optional HTTP server for schema management and validation
-- 🧪 **Golden Test Compatible**: 100% compatibility with reference TypeScript implementation
-- 💾 **Storage & Caching**: Hierarchical caching system with compression and enhanced storage management
-- 🔍 **Search & Discovery**: Search StructureDefinitions across FHIR packages with advanced indexing
+## Project Structure
 
-## Quick Start
+- **`octofhir-fhirschema`** - Main library crate with core functionality
+- **`octofhir-fhirschema-devtools`** - Development tools including schema generator
 
-### Library Usage
+## Installation
 
 Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-octofhir-fhirschema = "0.2"
-octofhir-canonical-manager = "0.1"
+octofhir-fhirschema = "0.1.0"
 ```
 
-#### Convert StructureDefinition to FHIRSchema
+## Usage
+
+### Converting StructureDefinition to FHIRSchema
 
 ```rust
-use octofhir_fhirschema::*;
-use octofhir_canonical_manager::CanonicalManager;
+use octofhir_fhirschema::{translate, StructureDefinition};
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Load a StructureDefinition
-    let mut structure_def: StructureDefinition = 
-        serde_json::from_str(&std::fs::read_to_string("patient.json")?)?;
-    
-    // Extract elements from snapshot/differential
-    structure_def.extract_elements()?;
-    
-    // Convert to FHIRSchema
-    let converter = FhirSchemaConverter::new();
-    let schema = converter.convert(&structure_def)?;
-    
-    // Save the result
-    let output = serde_json::to_string_pretty(&schema)?;
-    std::fs::write("patient.fhirschema.json", output)?;
-    
-    Ok(())
+// Load your StructureDefinition
+let structure_definition: StructureDefinition = serde_json::from_str(json_string)?;
+
+// Convert to FHIRSchema
+let schema = translate(structure_definition, None)?;
+
+println!("Converted schema: {}", schema.name);
+```
+
+### Validating FHIR Resources
+
+```rust
+use octofhir_fhirschema::{validate, ValidationContext, FhirSchema};
+use std::collections::HashMap;
+
+// Create validation context with schemas
+let mut schemas = HashMap::new();
+schemas.insert("Patient".to_string(), patient_schema);
+let context = ValidationContext { schemas };
+
+// Validate resource
+let patient_data = serde_json::json!({
+    "resourceType": "Patient",
+    "id": "example",
+    "active": true
+});
+
+let result = validate(&context, vec![], &patient_data);
+
+if result.valid {
+    println!("Resource is valid!");
+} else {
+    println!("Validation errors: {:?}", result.errors);
 }
 ```
 
-#### Validate FHIR Schema
+### Schema Generator CLI
 
-```rust
-use octofhir_fhirschema::*;
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Load a FHIRSchema
-    let schema: FhirSchema = 
-        serde_json::from_str(&std::fs::read_to_string("patient.fhirschema.json")?)?;
-    
-    // Validate the schema
-    let validator = BasicSchemaValidator;
-    let issues = validator.validate_schema(&schema)?;
-    
-    if issues.is_empty() {
-        println!("✅ Schema is valid!");
-    } else {
-        println!("❌ Schema has {} validation issues", issues.len());
-        for issue in issues {
-            println!("  - {}: {}", issue.code, issue.message);
-        }
-    }
-    
-    Ok(())
-}
-```
-
-### CLI Usage
-
-Install the CLI tool:
+Generate precompiled schemas for different FHIR versions:
 
 ```bash
-cargo install octofhir-fhirschema --features cli
+# Generate R4 schemas
+cargo run --bin schema-generator -- --version r4 --output ./schemas
+
+# Generate R4B schemas  
+cargo run --bin schema-generator -- --version r4b --output ./schemas
+
+# Generate R5 schemas
+cargo run --bin schema-generator -- --version r5 --output ./schemas
+
+# Generate R6 schemas
+cargo run --bin schema-generator -- --version r6 --output ./schemas
 ```
 
-#### Convert StructureDefinition to FHIRSchema
+## Core Types
 
-```bash
-# Convert a single file
-octofhir-fhirschema convert-structure-definition \
-  --input patient-structuredefinition.json \
-  --output patient.fhirschema.json
+### FhirSchema
+The target schema format with elements, constraints, and metadata.
 
-# Download and convert FHIR packages
-octofhir-fhirschema download \
-  --package hl7.fhir.r4.core \
-  --version 4.0.1 \
-  --output ./schemas/ \
-  --resource-types Patient,Observation
-```
+### StructureDefinition  
+Input FHIR StructureDefinition with differential elements.
 
-#### Validate FHIRSchema
+### ValidationContext
+Contains schemas for validation lookup.
 
-```bash
-# Validate a schema file
-octofhir-fhirschema validate --schema patient.fhirschema.json
-
-# Get detailed JSON output
-octofhir-fhirschema validate --schema patient.fhirschema.json --format json
-```
-
-#### Schema Information
-
-```bash
-# Show schema details
-octofhir-fhirschema info --schema patient.fhirschema.json
-```
-
-#### Package Management
-
-```bash
-# Install FHIR packages
-octofhir-fhirschema package install hl7.fhir.r4.core@4.0.1
-
-# List installed FHIR packages
-octofhir-fhirschema package list
-
-# Search for StructureDefinitions
-octofhir-fhirschema package search --query Patient
-
-# Show schema by canonical URL
-octofhir-fhirschema package show --url http://hl7.org/fhir/StructureDefinition/Patient
-
-# Uninstall a package
-octofhir-fhirschema package uninstall hl7.fhir.r4.core@4.0.1
-```
-
-## Architecture
-
-The library is organized into several key modules:
-
-- **`converter`**: Converts FHIR StructureDefinitions to FHIRSchema format with adaptive and parallel processing
-- **`validation`**: Validates FHIR resources against FHIRSchema definitions  
-- **`types`**: Core FHIRSchema data structures and types
-- **`storage`**: Hierarchical caching and enhanced storage management with compression
-- **`package`**: Package management system with registry, indexing, and pipeline support
-- **`cli`**: Command-line interface for package management and schema operations
-- **`error`**: Comprehensive error handling
-
-## Integration with OctoFHIR Ecosystem
-
-This library integrates seamlessly with the broader OctoFHIR ecosystem:
-
-- **`octofhir-canonical-manager`**: For FHIR package management and canonical URL resolution
-- **Storage compatibility**: Shares configuration and storage patterns with other OctoFHIR tools
-
-## Performance
-
-Based on golden test benchmarks:
-
-- **Conversion Speed**: 7 complex schemas converted in 0.01 seconds with parallel processing support
-- **Memory Efficiency**: Maximum 77MB memory usage during conversion with optimized storage
-- **Parallel Processing**: Adaptive converter with dynamic batch sizing for optimal throughput
-- **Caching**: Hierarchical LRU caching system with compression reducing memory footprint by up to 70%
-- **Compatibility**: 100% compatibility with reference TypeScript implementation (7/7 golden tests passing)
+### ValidationResult
+Results of validation with errors and success flag.
 
 ## Features
 
-### Core Features
-
-- [x] StructureDefinition to FHIRSchema conversion with adaptive parallelization
-- [x] FHIRSchema validation engine
-- [x] Element transformation and constraint handling
-- [x] Choice type expansion and slicing support
-- [x] Reference validation and primitive extensions
-- [x] FHIRPath constraint evaluation
-
-### CLI Features
-
-- [x] Convert StructureDefinition files to FHIRSchema
-- [x] Validate FHIRSchema files
-- [x] Display schema information and statistics
-- [x] Download and convert FHIR packages
-- [x] Search StructureDefinitions across packages with indexing
-- [x] Advanced package management (install, uninstall, list, search)
-- [x] Schema retrieval by canonical URL
-
-### Storage Features
-
-- [x] Hierarchical caching system with multiple tiers
-- [x] Enhanced storage manager with compression (LZ4, Bincode)
-- [x] In-memory schema storage with concurrent access
-- [x] LRU caching for frequently accessed schemas
-- [x] Optional disk-based persistence
-- [x] Schema metadata and dependency tracking
-
-### Package Features
-
-- [x] Package registry for FHIR package management
-- [x] Schema indexing for fast lookups
-- [x] Processing pipeline for batch operations
-- [x] Package specification support
-- [x] Integration with octofhir-canonical-manager
+- **Clean Architecture**: Simple, maintainable code without over-engineering
+- **Type Safety**: Leverages Rust's type system for compile-time safety
+- **Performance**: Efficient algorithms and minimal allocations
+- **Multi-Version Support**: R4, R4B, R5, R6 FHIR versions
+- **Binary Serialization**: Fast loading of precompiled schemas
 
 ## Development
+
+### Running Tests
+
+```bash
+cargo test
+```
 
 ### Building
 
 ```bash
-# Build library only
-cargo build
-
-# Build with CLI support
-cargo build --features cli
-
-# Build with all features
-cargo build --features all
+cargo build --release
 ```
 
-### Testing
+### Generating Documentation
 
 ```bash
-# Run all tests
-cargo test
-
-# Run golden tests specifically
-cargo test golden
-
-# Run with output
-cargo test -- --nocapture
+cargo doc --open
 ```
 
-### Benchmarking
+## Testing
 
-```bash
-# Run performance benchmarks
-cargo bench
-```
+The implementation includes comprehensive tests:
 
-## Contributing
+- **Unit Tests**: Test individual components (converter, validator, path processing)
+- **Integration Tests**: Test full conversion and validation workflows
+- **Performance Tests**: Ensure efficient processing of large schemas
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+## API Reference
+
+### Main Functions
+
+- `translate(structure_definition, context)` - Convert StructureDefinition to FHIRSchema
+- `validate(context, path, data)` - Validate FHIR resource against schemas
+
+### Core Types
+
+- `FhirSchema` - Target schema format
+- `StructureDefinition` - Input FHIR structure definition  
+- `ValidationContext` - Schema lookup context
+- `ValidationResult` - Validation results with errors
 
 ## License
 
-This project is licensed under either of
+Licensed under either of
 
-- Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT License ([LICENSE-MIT](LICENSE-MIT))
 
 at your option.
 
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes with tests
+4. Run the test suite
+5. Submit a pull request
+
 ## References
 
-- [FHIRSchema Specification](https://github.com/atomic-ehr/fhirschema/blob/main/spec/fhirschema-specification.md)
-- [OctoFHIR Canonical Manager](https://crates.io/crates/octofhir-canonical-manager)
-- [FHIR R4 Specification](http://hl7.org/fhir/R4/)
-
-Made with ❤️ by OctoFHIR Team 🐙🦀
+- [FHIR StructureDefinition Specification](http://hl7.org/fhir/structuredefinition.html)
+- [FHIRSchema Format Documentation](https://github.com/fhir-schema/fhirschema)

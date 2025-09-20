@@ -28,7 +28,7 @@ jobs:
       - name: Extract version from Cargo.toml
         id: version
         run: |
-          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          VERSION=$(grep '^version = ' octofhir-fhirschema/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Extracted version: $VERSION"
 
@@ -52,12 +52,16 @@ jobs:
             echo "already_published=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Install just
+        uses: extractions/setup-just@v1
+
       - name: Run full CI checks
         run: |
-          cargo fmt -- --check
-          cargo clippy --all-features
-          cargo test --all-features
-          cargo doc --all-features --no-deps
+          just format-check
+          just clippy
+          cargo check --workspace
+          just test
+          just docs
 
   release:
     name: Publish Release
@@ -70,6 +74,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install just
+        uses: extractions/setup-just@v1
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -79,10 +86,12 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
 
+
       - name: Dry run publish
         if: ${{ inputs.dry_run }}
         run: |
           echo "🧪 Performing dry run publish..."
+          cd octofhir-fhirschema
           cargo publish --dry-run
           echo "✅ Dry run completed successfully"
 
@@ -91,9 +100,10 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          echo "🚀 Publishing to crates.io..."
+          echo "🚀 Publishing octofhir-fhirschema to crates.io..."
+          cd octofhir-fhirschema
           cargo publish
-          echo "✅ Successfully published to crates.io"
+          echo "✅ Successfully published octofhir-fhirschema to crates.io"
 
       - name: Wait for crates.io propagation
         if: ${{ !inputs.dry_run }}

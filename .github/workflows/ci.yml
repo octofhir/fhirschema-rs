@@ -33,6 +33,9 @@ jobs:
           toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
 
+      - name: Install just
+        uses: extractions/setup-just@v1
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -45,19 +48,19 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Check formatting
-        run: cargo fmt -- --check
+        run: just format-check
 
       - name: Run clippy
-        run: cargo clippy --all-features
+        run: just clippy
 
       - name: Check compilation
-        run: cargo check --all-targets
+        run: cargo check --workspace
 
       - name: Run tests
-        run: cargo test --all-features
+        run: just test
 
       - name: Build documentation
-        run: cargo doc --all-features --no-deps
+        run: just docs
 
   security:
     name: Security Audit

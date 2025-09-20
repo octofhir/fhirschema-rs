@@ -3,53 +3,22 @@
 # Core development commands:
 #   just check                 # Check formatting and linting
 #   just test                  # Run all tests
-#   just ci                    # Run CI checks (format, lint, test, docs, audit)
+#   just ci                    # Run CI checks (format, lint, test, docs)
+#   just generate-schemas      # Generate precompiled FHIR schemas
 
-# Default task - run tests and check
+# Default task
 default: test check
 
 # Build the project
 build:
     cargo build
 
-# Build with all features
-build-all:
-    cargo build --all-features
-
 # Run tests
 test:
     cargo test
 
-# Run tests with all features
-test-all:
-    cargo test --all-features
-
-# Run tests with coverage
-test-coverage:
-    cargo tarpaulin --out Html --output-dir coverage
-
 # Check code formatting and linting
 check: format-check clippy
-
-# Comprehensive check - format, clippy, and compilation
-check-all: format-check clippy check-compile check-tests
-    @echo "✓ All checks passed"
-
-# Check if code compiles
-check-compile:
-    cargo check --all-targets
-
-# Check if tests compile
-check-tests:
-    cargo check --tests
-
-# Check with strict clippy (deny warnings)
-check-strict:
-    cargo clippy --all-features --all-targets -- -D warnings
-
-# Check formatting without fixing
-check-format:
-    cargo fmt --all -- --check
 
 # Format code
 format:
@@ -63,35 +32,10 @@ format-check:
 clippy:
     cargo clippy --all-features
 
-# Fix clippy issues automatically
-clippy-fix:
+# Fix all format and clippy issues
+fix-all: format
     cargo clippy --all-features --fix --allow-dirty --allow-staged
-
-# Fix all format, check, and clippy issues
-fix-all: format clippy-fix cargo-fix
-    @echo "✓ Applied all automatic fixes"
-
-# Run cargo fix to apply automatic code fixes
-cargo-fix:
     cargo fix --all-targets --allow-dirty --allow-staged
-
-# Fix clippy issues for specific targets
-clippy-fix-lib:
-    cargo clippy --fix --lib --allow-dirty --allow-staged
-
-clippy-fix-tests:
-    cargo clippy --fix --tests --allow-dirty --allow-staged
-
-clippy-fix-all-targets:
-    cargo clippy --fix --all-targets --allow-dirty --allow-staged
-
-# Show what clippy would fix (dry run)
-clippy-check:
-    cargo clippy --all-targets
-
-# Show formatting issues without fixing
-format-diff:
-    cargo fmt -- --check --verbose
 
 # Build documentation
 docs:
@@ -101,123 +45,81 @@ docs:
 clean:
     cargo clean
 
-# Run benchmarks
-bench:
-    cargo bench
-
-# Install development dependencies
-install-dev:
-    cargo install cargo-tarpaulin
-    cargo install cargo-audit
-    cargo install cargo-outdated
-
-# Security audit
-audit:
-    cargo audit
-
-# Check for outdated dependencies
-outdated:
-    cargo outdated
-
-# Create a new release (requires argument: major, minor, patch)
-release version:
-    cargo release {{version}}
-
 # Run all quality checks
-ci: format-check clippy test-all docs audit
+ci: format-check clippy test docs
 
-# Development workflow - watch for changes
-watch:
-    cargo watch -x "test --all-features"
+# Generate precompiled FHIR schemas for all versions (default)
+generate-schemas:
+    @echo "🚀 Generating Precompiled FHIR Schemas (All Versions)"
+    @echo "===================================================="
 
-# Quick development check
-dev: format clippy test
+    # Build the schema generator first
+    @echo "🔧 Building schema-generator binary..."
+    cargo build --bin schema-generator --release -p octofhir-fhirschema-devtools
+    @echo "  ✅ Schema generator ready"
 
-# Pre-commit checks - format, fix, check, and test
-pre-commit: fix-all check-all test
-    @echo "✓ Pre-commit checks completed"
+    @echo "🏭 Generating schemas for all FHIR versions..."
+    ./target/release/schema-generator --all-versions --output octofhir-fhirschema/precompiled_schemas
 
-# Full development cycle - fix, check, test, and verify
-full-check: fix-all check-all test-all
-    @echo "✓ Full development cycle completed"
-
-# Example usage - create sample test
-example-usage:
-    @echo "🚀 Running example usage of the FHIR schema library..."
-    cargo run --example simple_trait_test
-    @echo "✅ Example completed successfully"
-
-# Resource type extraction test
-test-resource-types:
-    @echo "🧪 Testing resource type extraction and O(1) checking..."
-    cargo test --test resource_type_extraction_tests -- --nocapture
-    @echo "✅ Resource type tests completed"
-
-# Generate precompiled FHIR schemas for fast startup
-build-precompiled-schemas:
-    @echo "🚀 Building Precompiled FHIR Schemas with Real Conversion"
-    @echo "========================================================"
-    
-    # Build the schema builder first
-    @echo "🔧 Building schema-builder binary..."
-    cargo build --bin schema-builder --release
-    @echo "  ✅ Schema builder ready"
-    
-    # Run the schema builder to generate real schemas
-    @echo "🏭 Generating schemas from FHIR StructureDefinitions..."
-    ./target/release/schema-builder --output-dir precompiled_schemas --version all
-    @echo "  ✅ Schema conversion completed"
-    
     @echo ""
-    @echo "✅ Precompiled schemas generation completed!"
-    @echo ""
-    @echo "🚀 Next steps:"
-    @echo "  1. Build with: cargo build --features embedded-providers"  
-    @echo "  2. Use CompositeModelProvider for best performance"
-    @echo "  3. Test with: just test-embedded"
+    @echo "Generated files:"
+    @ls -la octofhir-fhirschema/precompiled_schemas/*.json || echo "No .json files found"
 
-# Test the embedded provider with precompiled schemas
-test-embedded:
-    @echo "🧪 Testing EmbeddedModelProvider with precompiled schemas..."
-    just build-precompiled-schemas
-    cargo test --example embedded_provider_usage --features embedded-providers -- --nocapture
-    @echo "✅ Embedded provider tests completed"
+# Generate schemas for a specific FHIR version
+generate-schemas-version version:
+    @echo "🚀 Generating Precompiled FHIR Schemas for {{version}}"
+    @echo "===================================================="
 
-# Build with all performance optimizations
-build-optimized:
-    @echo "🚀 Building with all performance optimizations..."
-    just build-precompiled-schemas
-    cargo build --release --features embedded-providers,dynamic-caching
-    @echo "✅ Optimized build completed"
+    @echo "🔧 Building schema-generator binary..."
+    cargo build --bin schema-generator --release -p octofhir-fhirschema-devtools
+    @echo "  ✅ Schema generator ready"
 
-# Build precompiled schemas for a specific FHIR version
-build-precompiled-version version:
-    @echo "🚀 Building Precompiled FHIR Schemas for {{version}}"
-    @echo "=================================================="
-    
-    # Build the schema builder first
-    @echo "🔧 Building schema-builder binary..."
-    cargo build --bin schema-builder --release
-    @echo "  ✅ Schema builder ready"
-    
-    # Run the schema builder for specific version
     @echo "🏭 Generating schemas for FHIR {{version}}..."
-    ./target/release/schema-builder --output-dir precompiled_schemas --version {{version}}
+    ./target/release/schema-generator --version {{version}} --output octofhir-fhirschema/precompiled_schemas
     @echo "  ✅ Schema conversion completed for {{version}}"
 
+# Generate schemas with only core resource types (faster)
+generate-schemas-core:
+    @echo "🚀 Generating Core FHIR Schemas (Core Resources Only)"
+    @echo "===================================================="
+
+    @echo "🔧 Building schema-generator binary..."
+    cargo build --bin schema-generator --release -p octofhir-fhirschema-devtools
+    @echo "  ✅ Schema generator ready"
+
+    @echo "🏭 Generating core schemas for all FHIR versions..."
+    ./target/release/schema-generator --all-versions --core-only --output octofhir-fhirschema/precompiled_schemas
+
+    @echo ""
+    @echo "✅ Core schemas generation completed!"
+
+# Generate schemas as individual JSON files (for debugging)
+generate-schemas-individual version="r4":
+    @echo "🚀 Generating Individual Schema Files for FHIR {{version}}"
+    @echo "======================================================="
+
+    @echo "🔧 Building schema-generator binary..."
+    cargo build --bin schema-generator --release -p octofhir-fhirschema-devtools
+    @echo "  ✅ Schema generator ready"
+
+    @echo "🏭 Generating individual schemas for FHIR {{version}}..."
+    ./target/release/schema-generator --version {{version}} --output schema_output --individual
+    @echo "  ✅ Individual schema files generated in schema_output/{{version}}_schemas/"
+
 # Clean precompiled schemas
-clean-precompiled-schemas:
+clean-schemas:
     @echo "🧹 Cleaning precompiled schemas..."
-    rm -rf precompiled_schemas/
-    @echo "  ✅ Precompiled schemas cleaned"
+    rm -rf octofhir-fhirschema/precompiled_schemas/
+    rm -rf schema_output/
+    @echo "  ✅ Schemas cleaned"
 
 # Show schema statistics
 schema-stats:
     #!/bin/bash
     echo "📊 Precompiled Schema Statistics"
     echo "================================"
-    if [ -d precompiled_schemas ]; then
-        for file in precompiled_schemas/*.bin; do
+    if [ -d octofhir-fhirschema/precompiled_schemas ]; then
+        for file in octofhir-fhirschema/precompiled_schemas/*.json; do
             if [ -f "$file" ]; then
                 size=$(wc -c < "$file" | tr -d ' ')
                 if command -v numfmt >/dev/null 2>&1; then
@@ -226,12 +128,27 @@ schema-stats:
                     human_size="$size bytes"
                 fi
                 filename=$(basename "$file")
-                echo "  📁 $filename: $human_size"
+                # Extract schema count from JSON file
+                if command -v jq >/dev/null 2>&1; then
+                    count=$(jq 'length' "$file" 2>/dev/null || echo "?")
+                    echo "  📁 $filename: $human_size ($count schemas)"
+                else
+                    echo "  📁 $filename: $human_size"
+                fi
             fi
         done
-        total_size=$(du -sh precompiled_schemas 2>/dev/null | cut -f1 || echo "0")
+        total_size=$(du -sh octofhir-fhirschema/precompiled_schemas 2>/dev/null | cut -f1 || echo "0")
         echo "  📦 Total: $total_size"
+        echo ""
+        echo "💡 Install 'jq' to see schema counts: brew install jq"
     else
-        echo "  ❌ No precompiled schemas found. Run 'just build-precompiled-schemas' first."
+        echo "  ❌ No precompiled schemas found. Run 'just generate-schemas' first."
     fi
+
+# Test the embedded schemas functionality
+test-embedded:
+    @echo "🧪 Testing embedded schemas functionality..."
+    just generate-schemas
+    cargo test --lib embedded::tests -- --nocapture
+    @echo "✅ Embedded schema tests completed"
 

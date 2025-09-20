@@ -141,7 +141,6 @@ For debugging issues:
 
 1. **Unit Tests**: Test individual components and functions
 2. **Integration Tests**: Test component interactions
-3. **Golden Tests**: Ensure compatibility with reference TypeScript implementation
 4. **Benchmarks**: Performance regression testing
 
 ### Running Tests
