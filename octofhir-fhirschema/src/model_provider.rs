@@ -158,14 +158,14 @@ impl FhirSchemaModelProvider {
         }
 
         // Check schema hierarchy - use ONLY schema data, no hardcoding!
-        if let Some(schema) = self.get_schema(derived_type) {
-            if let Some(base_type_name) = &schema.base {
-                if base_type_name == base_type {
-                    return true;
-                }
-                // Recursive check up the hierarchy
-                return self.is_type_derived_from(base_type_name, base_type);
+        if let Some(schema) = self.get_schema(derived_type)
+            && let Some(base_type_name) = &schema.base
+        {
+            if base_type_name == base_type {
+                return true;
             }
+            // Recursive check up the hierarchy
+            return self.is_type_derived_from(base_type_name, base_type);
         }
 
         false
@@ -225,63 +225,59 @@ impl ModelProvider for FhirSchemaModelProvider {
         parent_type: &TypeInfo,
         property_name: &str,
     ) -> ModelResult<Option<TypeInfo>> {
-        if let Some(type_name) = &parent_type.name {
-            if let Some(schema) = self.get_schema(type_name) {
-                if let Some(elements) = &schema.elements {
-                    // First try direct property name match
-                    if let Some(element) = elements.get(property_name) {
-                        if let Some(element_type_name) = &element.type_name {
-                            let mapped_type = self.map_fhir_type(element_type_name);
-                            return Ok(Some(TypeInfo {
-                                type_name: mapped_type,
-                                singleton: Some(element.max == Some(1)),
-                                is_empty: Some(false),
-                                namespace: Some("FHIR".to_string()),
-                                name: Some(element_type_name.clone()),
-                            }));
-                        }
-                    }
+        if let Some(type_name) = &parent_type.name
+            && let Some(schema) = self.get_schema(type_name)
+            && let Some(elements) = &schema.elements
+        {
+            // First try direct property name match
+            if let Some(element) = elements.get(property_name)
+                && let Some(element_type_name) = &element.type_name
+            {
+                let mapped_type = self.map_fhir_type(element_type_name);
+                return Ok(Some(TypeInfo {
+                    type_name: mapped_type,
+                    singleton: Some(element.max == Some(1)),
+                    is_empty: Some(false),
+                    namespace: Some("FHIR".to_string()),
+                    name: Some(element_type_name.clone()),
+                }));
+            }
 
-                    // Handle choice navigation (e.g., value[x] -> valueString, valueInteger, etc.)
-                    // Look for choice base property (property name without type suffix)
-                    for (element_name, element) in elements {
-                        if element_name.ends_with("[x]") {
-                            let base_name = element_name.trim_end_matches("[x]");
-                            if let Some(type_suffix) = property_name.strip_prefix(base_name) {
-                                // Extract the type from the property name (e.g., "valueString" -> "String")
-                                if !type_suffix.is_empty() {
-                                    // Convert first character to lowercase for schema lookup
-                                    let mut chars = type_suffix.chars();
-                                    if let Some(first_char) = chars.next() {
-                                        let schema_type = format!(
-                                            "{}{}",
-                                            first_char.to_lowercase(),
-                                            chars.as_str()
-                                        );
+            // Handle choice navigation (e.g., value[x] -> valueString, valueInteger, etc.)
+            // Look for choice base property (property name without type suffix)
+            for (element_name, element) in elements {
+                if element_name.ends_with("[x]") {
+                    let base_name = element_name.trim_end_matches("[x]");
+                    if let Some(type_suffix) = property_name.strip_prefix(base_name) {
+                        // Extract the type from the property name (e.g., "valueString" -> "String")
+                        if !type_suffix.is_empty() {
+                            // Convert first character to lowercase for schema lookup
+                            let mut chars = type_suffix.chars();
+                            if let Some(first_char) = chars.next() {
+                                let schema_type =
+                                    format!("{}{}", first_char.to_lowercase(), chars.as_str());
 
-                                        // Check if this type is valid for this choice element
-                                        if let Some(choices) = &element.choices {
-                                            if choices.contains(&schema_type) {
-                                                let mapped_type = self.map_fhir_type(&schema_type);
-                                                return Ok(Some(TypeInfo {
-                                                    type_name: mapped_type,
-                                                    singleton: Some(element.max == Some(1)),
-                                                    is_empty: Some(false),
-                                                    namespace: if schema_type
-                                                        .chars()
-                                                        .next()
-                                                        .unwrap()
-                                                        .is_uppercase()
-                                                    {
-                                                        Some("FHIR".to_string())
-                                                    } else {
-                                                        Some("System".to_string())
-                                                    },
-                                                    name: Some(schema_type),
-                                                }));
-                                            }
-                                        }
-                                    }
+                                // Check if this type is valid for this choice element
+                                if let Some(choices) = &element.choices
+                                    && choices.contains(&schema_type)
+                                {
+                                    let mapped_type = self.map_fhir_type(&schema_type);
+                                    return Ok(Some(TypeInfo {
+                                        type_name: mapped_type,
+                                        singleton: Some(element.max == Some(1)),
+                                        is_empty: Some(false),
+                                        namespace: if schema_type
+                                            .chars()
+                                            .next()
+                                            .unwrap()
+                                            .is_uppercase()
+                                        {
+                                            Some("FHIR".to_string())
+                                        } else {
+                                            Some("System".to_string())
+                                        },
+                                        name: Some(schema_type),
+                                    }));
                                 }
                             }
                         }
@@ -321,12 +317,11 @@ impl ModelProvider for FhirSchemaModelProvider {
 
     /// Get element names from complex type using schema
     fn get_element_names(&self, parent_type: &TypeInfo) -> Vec<String> {
-        if let Some(type_name) = &parent_type.name {
-            if let Some(schema) = self.get_schema(type_name) {
-                if let Some(elements) = &schema.elements {
-                    return elements.keys().cloned().collect();
-                }
-            }
+        if let Some(type_name) = &parent_type.name
+            && let Some(schema) = self.get_schema(type_name)
+            && let Some(elements) = &schema.elements
+        {
+            return elements.keys().cloned().collect();
         }
         Vec::new()
     }
@@ -573,24 +568,25 @@ impl EmbeddedSchemaProvider {
                 self.inner.get_element_type(&parent_type, property).await
             {
                 // For choice types, try to determine the actual type from data
-                if property.contains("value") && data.is_object() {
-                    if let Some(obj) = data.as_object() {
-                        // Look for a property that starts with the choice base
-                        for key in obj.keys() {
-                            if key.starts_with("value") && key != "value" {
-                                // Extract the type (e.g., "valueString" -> "String")
-                                let type_suffix = &key[5..]; // Remove "value"
-                                return Ok(NavigationResult {
-                                    success: true,
-                                    result_type: Some(TypeInfo {
-                                        type_name: type_suffix.to_string(),
-                                        singleton: Some(true),
-                                        namespace: Some("System".to_string()),
-                                        name: Some(type_suffix.to_string()),
-                                        is_empty: Some(false),
-                                    }),
-                                });
-                            }
+                if property.contains("value")
+                    && data.is_object()
+                    && let Some(obj) = data.as_object()
+                {
+                    // Look for a property that starts with the choice base
+                    for key in obj.keys() {
+                        if key.starts_with("value") && key != "value" {
+                            // Extract the type (e.g., "valueString" -> "String")
+                            let type_suffix = &key[5..]; // Remove "value"
+                            return Ok(NavigationResult {
+                                success: true,
+                                result_type: Some(TypeInfo {
+                                    type_name: type_suffix.to_string(),
+                                    singleton: Some(true),
+                                    namespace: Some("System".to_string()),
+                                    name: Some(type_suffix.to_string()),
+                                    is_empty: Some(false),
+                                }),
+                            });
                         }
                     }
                 }

@@ -247,28 +247,27 @@ fn validate_schema_with_data(
             // Also check for excluded choices
             if let Some(elements) = &schema.elements {
                 for key in data_obj.keys() {
-                    if let Some(element_schema) = elements.get(key) {
-                        if element_schema.choice_of.as_ref() == Some(choice_name)
-                            && !choice_options.contains(key)
-                        {
-                            errors.push(ValidationError {
-                                error_type: "choice/excluded".to_string(),
-                                message: Some(format!(
-                                    "Choice element {} is not allowed, only {}",
-                                    choice_name,
-                                    choice_options.join(", ")
-                                )),
-                                path: {
-                                    let mut new_path = path.to_vec();
-                                    new_path.push(Value::String(choice_name.clone()));
-                                    new_path
-                                },
-                                value: None,
-                                expected: None,
-                                got: None,
-                                schema_path: Some(vec![Value::String("choices".to_string())]),
-                            });
-                        }
+                    if let Some(element_schema) = elements.get(key)
+                        && element_schema.choice_of.as_ref() == Some(choice_name)
+                        && !choice_options.contains(key)
+                    {
+                        errors.push(ValidationError {
+                            error_type: "choice/excluded".to_string(),
+                            message: Some(format!(
+                                "Choice element {} is not allowed, only {}",
+                                choice_name,
+                                choice_options.join(", ")
+                            )),
+                            path: {
+                                let mut new_path = path.to_vec();
+                                new_path.push(Value::String(choice_name.clone()));
+                                new_path
+                            },
+                            value: None,
+                            expected: None,
+                            got: None,
+                            schema_path: Some(vec![Value::String("choices".to_string())]),
+                        });
                     }
                 }
             }
@@ -330,32 +329,32 @@ fn validate_element_with_data(
         let array = data.as_array().unwrap();
 
         // Cardinality validation
-        if let Some(min) = element_schema.min {
-            if (array.len() as i32) < min {
-                errors.push(ValidationError {
-                    error_type: "min".to_string(),
-                    message: Some(format!("expected min={} got {}", min, array.len())),
-                    value: Some(Value::Number((array.len() as i32).into())),
-                    expected: Some(Value::Number(min.into())),
-                    got: None,
-                    path: path.to_vec(),
-                    schema_path: None,
-                });
-            }
+        if let Some(min) = element_schema.min
+            && (array.len() as i32) < min
+        {
+            errors.push(ValidationError {
+                error_type: "min".to_string(),
+                message: Some(format!("expected min={} got {}", min, array.len())),
+                value: Some(Value::Number((array.len() as i32).into())),
+                expected: Some(Value::Number(min.into())),
+                got: None,
+                path: path.to_vec(),
+                schema_path: None,
+            });
         }
 
-        if let Some(max) = element_schema.max {
-            if (array.len() as i32) > max {
-                errors.push(ValidationError {
-                    error_type: "max".to_string(),
-                    message: Some(format!("expected max={} got {}", max, array.len())),
-                    value: Some(Value::Number((array.len() as i32).into())),
-                    expected: Some(Value::Number(max.into())),
-                    got: None,
-                    path: path.to_vec(),
-                    schema_path: None,
-                });
-            }
+        if let Some(max) = element_schema.max
+            && (array.len() as i32) > max
+        {
+            errors.push(ValidationError {
+                error_type: "max".to_string(),
+                message: Some(format!("expected max={} got {}", max, array.len())),
+                value: Some(Value::Number((array.len() as i32).into())),
+                expected: Some(Value::Number(max.into())),
+                got: None,
+                path: path.to_vec(),
+                schema_path: None,
+            });
         }
 
         // Validate each array element
@@ -402,26 +401,24 @@ fn validate_element_with_data(
         errors.extend(result.errors);
 
         // Pattern validation
-        if let Some(pattern) = &element_schema.pattern {
-            if let Some(pattern_string) = &pattern.string {
-                if let Some(data_string) = data.as_str() {
-                    if data_string != pattern_string {
-                        errors.push(ValidationError {
-                            error_type: "pattern".to_string(),
-                            expected: Some(Value::String(pattern_string.clone())),
-                            got: Some(data.clone()),
-                            path: path.to_vec(),
-                            message: None,
-                            value: None,
-                            schema_path: {
-                                let mut schema_path = path.to_vec();
-                                schema_path.push(Value::String("pattern".to_string()));
-                                Some(schema_path)
-                            },
-                        });
-                    }
-                }
-            }
+        if let Some(pattern) = &element_schema.pattern
+            && let Some(pattern_string) = &pattern.string
+            && let Some(data_string) = data.as_str()
+            && data_string != pattern_string
+        {
+            errors.push(ValidationError {
+                error_type: "pattern".to_string(),
+                expected: Some(Value::String(pattern_string.clone())),
+                got: Some(data.clone()),
+                path: path.to_vec(),
+                message: None,
+                value: None,
+                schema_path: {
+                    let mut schema_path = path.to_vec();
+                    schema_path.push(Value::String("pattern".to_string()));
+                    Some(schema_path)
+                },
+            });
         }
     }
 
@@ -442,20 +439,18 @@ fn validate_type_with_data(
     if data.is_null() {
         // For array elements, check if there's a corresponding primitive extension
         if path.len() >= 2 {
-            if let Some(Value::Number(index)) = path.last() {
-                if let Some(Value::String(field_name)) = path.get(path.len() - 2) {
-                    let parent = get_parent_data_safe(root_data, path);
-                    if let Some(parent_obj) = parent.and_then(|p| p.as_object()) {
-                        let primitive_ext_key = format!("_{field_name}");
-                        if let Some(Value::Array(primitive_ext)) =
-                            parent_obj.get(&primitive_ext_key)
+            if let Some(Value::Number(index)) = path.last()
+                && let Some(Value::String(field_name)) = path.get(path.len() - 2)
+            {
+                let parent = get_parent_data_safe(root_data, path);
+                if let Some(parent_obj) = parent.and_then(|p| p.as_object()) {
+                    let primitive_ext_key = format!("_{field_name}");
+                    if let Some(Value::Array(primitive_ext)) = parent_obj.get(&primitive_ext_key) {
+                        let index_usize = index.as_u64().unwrap_or(0) as usize;
+                        if index_usize < primitive_ext.len()
+                            && !primitive_ext[index_usize].is_null()
                         {
-                            let index_usize = index.as_u64().unwrap_or(0) as usize;
-                            if index_usize < primitive_ext.len()
-                                && !primitive_ext[index_usize].is_null()
-                            {
-                                return true; // Allow null if primitive extension exists at same index
-                            }
+                            return true; // Allow null if primitive extension exists at same index
                         }
                     }
                 }
@@ -482,107 +477,102 @@ fn validate_type_with_data(
         "number" | "integer" => data.is_number(),
         _ => {
             // Check if it's a referenced type
-            if let Some(type_schema) = ctx.schemas.get(type_name) {
-                if type_schema.kind != "primitive-type" {
-                    // If parent schema has elements, don't validate type's elements
-                    // They will be validated by the merged elements
-                    if parent_schema.elements.is_some() {
-                        // Just validate the type without elements
-                        let mut type_schema_without_elements = type_schema.clone();
-                        type_schema_without_elements.elements = None;
-                        let result = validate_schema_with_data(
-                            ctx,
-                            &type_schema_without_elements,
-                            data,
-                            path,
-                            root_data,
-                        );
+            if let Some(type_schema) = ctx.schemas.get(type_name)
+                && type_schema.kind != "primitive-type"
+            {
+                // If parent schema has elements, don't validate type's elements
+                // They will be validated by the merged elements
+                if parent_schema.elements.is_some() {
+                    // Just validate the type without elements
+                    let mut type_schema_without_elements = type_schema.clone();
+                    type_schema_without_elements.elements = None;
+                    let result = validate_schema_with_data(
+                        ctx,
+                        &type_schema_without_elements,
+                        data,
+                        path,
+                        root_data,
+                    );
 
-                        for error in result.errors {
-                            let mut new_error = error;
-                            if let Some(ref mut schema_path) = new_error.schema_path {
-                                // Build correct schema path for nested type references
-                                let element_path: Vec<&str> =
-                                    path.iter().filter_map(|p| p.as_str()).collect();
-                                if let Some(parent_element) = element_path.last() {
-                                    // Check if the error schema-path already starts with the parent element
-                                    if schema_path.first().and_then(|s| s.as_str())
-                                        == Some(parent_element)
-                                    {
-                                        // Remove the duplicate parent element
-                                        let mut new_schema_path = element_path
-                                            .iter()
-                                            .take(element_path.len() - 1)
-                                            .map(|s| Value::String(s.to_string()))
-                                            .collect::<Vec<_>>();
-                                        new_schema_path
-                                            .push(Value::String(parent_element.to_string()));
-                                        new_schema_path.push(Value::String("type".to_string()));
-                                        new_schema_path.push(Value::String(type_name.to_string()));
-                                        new_schema_path.extend(schema_path.iter().skip(1).cloned());
-                                        new_error.schema_path = Some(new_schema_path);
-                                    } else {
-                                        let mut new_schema_path = element_path
-                                            .iter()
-                                            .take(element_path.len() - 1)
-                                            .map(|s| Value::String(s.to_string()))
-                                            .collect::<Vec<_>>();
-                                        new_schema_path
-                                            .push(Value::String(parent_element.to_string()));
-                                        new_schema_path.push(Value::String("type".to_string()));
-                                        new_schema_path.push(Value::String(type_name.to_string()));
-                                        new_schema_path.extend(schema_path.iter().cloned());
-                                        new_error.schema_path = Some(new_schema_path);
-                                    }
+                    for error in result.errors {
+                        let mut new_error = error;
+                        if let Some(ref mut schema_path) = new_error.schema_path {
+                            // Build correct schema path for nested type references
+                            let element_path: Vec<&str> =
+                                path.iter().filter_map(|p| p.as_str()).collect();
+                            if let Some(parent_element) = element_path.last() {
+                                // Check if the error schema-path already starts with the parent element
+                                if schema_path.first().and_then(|s| s.as_str())
+                                    == Some(parent_element)
+                                {
+                                    // Remove the duplicate parent element
+                                    let mut new_schema_path = element_path
+                                        .iter()
+                                        .take(element_path.len() - 1)
+                                        .map(|s| Value::String(s.to_string()))
+                                        .collect::<Vec<_>>();
+                                    new_schema_path.push(Value::String(parent_element.to_string()));
+                                    new_schema_path.push(Value::String("type".to_string()));
+                                    new_schema_path.push(Value::String(type_name.to_string()));
+                                    new_schema_path.extend(schema_path.iter().skip(1).cloned());
+                                    new_error.schema_path = Some(new_schema_path);
+                                } else {
+                                    let mut new_schema_path = element_path
+                                        .iter()
+                                        .take(element_path.len() - 1)
+                                        .map(|s| Value::String(s.to_string()))
+                                        .collect::<Vec<_>>();
+                                    new_schema_path.push(Value::String(parent_element.to_string()));
+                                    new_schema_path.push(Value::String("type".to_string()));
+                                    new_schema_path.push(Value::String(type_name.to_string()));
+                                    new_schema_path.extend(schema_path.iter().cloned());
+                                    new_error.schema_path = Some(new_schema_path);
                                 }
                             }
-                            errors.push(new_error);
                         }
-                        return result.valid;
-                    } else {
-                        let result =
-                            validate_schema_with_data(ctx, type_schema, data, path, root_data);
-                        for error in result.errors {
-                            let mut new_error = error;
-                            if let Some(ref mut schema_path) = new_error.schema_path {
-                                // Build correct schema path for nested type references
-                                let element_path: Vec<&str> =
-                                    path.iter().filter_map(|p| p.as_str()).collect();
-                                if let Some(parent_element) = element_path.last() {
-                                    // Similar logic as above
-                                    if schema_path.first().and_then(|s| s.as_str())
-                                        == Some(parent_element)
-                                    {
-                                        let mut new_schema_path = element_path
-                                            .iter()
-                                            .take(element_path.len() - 1)
-                                            .map(|s| Value::String(s.to_string()))
-                                            .collect::<Vec<_>>();
-                                        new_schema_path
-                                            .push(Value::String(parent_element.to_string()));
-                                        new_schema_path.push(Value::String("type".to_string()));
-                                        new_schema_path.push(Value::String(type_name.to_string()));
-                                        new_schema_path.extend(schema_path.iter().skip(1).cloned());
-                                        new_error.schema_path = Some(new_schema_path);
-                                    } else {
-                                        let mut new_schema_path = element_path
-                                            .iter()
-                                            .take(element_path.len() - 1)
-                                            .map(|s| Value::String(s.to_string()))
-                                            .collect::<Vec<_>>();
-                                        new_schema_path
-                                            .push(Value::String(parent_element.to_string()));
-                                        new_schema_path.push(Value::String("type".to_string()));
-                                        new_schema_path.push(Value::String(type_name.to_string()));
-                                        new_schema_path.extend(schema_path.iter().cloned());
-                                        new_error.schema_path = Some(new_schema_path);
-                                    }
-                                }
-                            }
-                            errors.push(new_error);
-                        }
-                        return result.valid;
+                        errors.push(new_error);
                     }
+                    return result.valid;
+                } else {
+                    let result = validate_schema_with_data(ctx, type_schema, data, path, root_data);
+                    for error in result.errors {
+                        let mut new_error = error;
+                        if let Some(ref mut schema_path) = new_error.schema_path {
+                            // Build correct schema path for nested type references
+                            let element_path: Vec<&str> =
+                                path.iter().filter_map(|p| p.as_str()).collect();
+                            if let Some(parent_element) = element_path.last() {
+                                // Similar logic as above
+                                if schema_path.first().and_then(|s| s.as_str())
+                                    == Some(parent_element)
+                                {
+                                    let mut new_schema_path = element_path
+                                        .iter()
+                                        .take(element_path.len() - 1)
+                                        .map(|s| Value::String(s.to_string()))
+                                        .collect::<Vec<_>>();
+                                    new_schema_path.push(Value::String(parent_element.to_string()));
+                                    new_schema_path.push(Value::String("type".to_string()));
+                                    new_schema_path.push(Value::String(type_name.to_string()));
+                                    new_schema_path.extend(schema_path.iter().skip(1).cloned());
+                                    new_error.schema_path = Some(new_schema_path);
+                                } else {
+                                    let mut new_schema_path = element_path
+                                        .iter()
+                                        .take(element_path.len() - 1)
+                                        .map(|s| Value::String(s.to_string()))
+                                        .collect::<Vec<_>>();
+                                    new_schema_path.push(Value::String(parent_element.to_string()));
+                                    new_schema_path.push(Value::String("type".to_string()));
+                                    new_schema_path.push(Value::String(type_name.to_string()));
+                                    new_schema_path.extend(schema_path.iter().cloned());
+                                    new_error.schema_path = Some(new_schema_path);
+                                }
+                            }
+                        }
+                        errors.push(new_error);
+                    }
+                    return result.valid;
                 }
             }
             true // Unknown types pass for now

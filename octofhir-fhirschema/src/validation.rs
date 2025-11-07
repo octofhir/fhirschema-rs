@@ -222,16 +222,14 @@ impl FhirSchemaValidator {
 
         for schema in current_schemas {
             // For root schemas, add base schema (inheritance chain)
-            if schema.kind == "resource" || schema.kind == "complex-type" {
-                if let Some(base_url) = &schema.base {
-                    if let Some(base_schema) = self.get_schema_by_url_or_name(base_url) {
-                        if !context.current_schemata.contains_key(base_url) {
-                            context
-                                .current_schemata
-                                .insert(base_url.clone(), base_schema.clone());
-                        }
-                    }
-                }
+            if (schema.kind == "resource" || schema.kind == "complex-type")
+                && let Some(base_url) = &schema.base
+                && let Some(base_schema) = self.get_schema_by_url_or_name(base_url)
+                && !context.current_schemata.contains_key(base_url)
+            {
+                context
+                    .current_schemata
+                    .insert(base_url.clone(), base_schema.clone());
             }
 
             // CRITICAL FIX: Do NOT add type schemas from ALL elements
@@ -251,16 +249,14 @@ impl FhirSchemaValidator {
 
         for schema in current_schemas {
             // Add base schemas for complex types (inheritance chain)
-            if schema.kind == "complex-type" || schema.kind == "primitive-type" {
-                if let Some(base_url) = &schema.base {
-                    if let Some(base_schema) = self.get_schema_by_url_or_name(base_url) {
-                        if !context.current_schemata.contains_key(base_url) {
-                            context
-                                .current_schemata
-                                .insert(base_url.clone(), base_schema.clone());
-                        }
-                    }
-                }
+            if (schema.kind == "complex-type" || schema.kind == "primitive-type")
+                && let Some(base_url) = &schema.base
+                && let Some(base_schema) = self.get_schema_by_url_or_name(base_url)
+                && !context.current_schemata.contains_key(base_url)
+            {
+                context
+                    .current_schemata
+                    .insert(base_url.clone(), base_schema.clone());
             }
         }
     }
@@ -318,10 +314,10 @@ impl FhirSchemaValidator {
 
                     // According to FHIR Schema spec: Add type schemas for this specific element
                     // This ensures we get the correct type schema for the element being validated
-                    if let Some(type_name) = &element.type_name {
-                        if let Some(type_schema) = self.get_schema_by_url_or_name(type_name) {
-                            result_schemata.insert(type_name.clone(), type_schema.clone());
-                        }
+                    if let Some(type_name) = &element.type_name
+                        && let Some(type_schema) = self.get_schema_by_url_or_name(type_name)
+                    {
+                        result_schemata.insert(type_name.clone(), type_schema.clone());
                     }
 
                     // Add elementReference schemas if present
@@ -504,15 +500,15 @@ impl FhirSchemaValidator {
 
         // Validate required elements only for resource schemas
         // This prevents base schemas like Narrative from incorrectly requiring elements
-        if schema.kind == "resource" {
-            if let Some(required) = &schema.required {
-                for required_element in required {
-                    if !obj.contains_key(required_element) {
-                        context.add_error(
-                            FhirSchemaErrorCode::CardinalityViolation,
-                            format!("Required element {required_element} is missing"),
-                        );
-                    }
+        if schema.kind == "resource"
+            && let Some(required) = &schema.required
+        {
+            for required_element in required {
+                if !obj.contains_key(required_element) {
+                    context.add_error(
+                        FhirSchemaErrorCode::CardinalityViolation,
+                        format!("Required element {required_element} is missing"),
+                    );
                 }
             }
         }
@@ -579,11 +575,11 @@ impl FhirSchemaValidator {
         // Check if any schema in current schemata explicitly defines this element as array
         // With the fixed collect/follow operations, this should now only find the correct schema
         for schema in context.current_schemata.values() {
-            if let Some(elements) = &schema.elements {
-                if let Some(element) = elements.get(element_name) {
-                    let is_array = element.array.unwrap_or(false);
-                    return is_array;
-                }
+            if let Some(elements) = &schema.elements
+                && let Some(element) = elements.get(element_name)
+            {
+                let is_array = element.array.unwrap_or(false);
+                return is_array;
             }
         }
 

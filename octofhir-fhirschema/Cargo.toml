@@ -1,6 +1,6 @@
 [package]
 name = "octofhir-fhirschema"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 authors = ["OctoFHIR Team<funyloony@gmail.com>"]
 description = "FHIR schema conversion and validation library"
@@ -22,7 +22,7 @@ async-trait = "0.1"
 
 # FHIR dependencies
 octofhir-fhir-model = { version = "0.1.5" }
-octofhir-canonical-manager = { version = "0.1.8" }
+octofhir-canonical-manager = { version = "0.1.13" }
 
 [dev-dependencies]
 serde_json = { workspace = true }

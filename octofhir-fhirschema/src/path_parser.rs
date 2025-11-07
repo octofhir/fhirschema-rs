@@ -44,12 +44,11 @@ pub fn parse_path(element: &StructureDefinitionElement) -> Vec<PathComponent> {
         if let Some(min) = element.min {
             slicing_obj["min"] = json!(min);
         }
-        if let Some(max) = &element.max {
-            if max != "*" {
-                if let Ok(max_val) = max.parse::<i32>() {
-                    slicing_obj["max"] = json!(max_val);
-                }
-            }
+        if let Some(max) = &element.max
+            && max != "*"
+            && let Ok(max_val) = max.parse::<i32>()
+        {
+            slicing_obj["max"] = json!(max_val);
         }
 
         path_item.slicing = Some(slicing_obj);
@@ -61,12 +60,11 @@ pub fn parse_path(element: &StructureDefinitionElement) -> Vec<PathComponent> {
         if let Some(min) = element.min {
             slice_obj["min"] = json!(min);
         }
-        if let Some(max) = &element.max {
-            if max != "*" {
-                if let Ok(max_val) = max.parse::<i32>() {
-                    slice_obj["max"] = json!(max_val);
-                }
-            }
+        if let Some(max) = &element.max
+            && max != "*"
+            && let Ok(max_val) = max.parse::<i32>()
+        {
+            slice_obj["max"] = json!(max_val);
         }
 
         path_item.slice = Some(slice_obj);

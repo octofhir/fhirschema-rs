@@ -1,5 +1,5 @@
 use clap::Parser;
-use octofhir_canonical_manager::{CanonicalManager, FcmConfig};
+use octofhir_canonical_manager::{CanonicalManager, FcmConfig, PackageSpec};
 use octofhir_fhirschema::{FhirSchema, StructureDefinition, translate};
 use std::collections::HashMap;
 use std::fs;
@@ -60,6 +60,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("📂 Output directory: {}", args.output.display());
 
         let versions = vec!["r4", "r4b", "r5", "r6"];
+
+        // Initialize canonical manager once for all versions
+        println!("🔧 Initializing Canonical Manager...");
+        let config = FcmConfig::load().await?;
+        let canonical_manager = CanonicalManager::new(config).await?;
+
+        // Collect all package specs for parallel installation
+        println!("📦 Preparing package specifications for all FHIR versions...");
+        let package_specs: Vec<PackageSpec> = versions
+            .iter()
+            .map(|version| {
+                let package_info = get_package_info(version)?;
+                Ok(PackageSpec {
+                    name: package_info.name,
+                    version: package_info.version,
+                    priority: 1,
+                })
+            })
+            .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+
+        // Install all packages in parallel (4-8x faster!)
+        println!("📥 Installing all FHIR packages in parallel...");
+        canonical_manager
+            .install_packages_parallel(package_specs)
+            .await?;
+        println!("✅ All packages installed successfully!");
+
         let mut total_schemas = 0;
 
         for version in versions {
@@ -69,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             version_args.version = version.to_string();
             version_args.all_versions = false; // Prevent recursion
 
-            let schemas = generate_schemas(&version_args).await?;
+            let schemas = generate_schemas_with_manager(&version_args, &canonical_manager).await?;
 
             if args.individual {
                 save_individual_schemas(&schemas, &args.output, version).await?;
@@ -109,8 +136,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn generate_schemas(
     args: &Args,
 ) -> Result<HashMap<String, FhirSchema>, Box<dyn std::error::Error>> {
-    let mut schemas = HashMap::new();
-
     let package_info = get_package_info(&args.version)?;
     println!("📦 Using FHIR package: {}", package_info.name);
 
@@ -127,6 +152,18 @@ async fn generate_schemas(
     canonical_manager
         .install_package(&package_info.name, &package_info.version)
         .await?;
+
+    generate_schemas_with_manager(args, &canonical_manager).await
+}
+
+async fn generate_schemas_with_manager(
+    args: &Args,
+    canonical_manager: &CanonicalManager,
+) -> Result<HashMap<String, FhirSchema>, Box<dyn std::error::Error>> {
+    let mut schemas = HashMap::new();
+
+    let package_info = get_package_info(&args.version)?;
+    println!("📦 Using FHIR package: {}", package_info.name);
 
     // Search for all StructureDefinitions in the package using the canonical manager
     println!("🔍 Discovering StructureDefinitions in package...");
@@ -214,6 +251,8 @@ async fn generate_schemas(
     }
 
     // Use pagination to get ALL StructureDefinitions from the package
+    // Note: Filtering by package name ensures FHIR version isolation, as each
+    // FHIR version has a distinct package (e.g., hl7.fhir.r4.core vs hl7.fhir.r5.core)
     println!("🔍 Collecting all StructureDefinitions from package (using pagination)...");
 
     let mut all_structure_definitions = Vec::new();
@@ -227,7 +266,7 @@ async fn generate_schemas(
             .search()
             .await
             .resource_type("StructureDefinition")
-            .package(&package_info.name)
+            .package(&package_info.name) // Ensures FHIR version-specific results
             .limit(BATCH_SIZE)
             .offset(offset)
             .execute()

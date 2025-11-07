@@ -45,15 +45,13 @@ fn build_match_for_slice(slicing: &Value, slice_schema: &Value) -> Value {
 
                 if path_str == "$this" {
                     // Merge pattern value from slice schema
-                    if let Some(pattern) = slice_schema.get("pattern") {
-                        if let Some(value) = pattern.get("value") {
-                            if let Some(obj) = match_obj.as_object_mut() {
-                                if let Some(value_obj) = value.as_object() {
-                                    for (k, v) in value_obj {
-                                        obj.insert(k.clone(), v.clone());
-                                    }
-                                }
-                            }
+                    if let Some(pattern) = slice_schema.get("pattern")
+                        && let Some(value) = pattern.get("value")
+                        && let Some(obj) = match_obj.as_object_mut()
+                        && let Some(value_obj) = value.as_object()
+                    {
+                        for (k, v) in value_obj {
+                            obj.insert(k.clone(), v.clone());
                         }
                     }
                 } else {
@@ -66,10 +64,11 @@ fn build_match_for_slice(slicing: &Value, slice_schema: &Value) -> Value {
                         for (pattern_key, pattern_value) in slice_obj {
                             if pattern_key.starts_with("pattern") {
                                 let field_name = pattern_key.replace("pattern", "").to_lowercase();
-                                if path_parts.len() == 1 && path_parts[0] == field_name {
-                                    if let Some(match_map) = match_obj.as_object_mut() {
-                                        match_map.insert(field_name, pattern_value.clone());
-                                    }
+                                if path_parts.len() == 1
+                                    && path_parts[0] == field_name
+                                    && let Some(match_map) = match_obj.as_object_mut()
+                                {
+                                    match_map.insert(field_name, pattern_value.clone());
                                 }
                             }
                         }
@@ -130,10 +129,10 @@ fn build_slice_node(slice_schema: Value, match_value: Value, slice_info: Option<
     });
 
     if let Some(slice) = slice_info {
-        if let Some(min) = slice.get("min") {
-            if min.as_i64().unwrap_or(0) != 0 {
-                node["min"] = min.clone();
-            }
+        if let Some(min) = slice.get("min")
+            && min.as_i64().unwrap_or(0) != 0
+        {
+            node["min"] = min.clone();
         }
 
         if let Some(max) = slice.get("max") {
@@ -160,11 +159,11 @@ fn build_slice(
 
         // Merge slicing info
         let mut merged_slicing = slicing_info;
-        if let Some(slicing_obj) = merged_slicing.as_object_mut() {
-            if let Some(action_slicing_obj) = slicing_from_action.as_object() {
-                for (k, v) in action_slicing_obj {
-                    slicing_obj.insert(k.clone(), v.clone());
-                }
+        if let Some(slicing_obj) = merged_slicing.as_object_mut()
+            && let Some(action_slicing_obj) = slicing_from_action.as_object()
+        {
+            for (k, v) in action_slicing_obj {
+                slicing_obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -204,17 +203,17 @@ fn slicing_to_extensions(slicing_element: &Value) -> HashMap<String, Value> {
 
             let mut extension = json!({});
 
-            if let Some(match_obj) = match_value {
-                if let Some(url) = match_obj.get("url") {
-                    extension["url"] = url.clone();
-                }
+            if let Some(match_obj) = match_value
+                && let Some(url) = match_obj.get("url")
+            {
+                extension["url"] = url.clone();
             }
 
             // Add slice properties (min, max) - skip min if 0
-            if let Some(min) = slice.get("min") {
-                if min.as_i64().unwrap_or(0) != 0 {
-                    extension["min"] = min.clone();
-                }
+            if let Some(min) = slice.get("min")
+                && min.as_i64().unwrap_or(0) != 0
+            {
+                extension["min"] = min.clone();
             }
             if let Some(max) = slice.get("max") {
                 extension["max"] = max.clone();
@@ -229,10 +228,11 @@ fn slicing_to_extensions(slicing_element: &Value) -> HashMap<String, Value> {
                 }
 
                 // Add min from schema if not 0 and not already added from sliceProps
-                if let Some(schema_min) = schema_obj.get("min") {
-                    if schema_min.as_i64().unwrap_or(0) != 0 && extension.get("min").is_none() {
-                        extension["min"] = schema_min.clone();
-                    }
+                if let Some(schema_min) = schema_obj.get("min")
+                    && schema_min.as_i64().unwrap_or(0) != 0
+                    && extension.get("min").is_none()
+                {
+                    extension["min"] = schema_min.clone();
                 }
             }
 

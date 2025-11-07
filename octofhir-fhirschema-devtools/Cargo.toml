@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 octofhir-fhirschema = { path = "../octofhir-fhirschema" }
-octofhir-canonical-manager = { version = "0.1.8" }
+octofhir-canonical-manager = { version = "0.1.13" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

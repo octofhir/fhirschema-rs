@@ -98,21 +98,21 @@ fn build_reference_targets(types: &[crate::types::StructureDefinitionType]) -> O
 fn preprocess_element(element: &StructureDefinitionElement) -> StructureDefinitionElement {
     let mut processed = element.clone();
 
-    if let Some(type_info) = &element.type_info {
-        if !type_info.is_empty() {
-            let first_type = &type_info[0];
-            if first_type.code == "Reference" {
-                let refers = build_reference_targets(type_info);
-                processed.refers = refers;
+    if let Some(type_info) = &element.type_info
+        && !type_info.is_empty()
+    {
+        let first_type = &type_info[0];
+        if first_type.code == "Reference" {
+            let refers = build_reference_targets(type_info);
+            processed.refers = refers;
 
-                // Simplify type to just Reference
-                processed.type_info = Some(vec![crate::types::StructureDefinitionType {
-                    code: "Reference".to_string(),
-                    profile: None,
-                    target_profile: None,
-                    extension: None,
-                }]);
-            }
+            // Simplify type to just Reference
+            processed.type_info = Some(vec![crate::types::StructureDefinitionType {
+                code: "Reference".to_string(),
+                profile: None,
+                target_profile: None,
+                extension: None,
+            }]);
         }
     }
 
@@ -155,20 +155,20 @@ fn build_element_binding(
                 structure_definition.id.as_deref().unwrap_or(""),
                 choice_of
             );
-            if let Some(decl) = snapshot.element.iter().find(|e| e.path == decl_path) {
-                if let Some(binding) = &decl.binding {
-                    result.binding = Some(normalize_binding(binding));
-                }
+            if let Some(decl) = snapshot.element.iter().find(|e| e.path == decl_path)
+                && let Some(binding) = &decl.binding
+            {
+                result.binding = Some(normalize_binding(binding));
             }
         }
         return Ok(result);
     }
 
     // Normal binding
-    if let Some(binding) = &definition_element.binding {
-        if binding.value_set.is_some() {
-            result.binding = Some(normalize_binding(binding));
-        }
+    if let Some(binding) = &definition_element.binding
+        && binding.value_set.is_some()
+    {
+        result.binding = Some(normalize_binding(binding));
     }
 
     Ok(result)
@@ -180,21 +180,21 @@ fn build_element_constraints(
 ) -> FhirSchemaElement {
     let mut result = element.clone();
 
-    if let Some(constraints) = &definition_element.constraint {
-        if !constraints.is_empty() {
-            let mut constraint_map = HashMap::new();
-            for constraint in constraints {
-                constraint_map.insert(
-                    constraint.key.clone(),
-                    FhirSchemaConstraint {
-                        expression: constraint.expression.clone(),
-                        human: constraint.human.clone(),
-                        severity: constraint.severity.clone(),
-                    },
-                );
-            }
-            result.constraint = Some(constraint_map);
+    if let Some(constraints) = &definition_element.constraint
+        && !constraints.is_empty()
+    {
+        let mut constraint_map = HashMap::new();
+        for constraint in constraints {
+            constraint_map.insert(
+                constraint.key.clone(),
+                FhirSchemaConstraint {
+                    expression: constraint.expression.clone(),
+                    human: constraint.human.clone(),
+                    severity: constraint.severity.clone(),
+                },
+            );
         }
+        result.constraint = Some(constraint_map);
     }
 
     result
@@ -207,34 +207,32 @@ fn build_element_type(
 ) -> FhirSchemaElement {
     let mut result = element.clone();
 
-    if let Some(type_info) = &definition_element.type_info {
-        if !type_info.is_empty() {
-            // Check for type in extension
-            if let Some(ext) = &type_info[0].extension {
-                for extension in ext {
-                    if extension.url == FHIR_TYPE_EXT {
-                        if let Some(value_url) = &extension.value_url {
-                            result.type_name = Some(value_url.clone());
-                            return result;
-                        }
-                    }
-                }
-            }
-
-            // Normal type
-            let type_code = type_info[0].code.clone();
-            result.type_name = Some(type_code);
-
-            // Add defaultType for logical models
-            if structure_definition.kind == "logical" {
-                if let Some(default_type_ext) =
-                    get_extension(&definition_element.extension, DEFAULT_TYPE_EXT)
+    if let Some(type_info) = &definition_element.type_info
+        && !type_info.is_empty()
+    {
+        // Check for type in extension
+        if let Some(ext) = &type_info[0].extension {
+            for extension in ext {
+                if extension.url == FHIR_TYPE_EXT
+                    && let Some(value_url) = &extension.value_url
                 {
-                    if let Some(value_url) = &default_type_ext.value_url {
-                        result.default_type = Some(value_url.clone());
-                    }
+                    result.type_name = Some(value_url.clone());
+                    return result;
                 }
             }
+        }
+
+        // Normal type
+        let type_code = type_info[0].code.clone();
+        result.type_name = Some(type_code);
+
+        // Add defaultType for logical models
+        if structure_definition.kind == "logical"
+            && let Some(default_type_ext) =
+                get_extension(&definition_element.extension, DEFAULT_TYPE_EXT)
+            && let Some(value_url) = &default_type_ext.value_url
+        {
+            result.default_type = Some(value_url.clone());
         }
     }
 
@@ -247,27 +245,25 @@ fn build_element_extension(
 ) -> FhirSchemaElement {
     let mut result = element.clone();
 
-    if let Some(type_info) = &definition_element.type_info {
-        if !type_info.is_empty() {
-            let first_type = &type_info[0];
-            if first_type.code == "Extension" {
-                if let Some(profile) = &first_type.profile {
-                    if !profile.is_empty() {
-                        result.url = Some(profile[0].clone());
+    if let Some(type_info) = &definition_element.type_info
+        && !type_info.is_empty()
+    {
+        let first_type = &type_info[0];
+        if first_type.code == "Extension"
+            && let Some(profile) = &first_type.profile
+            && !profile.is_empty()
+        {
+            result.url = Some(profile[0].clone());
 
-                        // Set cardinality for extensions
-                        if let Some(min) = definition_element.min {
-                            result.min = Some(min);
-                        }
-                        if let Some(max) = &definition_element.max {
-                            if max != "*" {
-                                if let Ok(max_val) = max.parse::<i32>() {
-                                    result.max = Some(max_val);
-                                }
-                            }
-                        }
-                    }
-                }
+            // Set cardinality for extensions
+            if let Some(min) = definition_element.min {
+                result.min = Some(min);
+            }
+            if let Some(max) = &definition_element.max
+                && max != "*"
+                && let Ok(max_val) = max.parse::<i32>()
+            {
+                result.max = Some(max_val);
             }
         }
     }
@@ -307,17 +303,16 @@ fn build_element_cardinality(
 
     if is_array {
         result.array = Some(true);
-        if let Some(min) = definition_element.min {
-            if min > 0 {
-                result.min = Some(min);
-            }
+        if let Some(min) = definition_element.min
+            && min > 0
+        {
+            result.min = Some(min);
         }
-        if let Some(max) = &definition_element.max {
-            if max != "*" {
-                if let Ok(max_val) = max.parse::<i32>() {
-                    result.max = Some(max_val);
-                }
-            }
+        if let Some(max) = &definition_element.max
+            && max != "*"
+            && let Ok(max_val) = max.parse::<i32>()
+        {
+            result.max = Some(max_val);
         }
     }
 

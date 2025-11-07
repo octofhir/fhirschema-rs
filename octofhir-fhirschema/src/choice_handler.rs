@@ -8,11 +8,11 @@ pub fn is_choice_element(element: &StructureDefinitionElement) -> bool {
     }
 
     // Check if multiple types with different codes
-    if let Some(type_info) = &element.type_info {
-        if type_info.len() > 1 {
-            let unique_codes: HashSet<&String> = type_info.iter().map(|t| &t.code).collect();
-            return unique_codes.len() > 1;
-        }
+    if let Some(type_info) = &element.type_info
+        && type_info.len() > 1
+    {
+        let unique_codes: HashSet<&String> = type_info.iter().map(|t| &t.code).collect();
+        return unique_codes.len() > 1;
     }
 
     false

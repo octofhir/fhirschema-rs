@@ -40,10 +40,10 @@ fn build_resource_header(
     };
 
     // Set base if present (and not Element itself)
-    if let Some(base_definition) = &structure_definition.base_definition {
-        if structure_definition.type_name != "Element" {
-            schema.base = Some(base_definition.clone());
-        }
+    if let Some(base_definition) = &structure_definition.base_definition
+        && structure_definition.type_name != "Element"
+    {
+        schema.base = Some(base_definition.clone());
     }
 
     schema
@@ -94,13 +94,12 @@ fn sort_elements_by_index(mut elements: HashMap<String, Value>) -> HashMap<Strin
     let mut result = HashMap::new();
     for (key, mut value) in entries {
         // Recursively sort nested elements
-        if let Some(nested_elements) = value.get("elements").cloned() {
-            if let Ok(nested_map) =
+        if let Some(nested_elements) = value.get("elements").cloned()
+            && let Ok(nested_map) =
                 serde_json::from_value::<HashMap<String, Value>>(nested_elements)
-            {
-                let sorted_nested = sort_elements_by_index(nested_map);
-                value["elements"] = serde_json::to_value(sorted_nested).unwrap_or(json!({}));
-            }
+        {
+            let sorted_nested = sort_elements_by_index(nested_map);
+            value["elements"] = serde_json::to_value(sorted_nested).unwrap_or(json!({}));
         }
         result.insert(key, value);
     }
@@ -124,16 +123,15 @@ fn normalize_schema(mut schema: Value) -> Value {
             }
 
             // Sort elements by index if this is an elements object
-            if let Some(elements_val) = obj.get("elements").cloned() {
-                if let Ok(elements_map) =
+            if let Some(elements_val) = obj.get("elements").cloned()
+                && let Ok(elements_map) =
                     serde_json::from_value::<HashMap<String, Value>>(elements_val)
-                {
-                    let sorted_elements = sort_elements_by_index(elements_map);
-                    obj.insert(
-                        "elements".to_string(),
-                        serde_json::to_value(sorted_elements).unwrap_or(json!({})),
-                    );
-                }
+            {
+                let sorted_elements = sort_elements_by_index(elements_map);
+                obj.insert(
+                    "elements".to_string(),
+                    serde_json::to_value(sorted_elements).unwrap_or(json!({})),
+                );
             }
 
             // Sort required array
