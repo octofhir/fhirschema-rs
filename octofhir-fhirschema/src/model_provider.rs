@@ -693,9 +693,59 @@ impl DynamicSchemaProvider {
         Self { inner }
     }
 
+    /// Create new dynamic provider from StructureDefinitions.
+    /// Translates each StructureDefinition to FhirSchema on the fly.
+    pub fn from_structure_definitions(
+        structure_definitions: Vec<crate::types::StructureDefinition>,
+        fhir_version: ModelFhirVersion,
+    ) -> Self {
+        let mut schemas = HashMap::new();
+
+        for sd in structure_definitions {
+            match crate::converter::translate(sd.clone(), None) {
+                Ok(schema) => {
+                    schemas.insert(schema.name.clone(), schema);
+                }
+                Err(_e) => {
+                    // Skip invalid StructureDefinitions silently
+                }
+            }
+        }
+
+        let inner = FhirSchemaModelProvider::new(schemas, fhir_version);
+        Self { inner }
+    }
+
     /// Update schemas dynamically
     pub fn update_schemas(&mut self, schemas: HashMap<String, FhirSchema>) {
         self.inner.update_schemas(schemas);
+    }
+
+    /// Update schemas from StructureDefinitions.
+    /// Translates each StructureDefinition to FhirSchema and replaces current schemas.
+    pub fn update_from_structure_definitions(
+        &mut self,
+        structure_definitions: Vec<crate::types::StructureDefinition>,
+    ) {
+        let mut schemas = HashMap::new();
+
+        for sd in structure_definitions {
+            match crate::converter::translate(sd.clone(), None) {
+                Ok(schema) => {
+                    schemas.insert(schema.name.clone(), schema);
+                }
+                Err(_e) => {
+                    // Skip invalid StructureDefinitions silently
+                }
+            }
+        }
+
+        self.inner.update_schemas(schemas);
+    }
+
+    /// Get the number of loaded schemas
+    pub fn schema_count(&self) -> usize {
+        self.inner.schemas.len()
     }
 }
 
