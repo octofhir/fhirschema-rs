@@ -3,7 +3,8 @@ use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
 use octofhir_fhir_model::{
-    Result as ModelResult, ValidationProvider, error::ModelError, provider::ModelProvider,
+    ErrorSeverity, FhirPathConstraint, FhirPathEvaluator, Result as ModelResult,
+    ValidationProvider, error::ModelError, provider::ModelProvider,
 };
 
 use crate::embedded::{FhirVersion, create_validation_context, get_schemas};
@@ -12,11 +13,12 @@ use crate::types::ValidationContext;
 use octofhir_fhir_model::provider::FhirVersion as ModelFhirVersion;
 
 /// ValidationProvider implementation using FHIR schemas
-#[derive(Debug)]
 pub struct FhirSchemaValidationProvider {
     schema_provider: Arc<FhirSchemaModelProvider>,
     #[allow(dead_code)]
     validation_context: ValidationContext,
+    /// Optional FHIRPath evaluator for constraint validation
+    fhirpath_evaluator: Option<Arc<dyn FhirPathEvaluator>>,
 }
 
 impl FhirSchemaValidationProvider {
@@ -28,7 +30,14 @@ impl FhirSchemaValidationProvider {
         Self {
             schema_provider,
             validation_context,
+            fhirpath_evaluator: None,
         }
+    }
+
+    /// Add FHIRPath evaluator for constraint validation
+    pub fn with_fhirpath_evaluator(mut self, evaluator: Arc<dyn FhirPathEvaluator>) -> Self {
+        self.fhirpath_evaluator = Some(evaluator);
+        self
     }
 
     /// Create validation provider from EmbeddedModelProvider
@@ -53,6 +62,7 @@ impl FhirSchemaValidationProvider {
         Ok(Self {
             schema_provider,
             validation_context,
+            fhirpath_evaluator: None,
         })
     }
 
@@ -78,6 +88,7 @@ impl FhirSchemaValidationProvider {
         Ok(Self {
             schema_provider,
             validation_context,
+            fhirpath_evaluator: None,
         })
     }
 
@@ -101,7 +112,95 @@ impl FhirSchemaValidationProvider {
         Ok(Self {
             schema_provider,
             validation_context,
+            fhirpath_evaluator: None,
         })
+    }
+
+    /// Validate FHIRPath constraints from a schema against a resource
+    async fn validate_fhirpath_constraints(
+        &self,
+        resource: &JsonValue,
+        profile_url: &str,
+    ) -> ModelResult<bool> {
+        // If no evaluator, skip constraint validation (structural validation only)
+        let Some(evaluator) = &self.fhirpath_evaluator else {
+            return Ok(true);
+        };
+
+        // Get schema to extract constraints
+        let schema = self
+            .schema_provider
+            .get_schema_by_url_or_name(profile_url)
+            .ok_or_else(|| {
+                ModelError::validation_error(format!("Profile not found: {profile_url}"))
+            })?;
+
+        // Collect all constraints from the schema
+        let mut constraints = Vec::new();
+
+        // Add top-level constraints
+        if let Some(schema_constraints) = &schema.constraint {
+            for (key, constraint) in schema_constraints {
+                constraints.push(
+                    FhirPathConstraint::new(
+                        key.clone(),
+                        constraint.human.clone(),
+                        constraint.expression.clone(),
+                    )
+                    .with_severity(if constraint.severity == "error" {
+                        ErrorSeverity::Error
+                    } else {
+                        ErrorSeverity::Warning
+                    }),
+                );
+            }
+        }
+
+        // Add element-level constraints recursively
+        if let Some(elements) = &schema.elements {
+            Self::collect_element_constraints(elements, &mut constraints);
+        }
+
+        if constraints.is_empty() {
+            return Ok(true);
+        }
+
+        // Validate all constraints using FHIRPath evaluator
+        let result = evaluator
+            .validate_constraints(resource, &constraints)
+            .await?;
+
+        Ok(result.is_valid)
+    }
+
+    /// Recursively collect constraints from element definitions
+    fn collect_element_constraints(
+        elements: &std::collections::HashMap<String, crate::types::FhirSchemaElement>,
+        constraints: &mut Vec<FhirPathConstraint>,
+    ) {
+        for element in elements.values() {
+            if let Some(element_constraints) = &element.constraint {
+                for (key, constraint) in element_constraints {
+                    constraints.push(
+                        FhirPathConstraint::new(
+                            key.clone(),
+                            constraint.human.clone(),
+                            constraint.expression.clone(),
+                        )
+                        .with_severity(if constraint.severity == "error" {
+                            ErrorSeverity::Error
+                        } else {
+                            ErrorSeverity::Warning
+                        }),
+                    );
+                }
+            }
+
+            // Recurse into nested elements
+            if let Some(nested) = &element.elements {
+                Self::collect_element_constraints(nested, constraints);
+            }
+        }
     }
 }
 
@@ -120,11 +219,19 @@ impl ValidationProvider for FhirSchemaValidationProvider {
         let validator =
             crate::validation::FhirSchemaValidator::new(self.schema_provider.schemas().clone());
 
-        // Validate using the comprehensive FHIR Schema validation engine
+        // Validate using the comprehensive FHIR Schema validation engine (structural validation)
         let validation_result = validator.validate(resource, vec![profile_url.to_string()]);
 
-        // Return true if validation passed (no errors)
-        Ok(validation_result.valid)
+        if !validation_result.valid {
+            return Ok(false);
+        }
+
+        // Validate FHIRPath constraints if evaluator is available
+        let constraints_valid = self
+            .validate_fhirpath_constraints(resource, profile_url)
+            .await?;
+
+        Ok(constraints_valid)
     }
 }
 
@@ -253,6 +360,32 @@ pub async fn create_validation_provider_from_dynamic(
     let validation_provider =
         FhirSchemaValidationProvider::from_dynamic_provider(dynamic_provider, validation_context)
             .await?;
+
+    Ok(Arc::new(validation_provider))
+}
+
+/// Create a ValidationProvider with FHIRPath constraint support
+///
+/// This creates a validation provider that can evaluate FHIRPath constraints
+/// in addition to structural schema validation.
+pub async fn create_validation_provider_with_fhirpath(
+    model_provider: Arc<dyn ModelProvider>,
+    fhirpath_evaluator: Arc<dyn FhirPathEvaluator>,
+) -> ModelResult<Arc<dyn ValidationProvider>> {
+    let model_fhir_version = model_provider.get_fhir_version().await?;
+    let fhir_version = match model_fhir_version {
+        ModelFhirVersion::R4 => FhirVersion::R4,
+        ModelFhirVersion::R4B => FhirVersion::R4B,
+        ModelFhirVersion::R5 => FhirVersion::R5,
+        ModelFhirVersion::R6 => FhirVersion::R6,
+        ModelFhirVersion::Custom { .. } => FhirVersion::R4,
+    };
+    let validation_context = create_validation_context(fhir_version);
+
+    let validation_provider =
+        FhirSchemaValidationProvider::from_embedded_provider(model_provider, validation_context)
+            .await?
+            .with_fhirpath_evaluator(fhirpath_evaluator);
 
     Ok(Arc::new(validation_provider))
 }

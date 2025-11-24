@@ -34,6 +34,7 @@ pub use validation_provider::FhirSchemaValidationProvider;
 // Convenience functions for creating ValidationProvider from existing ModelProviders
 pub use validation_provider::{
     create_validation_provider_from_dynamic, create_validation_provider_from_embedded,
+    create_validation_provider_with_fhirpath,
 };
 
 // Re-export key types from fhir-model-rs for convenience
