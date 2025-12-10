@@ -11,6 +11,7 @@ pub fn validate(
     ValidationResult {
         errors: vec![],
         valid: true,
+        warnings: vec![],
     }
 }
 
@@ -30,7 +31,7 @@ pub fn validate_schemas(
     }
 
     let valid = errors.is_empty();
-    ValidationResult { errors, valid }
+    ValidationResult { errors, valid, warnings: vec![] }
 }
 
 fn validate_schema_with_data(
@@ -95,6 +96,9 @@ fn validate_schema_with_data(
                     value: Some(data.clone()),
                     expected: None,
                     got: None,
+                    constraint_key: None,
+                    constraint_expression: None,
+                    constraint_severity: None,
                     schema_path: Some({
                         let mut schema_path = path
                             .iter()
@@ -133,6 +137,9 @@ fn validate_schema_with_data(
                     expected: None,
                     got: None,
                     schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
                 });
             }
         }
@@ -162,6 +169,9 @@ fn validate_schema_with_data(
             expected: None,
             got: None,
             schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
         });
     } else if !schema.type_name.is_empty() && data.is_object() {
         // If we have a primitive type but got an object, also check for unknown elements
@@ -181,6 +191,9 @@ fn validate_schema_with_data(
                     expected: None,
                     got: None,
                     schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
                 });
             }
         }
@@ -206,6 +219,9 @@ fn validate_schema_with_data(
                     expected: None,
                     got: None,
                     schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
                 });
             }
         }
@@ -241,6 +257,9 @@ fn validate_schema_with_data(
                     expected: None,
                     got: None,
                     schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
                 });
             }
 
@@ -267,6 +286,9 @@ fn validate_schema_with_data(
                             expected: None,
                             got: None,
                             schema_path: Some(vec![Value::String("choices".to_string())]),
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
                         });
                     }
                 }
@@ -275,7 +297,7 @@ fn validate_schema_with_data(
     }
 
     let valid = errors.is_empty();
-    ValidationResult { errors, valid }
+    ValidationResult { errors, valid, warnings: vec![] }
 }
 
 fn validate_element_with_data(
@@ -301,9 +323,13 @@ fn validate_element_with_data(
                 schema_path.push(Value::String("array".to_string()));
                 Some(schema_path)
             },
+            constraint_key: None,
+            constraint_expression: None,
+            constraint_severity: None,
         });
         return ValidationResult {
             errors,
+            warnings: vec![],
             valid: false,
         };
     }
@@ -317,10 +343,14 @@ fn validate_element_with_data(
             expected: None,
             got: None,
             schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
         });
         return ValidationResult {
             errors,
             valid: false,
+            warnings: vec![],
         };
     }
 
@@ -340,6 +370,9 @@ fn validate_element_with_data(
                 got: None,
                 path: path.to_vec(),
                 schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
             });
         }
 
@@ -354,6 +387,9 @@ fn validate_element_with_data(
                 got: None,
                 path: path.to_vec(),
                 schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
             });
         }
 
@@ -418,12 +454,15 @@ fn validate_element_with_data(
                     schema_path.push(Value::String("pattern".to_string()));
                     Some(schema_path)
                 },
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
             });
         }
     }
 
     let valid = errors.is_empty();
-    ValidationResult { errors, valid }
+    ValidationResult { errors, valid, warnings: vec![] }
 }
 
 fn validate_type_with_data(

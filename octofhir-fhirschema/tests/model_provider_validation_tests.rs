@@ -1,8 +1,8 @@
 use octofhir_fhirschema::model_provider::EmbeddedSchemaProvider;
 use serde_json::json;
 
-#[test]
-fn test_embedded_provider_validation_against_profile() {
+#[tokio::test]
+async fn test_embedded_provider_validation_against_profile() {
     let provider = EmbeddedSchemaProvider::r4();
 
     let patient_data = json!({
@@ -21,6 +21,7 @@ fn test_embedded_provider_validation_against_profile() {
     {
         let result = provider
             .validate_resource_against_profile(&patient_data, &patient_schema.url)
+            .await
             .expect("Validation should not fail");
 
         // The helper method returns ValidationResult
@@ -31,8 +32,8 @@ fn test_embedded_provider_validation_against_profile() {
     }
 }
 
-#[test]
-fn test_profile_validation_nonexistent_profile() {
+#[tokio::test]
+async fn test_profile_validation_nonexistent_profile() {
     let provider = EmbeddedSchemaProvider::r4();
 
     let patient_data = json!({
@@ -40,7 +41,8 @@ fn test_profile_validation_nonexistent_profile() {
     });
 
     let result = provider
-        .validate_resource_against_profile(&patient_data, "http://example.com/NonexistentProfile");
+        .validate_resource_against_profile(&patient_data, "http://example.com/NonexistentProfile")
+        .await;
 
     assert!(result.is_err(), "Should fail when profile doesn't exist");
 
@@ -49,8 +51,8 @@ fn test_profile_validation_nonexistent_profile() {
     }
 }
 
-#[test]
-fn test_embedded_provider_validation_against_resource_type() {
+#[tokio::test]
+async fn test_embedded_provider_validation_against_resource_type() {
     let provider = EmbeddedSchemaProvider::r4();
 
     let patient_data = json!({
@@ -63,6 +65,7 @@ fn test_embedded_provider_validation_against_resource_type() {
 
     let result = provider
         .validate_resource_against_resource_type(&patient_data, "Patient")
+        .await
         .expect("Validation should not fail");
 
     // Note: The validation might not be perfect yet since the engine is basic
@@ -73,8 +76,8 @@ fn test_embedded_provider_validation_against_resource_type() {
     );
 }
 
-#[test]
-fn test_embedded_provider_validation_invalid_resource() {
+#[tokio::test]
+async fn test_embedded_provider_validation_invalid_resource() {
     let provider = EmbeddedSchemaProvider::r4();
 
     let invalid_patient_data = json!({
@@ -84,6 +87,7 @@ fn test_embedded_provider_validation_invalid_resource() {
 
     let result = provider
         .validate_resource_against_resource_type(&invalid_patient_data, "Patient")
+        .await
         .expect("Validation should not fail");
 
     // Should detect the invalid field
@@ -94,8 +98,8 @@ fn test_embedded_provider_validation_invalid_resource() {
     assert!(!result.errors.is_empty(), "Should have validation errors");
 }
 
-#[test]
-fn test_embedded_provider_validation_nonexistent_resource_type() {
+#[tokio::test]
+async fn test_embedded_provider_validation_nonexistent_resource_type() {
     let provider = EmbeddedSchemaProvider::r4();
 
     let patient_data = json!({
@@ -103,7 +107,7 @@ fn test_embedded_provider_validation_nonexistent_resource_type() {
     });
 
     let result =
-        provider.validate_resource_against_resource_type(&patient_data, "NonexistentResourceType");
+        provider.validate_resource_against_resource_type(&patient_data, "NonexistentResourceType").await;
 
     assert!(
         result.is_err(),

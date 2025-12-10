@@ -7,8 +7,11 @@
 use crate::types::{
     FhirSchema, FhirSchemaConstraint, FhirSchemaElement, ValidationError, ValidationResult,
 };
+use async_recursion::async_recursion;
+use octofhir_fhir_model::{ErrorSeverity, FhirPathConstraint, FhirPathEvaluator};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// Error codes for FHIR Schema validation (following FS001-FS011 pattern)
 #[derive(Debug, Clone, PartialEq)]
@@ -106,6 +109,9 @@ impl FhirSchemaValidationContext {
             expected: None,
             got: None,
             schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
         });
     }
 
@@ -121,11 +127,32 @@ pub struct FhirSchemaValidator {
     schemas: HashMap<String, FhirSchema>,
     /// URL to schema name mapping for O(1) lookup by URL
     url_to_name: HashMap<String, String>,
+    /// Optional FHIRPath evaluator for constraint validation
+    /// None means only structural validation will be performed
+    fhirpath_evaluator: Option<Arc<dyn FhirPathEvaluator>>,
 }
 
 impl FhirSchemaValidator {
-    /// Create new validator with schemas
-    pub fn new(schemas: HashMap<String, FhirSchema>) -> Self {
+    /// Create new validator with schemas and optional FHIRPath evaluator
+    ///
+    /// # Arguments
+    /// * `schemas` - HashMap of schema name to FhirSchema
+    /// * `fhirpath_evaluator` - Optional FHIRPath evaluator for constraint validation
+    ///   - If None, only structural validation will be performed
+    ///   - If Some, both structural and FHIRPath constraint validation will be performed
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Structural validation only
+    /// let validator = FhirSchemaValidator::new(schemas, None);
+    ///
+    /// // With FHIRPath constraint validation
+    /// let validator = FhirSchemaValidator::new(schemas, Some(evaluator));
+    /// ```
+    pub fn new(
+        schemas: HashMap<String, FhirSchema>,
+        fhirpath_evaluator: Option<Arc<dyn FhirPathEvaluator>>,
+    ) -> Self {
         // Build URL to name mapping for O(1) lookup
         let url_to_name: HashMap<String, String> = schemas
             .iter()
@@ -135,6 +162,7 @@ impl FhirSchemaValidator {
         Self {
             schemas,
             url_to_name,
+            fhirpath_evaluator,
         }
     }
 
@@ -151,9 +179,9 @@ impl FhirSchemaValidator {
         None
     }
 
-    /// Main validation entry point
+    /// Main validation entry point - async
     /// Validates a resource against one or more schema URLs
-    pub fn validate(&self, resource: &JsonValue, schema_urls: Vec<String>) -> ValidationResult {
+    pub async fn validate(&self, resource: &JsonValue, schema_urls: Vec<String>) -> ValidationResult {
         let resource_type = resource
             .get("resourceType")
             .and_then(|rt| rt.as_str())
@@ -162,18 +190,19 @@ impl FhirSchemaValidator {
         let mut context =
             FhirSchemaValidationContext::new(self.schemas.clone(), resource_type.to_string());
 
-        // Start validation with root schemas
-        self.validate_with_schemata(&mut context, resource, schema_urls);
+        // Start validation with root schemas (async)
+        self.validate_with_schemata(&mut context, resource, schema_urls).await;
 
         let valid = context.errors.is_empty();
         ValidationResult {
             errors: context.errors,
             valid,
+            warnings: vec![],
         }
     }
 
     /// Validate data against a set of schema URLs (implements schemata resolution)
-    fn validate_with_schemata(
+    async fn validate_with_schemata(
         &self,
         context: &mut FhirSchemaValidationContext,
         data: &JsonValue,
@@ -182,8 +211,8 @@ impl FhirSchemaValidator {
         // Step 1: Resolve schemata for the given URLs
         self.resolve_schemata(context, schema_urls);
 
-        // Step 2: Validate the data element
-        self.validate_data_element(context, data);
+        // Step 2: Validate the data element (async)
+        self.validate_data_element(context, data).await;
     }
 
     /// Resolve schemata using collect and follow operations (FHIR Schema spec algorithm)
@@ -378,12 +407,13 @@ impl FhirSchemaValidator {
         }
     }
 
-    /// Validate data element against current schemata (FHIR Schema spec algorithm)
-    fn validate_data_element(&self, context: &mut FhirSchemaValidationContext, data: &JsonValue) {
+    /// Validate data element against current schemata (FHIR Schema spec algorithm) - async recursive
+    #[async_recursion]
+    async fn validate_data_element(&self, context: &mut FhirSchemaValidationContext, data: &JsonValue) {
         match data {
             JsonValue::Object(obj) => {
-                // Validate the object against each schema from schemata
-                self.validate_object_against_schemata(context, obj);
+                // Validate the object against each schema from schemata (async)
+                self.validate_object_against_schemata(context, obj).await;
 
                 // Validate every property of the object
                 for (key, value) in obj {
@@ -438,12 +468,12 @@ impl FhirSchemaValidator {
                             }
                         }
 
-                        // Validate the property value with pre-determined array expectation
+                        // Validate the property value with pre-determined array expectation (async)
                         self.validate_element_value_with_array_check(
                             context,
                             value,
                             is_array_expected,
-                        );
+                        ).await;
 
                         // Restore previous schemata
                         context.current_schemata = prev_schemata;
@@ -457,7 +487,7 @@ impl FhirSchemaValidator {
                 for (index, item) in arr.iter().enumerate() {
                     let prev_path = context.path.clone();
                     context.path = format!("{}[{}]", context.path, index);
-                    self.validate_data_element(context, item);
+                    self.validate_data_element(context, item).await;
                     context.path = prev_path;
                 }
             }
@@ -468,8 +498,8 @@ impl FhirSchemaValidator {
         }
     }
 
-    /// Validate object against all schemas in current schemata
-    fn validate_object_against_schemata(
+    /// Validate object against all schemas in current schemata (async)
+    async fn validate_object_against_schemata(
         &self,
         context: &mut FhirSchemaValidationContext,
         obj: &serde_json::Map<String, JsonValue>,
@@ -481,21 +511,21 @@ impl FhirSchemaValidator {
             .collect();
 
         for (schema_key, schema) in schemata_clone {
-            self.validate_object_against_schema(context, obj, &schema, &schema_key);
+            self.validate_object_against_schema(context, obj, &schema, &schema_key).await;
         }
     }
 
-    /// Validate object against a single schema
-    fn validate_object_against_schema(
+    /// Validate object against a single schema (async)
+    async fn validate_object_against_schema(
         &self,
         context: &mut FhirSchemaValidationContext,
         obj: &serde_json::Map<String, JsonValue>,
         schema: &FhirSchema,
         _schema_key: &str,
     ) {
-        // Validate constraints
+        // Validate constraints (async)
         if let Some(constraints) = &schema.constraint {
-            self.validate_constraints(context, obj, constraints);
+            self.validate_constraints(context, obj, constraints).await;
         }
 
         // Validate required elements only for resource schemas
@@ -527,7 +557,7 @@ impl FhirSchemaValidator {
     }
 
     /// Validate element value with pre-determined array expectation
-    fn validate_element_value_with_array_check(
+    async fn validate_element_value_with_array_check(
         &self,
         context: &mut FhirSchemaValidationContext,
         value: &JsonValue,
@@ -549,17 +579,17 @@ impl FhirSchemaValidator {
                 );
             }
             _ => {
-                // Valid array/non-array match, continue validation
-                self.validate_data_element(context, value);
+                // Valid array/non-array match, continue validation (async)
+                self.validate_data_element(context, value).await;
             }
         }
     }
 
-    /// Validate element value (handles arrays vs single values)
+    /// Validate element value (handles arrays vs single values) - async
     #[allow(dead_code)]
-    fn validate_element_value(&self, context: &mut FhirSchemaValidationContext, value: &JsonValue) {
+    async fn validate_element_value(&self, context: &mut FhirSchemaValidationContext, value: &JsonValue) {
         let is_array_expected = self.is_array_expected_in_schemata(context);
-        self.validate_element_value_with_array_check(context, value, is_array_expected);
+        self.validate_element_value_with_array_check(context, value, is_array_expected).await;
     }
 
     /// Check if a specific element is expected to be an array in the current schemata
@@ -700,25 +730,83 @@ impl FhirSchemaValidator {
         }
     }
 
-    /// Validate FHIRPath constraints
-    fn validate_constraints(
+    /// Validate FHIRPath constraints against the resource (async)
+    ///
+    /// This method evaluates FHIRPath constraint expressions using the configured FHIRPath evaluator.
+    /// If no evaluator is configured, constraint validation is skipped.
+    ///
+    /// # Arguments
+    /// * `context` - Validation context for error tracking
+    /// * `obj` - Resource data to validate
+    /// * `constraints` - Map of constraint key to constraint definition
+    async fn validate_constraints(
         &self,
-        _context: &mut FhirSchemaValidationContext,
-        _obj: &serde_json::Map<String, JsonValue>,
+        context: &mut FhirSchemaValidationContext,
+        obj: &serde_json::Map<String, JsonValue>,
         constraints: &HashMap<String, FhirSchemaConstraint>,
     ) {
-        // TODO: Implement FHIRPath constraint evaluation
-        // This would require integrating with the FHIRPath evaluator
-        // For now, we'll leave this as a placeholder
+        // Skip if no evaluator configured - structural validation only
+        let Some(evaluator) = &self.fhirpath_evaluator else {
+            return;
+        };
 
-        for constraint in constraints.values() {
-            if constraint.severity == "error" {
-                // TODO: Evaluate constraint.expression using FHIRPath evaluator
-                // If constraint fails, add error:
-                // context.add_error(
-                //     FhirSchemaErrorCode::ConstraintViolation,
-                //     format!("Constraint {} failed: {}", constraint_id, constraint.human)
-                // );
+        // Skip if no constraints to evaluate
+        if constraints.is_empty() {
+            return;
+        }
+
+        // Build FHIRPath constraints from schema constraints
+        let fhirpath_constraints: Vec<FhirPathConstraint> = constraints
+            .iter()
+            .map(|(key, constraint)| {
+                let severity = match constraint.severity.as_str() {
+                    "error" => ErrorSeverity::Error,
+                    "warning" => ErrorSeverity::Warning,
+                    _ => ErrorSeverity::Error, // Default to error for unknown severity
+                };
+
+                FhirPathConstraint::new(
+                    key.clone(),
+                    constraint.human.clone(),
+                    constraint.expression.clone(),
+                )
+                .with_severity(severity)
+            })
+            .collect();
+
+        // Convert map to full JSON value for FHIRPath evaluation
+        let resource_value = JsonValue::Object(obj.clone());
+
+        // Properly await the async evaluation
+        match evaluator.validate_constraints(&resource_value, &fhirpath_constraints).await {
+            Ok(result) => {
+                if !result.is_valid {
+                    for error in result.errors {
+                        // Determine error code based on severity
+                        let error_code = match error.severity {
+                            ErrorSeverity::Error | ErrorSeverity::Fatal => FhirSchemaErrorCode::ConstraintViolation,
+                            ErrorSeverity::Warning | ErrorSeverity::Information => {
+                                // For now, we'll still use ConstraintViolation
+                                // In Phase 1.5, we'll add proper warning support
+                                FhirSchemaErrorCode::ConstraintViolation
+                            }
+                        };
+
+                        context.add_error(
+                            error_code,
+                            format!(
+                                "Constraint '{}' failed: {}",
+                                error.code.as_deref().unwrap_or("unknown"), error.message
+                            ),
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                context.add_error(
+                    FhirSchemaErrorCode::ConstraintViolation,
+                    format!("FHIRPath constraint evaluation failed: {}", e),
+                );
             }
         }
     }
@@ -732,7 +820,7 @@ mod tests {
     #[test]
     fn test_primitive_type_validation() {
         let schemas = HashMap::new();
-        let validator = FhirSchemaValidator::new(schemas);
+        let validator = FhirSchemaValidator::new(schemas, None);
 
         // Test boolean validation
         assert!(validator.validate_primitive_type(&json!(true), "boolean"));
@@ -749,8 +837,8 @@ mod tests {
         assert!(!validator.validate_primitive_type(&json!(42), "string"));
     }
 
-    #[test]
-    fn test_unknown_element_detection() {
+    #[tokio::test]
+    async fn test_unknown_element_detection() {
         let mut schemas = HashMap::new();
 
         // Create a simple Patient schema
@@ -790,7 +878,7 @@ mod tests {
 
         schemas.insert("Patient".to_string(), patient_schema);
 
-        let validator = FhirSchemaValidator::new(schemas);
+        let validator = FhirSchemaValidator::new(schemas, None);
 
         // Test resource with unknown element
         let resource = json!({
@@ -799,7 +887,7 @@ mod tests {
             "unknownField": "should cause error"
         });
 
-        let result = validator.validate(&resource, vec!["Patient".to_string()]);
+        let result = validator.validate(&resource, vec!["Patient".to_string()]).await;
 
         assert!(!result.valid);
         assert!(!result.errors.is_empty());
@@ -811,8 +899,8 @@ mod tests {
         assert!(has_unknown_element_error);
     }
 
-    #[test]
-    fn test_validate_patient_example_with_embedded_schemas() {
+    #[tokio::test]
+    async fn test_validate_patient_example_with_embedded_schemas() {
         use crate::embedded::{FhirVersion, get_schemas};
 
         // Get R4 embedded schemas which should include Patient schema
@@ -967,7 +1055,7 @@ mod tests {
             }
         }
 
-        let validator = FhirSchemaValidator::new(schemas.clone());
+        let validator = FhirSchemaValidator::new(schemas.clone(), None);
 
         // First test with minimal valid Patient
         let minimal_patient = json!({
@@ -978,7 +1066,7 @@ mod tests {
         let minimal_result = validator.validate(
             &minimal_patient,
             vec!["http://hl7.org/fhir/StructureDefinition/Patient".to_string()],
-        );
+        ).await;
         println!(
             "Minimal Patient validation result: {}",
             if minimal_result.valid {
@@ -1187,7 +1275,7 @@ mod tests {
         let correct_result = validator.validate(
             &correct_patient,
             vec!["http://hl7.org/fhir/StructureDefinition/Patient".to_string()],
-        );
+        ).await;
         println!(
             "Correct Patient validation result: {}",
             if correct_result.valid {
@@ -1218,7 +1306,7 @@ mod tests {
             }]
         });
         let simple_result =
-            validator.validate(&simple_patient_with_address, vec!["Patient".to_string()]);
+            validator.validate(&simple_patient_with_address, vec!["Patient".to_string()]).await;
         println!(
             "Simple Patient with address validation result: {}",
             if simple_result.valid {
@@ -1327,7 +1415,7 @@ mod tests {
                 }
             }]
         });
-        let valid_result = validator.validate(&valid_patient, vec!["Patient".to_string()]);
+        let valid_result = validator.validate(&valid_patient, vec!["Patient".to_string()]).await;
         println!(
             "Comprehensive Patient validation result: {}",
             if valid_result.valid {
@@ -1523,7 +1611,7 @@ mod tests {
         let result = validator.validate(
             &patient_example,
             vec!["http://hl7.org/fhir/StructureDefinition/Patient".to_string()],
-        );
+        ).await;
 
         // Test that validation engine is working properly
         println!(
@@ -1598,10 +1686,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_validate_patient_example_with_validation_provider() {
+    #[tokio::test]
+    async fn test_validate_patient_example_with_validation_provider() {
         use crate::embedded::FhirVersion;
         use crate::validation_provider::FhirSchemaValidationProvider;
+        use octofhir_fhir_model::ValidationProvider;
 
         // Create validation provider with embedded schemas
         let validation_provider =
@@ -1621,39 +1710,33 @@ mod tests {
             "gender": "male"
         });
 
-        // Use async test with tokio
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            use octofhir_fhir_model::ValidationProvider;
+        let result = validation_provider
+            .validate(
+                &simple_patient,
+                "http://hl7.org/fhir/StructureDefinition/Patient",
+            )
+            .await;
 
-            let result = validation_provider
-                .validate(
-                    &simple_patient,
-                    "http://hl7.org/fhir/StructureDefinition/Patient",
-                )
-                .await;
-
-            match result {
-                Ok(is_valid) => {
-                    println!("Simple patient validation result: {}", is_valid);
-                    // For now, just ensure no error occurred - validation might fail if schemas incomplete
-                }
-                Err(e) => {
-                    println!("Validation error: {}", e);
-                    // Test that we get proper error handling, not crashes
-                }
+        match result {
+            Ok(is_valid) => {
+                println!("Simple patient validation result: {}", is_valid);
+                // For now, just ensure no error occurred - validation might fail if schemas incomplete
             }
-        });
+            Err(e) => {
+                println!("Validation error: {}", e);
+                // Test that we get proper error handling, not crashes
+            }
+        }
     }
 
-    #[test]
-    fn test_official_fhir_patient_example_validation() {
+    #[tokio::test]
+    async fn test_official_fhir_patient_example_validation() {
         use crate::embedded::{FhirVersion, get_schemas};
         use std::fs;
 
         // Get R4 embedded schemas
         let schemas = get_schemas(FhirVersion::R4);
-        let validator = FhirSchemaValidator::new(schemas.clone());
+        let validator = FhirSchemaValidator::new(schemas.clone(), None);
 
         println!("=== Testing Official FHIR R4 Patient Example ===");
 
@@ -1680,7 +1763,7 @@ mod tests {
         };
 
         // Validate the official FHIR patient example
-        let result = validator.validate(&patient_json, vec!["Patient".to_string()]);
+        let result = validator.validate(&patient_json, vec!["Patient".to_string()]).await;
 
         println!(
             "Official FHIR Patient validation result: {}",
@@ -1884,7 +1967,7 @@ mod tests {
         });
 
         let corrected_result =
-            validator.validate(&corrected_patient_json, vec!["Patient".to_string()]);
+            validator.validate(&corrected_patient_json, vec!["Patient".to_string()]).await;
         println!(
             "Validation result: {}",
             if corrected_result.valid {

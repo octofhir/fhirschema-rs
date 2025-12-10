@@ -492,19 +492,20 @@ impl EmbeddedSchemaProvider {
         &self.inner.schemas
     }
 
-    /// Validate a resource against a specific profile URL
-    pub fn validate_resource_against_profile(
+    /// Validate a resource against a specific profile URL (async)
+    pub async fn validate_resource_against_profile(
         &self,
         resource: &serde_json::Value,
         profile_url: &str,
     ) -> Result<crate::types::ValidationResult, Box<crate::types::ValidationError>> {
         use crate::validation::FhirSchemaValidator;
 
-        let validator = FhirSchemaValidator::new(self.inner.schemas.clone());
+        // Create validator without FHIRPath evaluator (structural validation only)
+        let validator = FhirSchemaValidator::new(self.inner.schemas.clone(), None);
 
         // Find schema by URL
         if let Some(schema) = self.inner.schemas.values().find(|s| s.url == profile_url) {
-            Ok(validator.validate(resource, vec![schema.name.clone()]))
+            Ok(validator.validate(resource, vec![schema.name.clone()]).await)
         } else {
             Err(Box::new(crate::types::ValidationError {
                 error_type: "schema-not-found".to_string(),
@@ -514,23 +515,27 @@ impl EmbeddedSchemaProvider {
                 expected: None,
                 got: None,
                 schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
             }))
         }
     }
 
     /// Validate a resource against its resource type
-    pub fn validate_resource_against_resource_type(
+    pub async fn validate_resource_against_resource_type(
         &self,
         resource: &serde_json::Value,
         resource_type: &str,
     ) -> Result<crate::types::ValidationResult, Box<crate::types::ValidationError>> {
         use crate::validation::FhirSchemaValidator;
 
-        let validator = FhirSchemaValidator::new(self.inner.schemas.clone());
+        // Create validator without FHIRPath evaluator (structural validation only)
+        let validator = FhirSchemaValidator::new(self.inner.schemas.clone(), None);
 
         // Check if resource type exists
         if self.inner.schemas.contains_key(resource_type) {
-            Ok(validator.validate(resource, vec![resource_type.to_string()]))
+            Ok(validator.validate(resource, vec![resource_type.to_string()]).await)
         } else {
             Err(Box::new(crate::types::ValidationError {
                 error_type: "schema-not-found".to_string(),
@@ -540,6 +545,9 @@ impl EmbeddedSchemaProvider {
                 expected: None,
                 got: None,
                 schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
             }))
         }
     }
@@ -746,6 +754,10 @@ impl DynamicSchemaProvider {
     /// Get the number of loaded schemas
     pub fn schema_count(&self) -> usize {
         self.inner.schemas.len()
+    }
+
+    pub fn schemas(&self) -> &HashMap<String, FhirSchema> {
+        &self.inner.schemas
     }
 }
 

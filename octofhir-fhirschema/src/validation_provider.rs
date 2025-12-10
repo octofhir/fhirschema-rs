@@ -215,12 +215,16 @@ impl ValidationProvider for FhirSchemaValidationProvider {
                 ModelError::validation_error(format!("Profile not found: {profile_url}"))
             })?;
 
-        // Create FHIR Schema validator with all available schemas
-        let validator =
-            crate::validation::FhirSchemaValidator::new(self.schema_provider.schemas().clone());
+        // Create FHIR Schema validator with all available schemas and pass FHIRPath evaluator
+        let validator = crate::validation::FhirSchemaValidator::new(
+            self.schema_provider.schemas().clone(),
+            self.fhirpath_evaluator.clone(),
+        );
 
-        // Validate using the comprehensive FHIR Schema validation engine (structural validation)
-        let validation_result = validator.validate(resource, vec![profile_url.to_string()]);
+        // Validate using the comprehensive FHIR Schema validation engine (async)
+        let validation_result = validator
+            .validate(resource, vec![profile_url.to_string()])
+            .await;
 
         if !validation_result.valid {
             return Ok(false);

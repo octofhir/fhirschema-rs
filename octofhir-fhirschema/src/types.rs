@@ -210,8 +210,9 @@ pub struct ValidationContext {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationError {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     pub error_type: String,
+    #[serde(default)]
     pub path: Vec<serde_json::Value>, // Can be string or number
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -223,6 +224,14 @@ pub struct ValidationError {
     pub got: Option<serde_json::Value>,
     #[serde(rename = "schema-path", skip_serializing_if = "Option::is_none")]
     pub schema_path: Option<Vec<serde_json::Value>>, // Can be string or number
+
+    // FHIRPath constraint-specific fields (Phase 1.5)
+    #[serde(rename = "constraint-key", skip_serializing_if = "Option::is_none")]
+    pub constraint_key: Option<String>,
+    #[serde(rename = "constraint-expression", skip_serializing_if = "Option::is_none")]
+    pub constraint_expression: Option<String>,
+    #[serde(rename = "constraint-severity", skip_serializing_if = "Option::is_none")]
+    pub constraint_severity: Option<String>,
 }
 
 impl std::fmt::Display for ValidationError {
@@ -237,10 +246,15 @@ impl std::fmt::Display for ValidationError {
 
 impl std::error::Error for ValidationError {}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ValidationResult {
+    #[serde(default)]
     pub errors: Vec<ValidationError>,
+    #[serde(default)]
     pub valid: bool,
+    /// Warnings (non-fatal validation issues)
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub warnings: Vec<ValidationError>,
 }
 
 // Converter Types
