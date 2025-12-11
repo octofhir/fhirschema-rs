@@ -1,4 +1,4 @@
-use octofhir_fhirschema::model_provider::EmbeddedSchemaProvider;
+use octofhir_fhirschema::EmbeddedSchemaProvider;
 use serde_json::json;
 
 #[tokio::test]
@@ -106,8 +106,9 @@ async fn test_embedded_provider_validation_nonexistent_resource_type() {
         "resourceType": "Patient"
     });
 
-    let result =
-        provider.validate_resource_against_resource_type(&patient_data, "NonexistentResourceType").await;
+    let result = provider
+        .validate_resource_against_resource_type(&patient_data, "NonexistentResourceType")
+        .await;
 
     assert!(
         result.is_err(),

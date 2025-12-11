@@ -119,10 +119,11 @@ fn normalize_schema(mut schema: Value) -> Value {
         Value::Object(ref mut obj) => {
             // Handle circular references in extensions fields
             // Replace empty extensions objects with "[Circular Reference]"
-            if let Some(extensions) = obj.get("extensions") {
-                if extensions.is_object() && extensions.as_object().map_or(false, |o| o.is_empty()) {
-                    obj.insert("extensions".to_string(), json!("[Circular Reference]"));
-                }
+            if let Some(extensions) = obj.get("extensions")
+                && extensions.is_object()
+                && extensions.as_object().is_some_and(|o| o.is_empty())
+            {
+                obj.insert("extensions".to_string(), json!("[Circular Reference]"));
             }
 
             // Process all values recursively first

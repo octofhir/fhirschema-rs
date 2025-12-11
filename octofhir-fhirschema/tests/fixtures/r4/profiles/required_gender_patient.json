@@ -1,0 +1,11 @@
+{
+  "_comment": "Test fixture for a profile that requires gender",
+  "resourceType": "Patient",
+  "id": "required-gender-example",
+  "name": [
+    {
+      "family": "Test"
+    }
+  ],
+  "gender": "male"
+}

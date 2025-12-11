@@ -114,7 +114,10 @@ async fn test_validation_without_evaluator_skips_constraints() {
     if !result.valid {
         println!("Validation errors: {:?}", result.errors);
     }
-    assert!(result.valid, "Should pass without evaluator (constraints skipped)");
+    assert!(
+        result.valid,
+        "Should pass without evaluator (constraints skipped)"
+    );
 }
 
 #[tokio::test]
@@ -236,7 +239,10 @@ async fn test_validation_with_always_invalid_evaluator() {
             .map(|m| m.contains("Constraint") && m.contains("pat-1"))
             .unwrap_or(false)
     });
-    assert!(has_constraint_error, "Should have constraint violation error");
+    assert!(
+        has_constraint_error,
+        "Should have constraint violation error"
+    );
 }
 
 #[tokio::test]

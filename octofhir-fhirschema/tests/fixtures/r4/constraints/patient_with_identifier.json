@@ -1,0 +1,17 @@
+{
+  "_comment": "Patient with identifier for constraint testing (pat-1: SHALL at least contain a contact's details or a reference to an organization)",
+  "resourceType": "Patient",
+  "id": "constraint-example",
+  "identifier": [
+    {
+      "system": "http://example.org/mrn",
+      "value": "12345"
+    }
+  ],
+  "name": [
+    {
+      "family": "Test",
+      "given": ["Constraint"]
+    }
+  ]
+}

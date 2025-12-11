@@ -7,8 +7,9 @@ use octofhir_fhir_model::{
     ValidationProvider, error::ModelError, provider::ModelProvider,
 };
 
+use super::model_provider::FhirSchemaModelProvider;
 use crate::embedded::{FhirVersion, create_validation_context, get_schemas};
-use crate::model_provider::FhirSchemaModelProvider;
+use crate::terminology::TerminologyService;
 use crate::types::ValidationContext;
 use octofhir_fhir_model::provider::FhirVersion as ModelFhirVersion;
 
@@ -19,6 +20,8 @@ pub struct FhirSchemaValidationProvider {
     validation_context: ValidationContext,
     /// Optional FHIRPath evaluator for constraint validation
     fhirpath_evaluator: Option<Arc<dyn FhirPathEvaluator>>,
+    /// Optional terminology service for binding validation
+    terminology_service: Option<Arc<dyn TerminologyService>>,
 }
 
 impl FhirSchemaValidationProvider {
@@ -31,12 +34,19 @@ impl FhirSchemaValidationProvider {
             schema_provider,
             validation_context,
             fhirpath_evaluator: None,
+            terminology_service: None,
         }
     }
 
     /// Add FHIRPath evaluator for constraint validation
     pub fn with_fhirpath_evaluator(mut self, evaluator: Arc<dyn FhirPathEvaluator>) -> Self {
         self.fhirpath_evaluator = Some(evaluator);
+        self
+    }
+
+    /// Add terminology service for binding validation
+    pub fn with_terminology_service(mut self, service: Arc<dyn TerminologyService>) -> Self {
+        self.terminology_service = Some(service);
         self
     }
 
@@ -63,6 +73,7 @@ impl FhirSchemaValidationProvider {
             schema_provider,
             validation_context,
             fhirpath_evaluator: None,
+            terminology_service: None,
         })
     }
 
@@ -89,6 +100,7 @@ impl FhirSchemaValidationProvider {
             schema_provider,
             validation_context,
             fhirpath_evaluator: None,
+            terminology_service: None,
         })
     }
 
@@ -113,6 +125,7 @@ impl FhirSchemaValidationProvider {
             schema_provider,
             validation_context,
             fhirpath_evaluator: None,
+            terminology_service: None,
         })
     }
 
@@ -215,11 +228,16 @@ impl ValidationProvider for FhirSchemaValidationProvider {
                 ModelError::validation_error(format!("Profile not found: {profile_url}"))
             })?;
 
-        // Create FHIR Schema validator with all available schemas and pass FHIRPath evaluator
-        let validator = crate::validation::FhirSchemaValidator::new(
+        // Create FHIR Schema validator with all available schemas
+        let mut validator = crate::validation::FhirSchemaValidator::new(
             self.schema_provider.schemas().clone(),
             self.fhirpath_evaluator.clone(),
         );
+
+        // Add terminology service if available
+        if let Some(terminology) = &self.terminology_service {
+            validator = validator.with_terminology_service(terminology.clone());
+        }
 
         // Validate using the comprehensive FHIR Schema validation engine (async)
         let validation_result = validator

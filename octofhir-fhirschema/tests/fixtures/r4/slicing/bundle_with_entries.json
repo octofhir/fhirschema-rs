@@ -1,0 +1,26 @@
+{
+  "resourceType": "Bundle",
+  "id": "slicing-example",
+  "type": "collection",
+  "entry": [
+    {
+      "fullUrl": "urn:uuid:patient-1",
+      "resource": {
+        "resourceType": "Patient",
+        "id": "patient-1",
+        "name": [{"family": "Test"}]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:observation-1",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "observation-1",
+        "status": "final",
+        "code": {
+          "coding": [{"system": "http://loinc.org", "code": "12345"}]
+        }
+      }
+    }
+  ]
+}

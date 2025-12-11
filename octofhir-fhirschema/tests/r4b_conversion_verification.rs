@@ -5,8 +5,7 @@
 //! them using the translate() function, ensuring all 568 resources convert successfully.
 
 use futures::stream::{self, StreamExt};
-use octofhir_canonical_manager::CanonicalManager;
-use octofhir_fhirschema::{translate, FhirSchema, StructureDefinition};
+use octofhir_fhirschema::{FhirSchema, StructureDefinition, translate};
 use std::time::{Duration, Instant};
 
 /// Result of converting a single StructureDefinition
@@ -99,8 +98,8 @@ impl ConversionSummary {
 }
 
 /// Load all R4B StructureDefinitions using the canonical manager
-pub async fn load_r4b_structure_definitions(
-) -> Result<Vec<StructureDefinition>, Box<dyn std::error::Error>> {
+pub async fn load_r4b_structure_definitions()
+-> Result<Vec<StructureDefinition>, Box<dyn std::error::Error>> {
     println!("Initializing CanonicalManager with test database...");
 
     // Use a test-specific database directory to avoid schema conflicts
@@ -121,21 +120,25 @@ pub async fn load_r4b_structure_definitions(
     println!("Installed packages: {:?}", packages);
 
     println!("Testing resolve with known URL...");
-    match manager.resolve("http://hl7.org/fhir/StructureDefinition/Patient").await {
+    match manager
+        .resolve("http://hl7.org/fhir/StructureDefinition/Patient")
+        .await
+    {
         Ok(resource) => println!("✓ Resolve works! Found: {:?}", resource.metadata.name),
         Err(e) => println!("✗ Resolve failed: {}", e),
     }
 
     println!("Searching for all resources (no filters)...");
-    let test_results = manager
-        .search()
-        .await
-        .limit(10)
-        .execute()
-        .await?;
-    println!("Test search returned {} resources", test_results.resources.len());
+    let test_results = manager.search().await.limit(10).execute().await?;
+    println!(
+        "Test search returned {} resources",
+        test_results.resources.len()
+    );
     if !test_results.resources.is_empty() {
-        println!("Sample resource: {:?}", test_results.resources[0].index.resource_type);
+        println!(
+            "Sample resource: {:?}",
+            test_results.resources[0].index.resource_type
+        );
     }
 
     println!("Searching for R4B StructureDefinitions...");
@@ -147,17 +150,24 @@ pub async fn load_r4b_structure_definitions(
         .execute()
         .await?;
 
-    println!("Found {} total StructureDefinitions across all packages", all_results.resources.len());
+    println!(
+        "Found {} total StructureDefinitions across all packages",
+        all_results.resources.len()
+    );
 
     // Filter for R4B package manually
-    let results = all_results.resources
+    let results = all_results
+        .resources
         .into_iter()
         .filter(|r| {
             r.index.package_name == "hl7.fhir.r4b.core" && r.index.package_version == "4.3.0"
         })
         .collect::<Vec<_>>();
 
-    println!("Found {} R4B StructureDefinitions after filtering", results.len());
+    println!(
+        "Found {} R4B StructureDefinitions after filtering",
+        results.len()
+    );
 
     // Parse JSON to StructureDefinition
     let mut structure_defs = Vec::new();
@@ -239,8 +249,7 @@ async fn test_r4b_all_resources_convert() {
     assert_eq!(
         summary.failed, 0,
         "Expected zero conversion failures, but got {} failures out of {} resources",
-        summary.failed,
-        summary.total
+        summary.failed, summary.total
     );
 
     // Ensure we processed all expected R4B resources
@@ -324,7 +333,10 @@ async fn test_r4b_conversion_performance() {
         "Average per resource: {}ms",
         total_elapsed.as_millis() / count as u128
     );
-    println!("Throughput: {:.2} resources/sec", count as f64 / total_elapsed.as_secs_f64());
+    println!(
+        "Throughput: {:.2} resources/sec",
+        count as f64 / total_elapsed.as_secs_f64()
+    );
 
     // Performance assertion: should complete in reasonable time
     // With 8 parallel workers, expect < 30 seconds for ~650 resources

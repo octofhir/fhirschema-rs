@@ -5,8 +5,8 @@
 
 use async_trait::async_trait;
 use octofhir_fhir_model::{
-    error::ModelError, CompiledExpression, EvaluationResult, FhirPathConstraint,
-    FhirPathEvaluator, ModelProvider, ValidationError, ValidationResult as FhirPathValidationResult,
+    error::ModelError, CompiledExpression, EvaluationResult, FhirPathConstraint, FhirPathEvaluator,
+    ModelProvider, ValidationError, ValidationResult as FhirPathValidationResult,
 };
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -95,7 +95,7 @@ impl FhirPathEvaluator for AlwaysInvalidEvaluator {
                 message: format!("{}: {}", c.key, self.error_message),
                 code: Some(c.key.clone()),
                 location: None,
-                severity: c.severity.clone(),
+                severity: c.severity,
             })
             .collect();
 
@@ -181,7 +181,7 @@ impl FhirPathEvaluator for ConfigurableEvaluator {
                     message: format!("Constraint {} failed", constraint.key),
                     code: Some(constraint.key.clone()),
                     location: None,
-                    severity: constraint.severity.clone(),
+                    severity: constraint.severity,
                 });
             }
         }
@@ -288,8 +288,16 @@ mod tests {
         evaluator.set_constraint_result("fail-1", false);
 
         let constraints = vec![
-            FhirPathConstraint::new("pass-1".to_string(), "Should pass".to_string(), "true".to_string()),
-            FhirPathConstraint::new("fail-1".to_string(), "Should fail".to_string(), "false".to_string()),
+            FhirPathConstraint::new(
+                "pass-1".to_string(),
+                "Should pass".to_string(),
+                "true".to_string(),
+            ),
+            FhirPathConstraint::new(
+                "fail-1".to_string(),
+                "Should fail".to_string(),
+                "false".to_string(),
+            ),
         ];
 
         let result = evaluator

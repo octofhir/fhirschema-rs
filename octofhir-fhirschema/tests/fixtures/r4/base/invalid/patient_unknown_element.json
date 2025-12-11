@@ -1,0 +1,10 @@
+{
+  "resourceType": "Patient",
+  "id": "invalid-example",
+  "unknownField": "this should cause an error",
+  "name": [
+    {
+      "family": "Test"
+    }
+  ]
+}

@@ -128,12 +128,12 @@ fn build_slice_node(slice_schema: Value, match_value: Value, slice_info: Option<
 
     // If schema has an empty extensions object, replace with "[Circular Reference]"
     // This happens when an Extension type has nested extension elements
-    if let Some(schema_obj) = processed_schema.as_object_mut() {
-        if let Some(extensions) = schema_obj.get("extensions") {
-            if extensions.is_object() && extensions.as_object().map_or(false, |o| o.is_empty()) {
-                schema_obj.insert("extensions".to_string(), json!("[Circular Reference]"));
-            }
-        }
+    if let Some(schema_obj) = processed_schema.as_object_mut()
+        && let Some(extensions) = schema_obj.get("extensions")
+        && extensions.is_object()
+        && extensions.as_object().is_some_and(|o| o.is_empty())
+    {
+        schema_obj.insert("extensions".to_string(), json!("[Circular Reference]"));
     }
 
     let mut node = json!({
@@ -255,7 +255,8 @@ fn slicing_to_extensions(slicing_element: &Value) -> HashMap<String, Value> {
                         // Handle circular reference: replace empty extensions object with "[Circular Reference]"
                         // This happens when an Extension type has nested extension elements
                         if key == "extensions" {
-                            if value.is_object() && value.as_object().map_or(false, |o| o.is_empty()) {
+                            if value.is_object() && value.as_object().is_some_and(|o| o.is_empty())
+                            {
                                 extension[key] = json!("[Circular Reference]");
                             } else {
                                 extension[key] = value.clone();

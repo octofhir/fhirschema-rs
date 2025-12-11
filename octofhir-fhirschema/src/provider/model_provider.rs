@@ -505,7 +505,9 @@ impl EmbeddedSchemaProvider {
 
         // Find schema by URL
         if let Some(schema) = self.inner.schemas.values().find(|s| s.url == profile_url) {
-            Ok(validator.validate(resource, vec![schema.name.clone()]).await)
+            Ok(validator
+                .validate(resource, vec![schema.name.clone()])
+                .await)
         } else {
             Err(Box::new(crate::types::ValidationError {
                 error_type: "schema-not-found".to_string(),
@@ -535,7 +537,9 @@ impl EmbeddedSchemaProvider {
 
         // Check if resource type exists
         if self.inner.schemas.contains_key(resource_type) {
-            Ok(validator.validate(resource, vec![resource_type.to_string()]).await)
+            Ok(validator
+                .validate(resource, vec![resource_type.to_string()])
+                .await)
         } else {
             Err(Box::new(crate::types::ValidationError {
                 error_type: "schema-not-found".to_string(),
