@@ -82,12 +82,13 @@ pub fn get_common_path(path1: &[PathComponent], path2: &[PathComponent]) -> Vec<
 
     for i in 0..min_length {
         if path1[i].el == path2[i].el {
-            // Only keep the element name in common path, not slice info
+            // Preserve slice information from path1 in common path
+            // This is crucial for generating ExitSlice actions
             common.push(PathComponent {
                 el: path1[i].el.clone(),
-                slicing: None,
-                slice_name: None,
-                slice: None,
+                slicing: path1[i].slicing.clone(),
+                slice_name: path1[i].slice_name.clone(),
+                slice: path1[i].slice.clone(),
             });
         } else {
             break;
@@ -108,6 +109,13 @@ pub fn enrich_path(prev_path: &[PathComponent], new_path: &[PathComponent]) -> V
             // Only preserve slicing if not present in new path
             if merged.slicing.is_none() && prev_path[i].slicing.is_some() {
                 merged.slicing = prev_path[i].slicing.clone();
+            }
+
+            // Preserve slice_name and slice from prev_path if not in new path
+            // This is crucial for tracking slice context across nested elements
+            if merged.slice_name.is_none() && prev_path[i].slice_name.is_some() {
+                merged.slice_name = prev_path[i].slice_name.clone();
+                merged.slice = prev_path[i].slice.clone();
             }
 
             enriched.push(merged);

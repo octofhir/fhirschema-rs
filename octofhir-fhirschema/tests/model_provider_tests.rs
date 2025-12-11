@@ -186,11 +186,9 @@ async fn test_navigation_with_choice_types() {
         .unwrap();
 
     // Navigation might not work if Observation schema doesn't have expected elements
-    // For now, just check that the method doesn't crash
-    assert!(
-        result.success || !result.success,
-        "Navigation should not crash"
-    );
+    // For now, just check that the method doesn't crash and returns a result
+    // We don't assert success because it depends on schema structure
+    let _ = result;
 }
 
 #[tokio::test]

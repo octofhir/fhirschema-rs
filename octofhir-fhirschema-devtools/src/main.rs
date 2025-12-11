@@ -386,7 +386,6 @@ async fn save_binary_schemas(
     let output_file = output_dir.join(format!("{version}_schemas.json"));
     let serialized =
         serde_json::to_vec(schemas).map_err(|e| format!("JSON serialization error: {e}"))?;
-
     fs::write(&output_file, serialized)?;
     println!("💾 Saved JSON schemas to: {}", output_file.display());
 

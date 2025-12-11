@@ -123,9 +123,22 @@ fn build_match_for_slice(slicing: &Value, slice_schema: &Value) -> Value {
 }
 
 fn build_slice_node(slice_schema: Value, match_value: Value, slice_info: Option<&Value>) -> Value {
+    // Process slice schema to handle circular references
+    let mut processed_schema = slice_schema;
+
+    // If schema has an empty extensions object, replace with "[Circular Reference]"
+    // This happens when an Extension type has nested extension elements
+    if let Some(schema_obj) = processed_schema.as_object_mut() {
+        if let Some(extensions) = schema_obj.get("extensions") {
+            if extensions.is_object() && extensions.as_object().map_or(false, |o| o.is_empty()) {
+                schema_obj.insert("extensions".to_string(), json!("[Circular Reference]"));
+            }
+        }
+    }
+
     let mut node = json!({
         "match": match_value,
-        "schema": slice_schema
+        "schema": processed_schema
     });
 
     if let Some(slice) = slice_info {
@@ -209,30 +222,56 @@ fn slicing_to_extensions(slicing_element: &Value) -> HashMap<String, Value> {
                 extension["url"] = url.clone();
             }
 
-            // Add slice properties (min, max) - skip min if 0
-            if let Some(min) = slice.get("min")
-                && min.as_i64().unwrap_or(0) != 0
-            {
-                extension["min"] = min.clone();
+            // Add slice properties (min, max)
+            // Per FHIRSchema spec: include min only if >= 1 (required extension)
+            // Always include max for cardinality constraint (default to "*" if not specified)
+            if let Some(min) = slice.get("min") {
+                let min_val = min.as_i64().unwrap_or(0);
+                if min_val >= 1 {
+                    extension["min"] = min.clone();
+                }
             }
+
+            // Add max from slice level, or from schema, or default to "*"
             if let Some(max) = slice.get("max") {
                 extension["max"] = max.clone();
+            } else if let Some(schema_obj) = schema.and_then(|s| s.as_object()) {
+                if let Some(schema_max) = schema_obj.get("max") {
+                    extension["max"] = schema_max.clone();
+                } else {
+                    // Default to "*" (unbounded) per FHIR spec
+                    extension["max"] = json!("*");
+                }
+            } else {
+                // No schema, default to "*"
+                extension["max"] = json!("*");
             }
 
             // Add clean schema properties
             if let Some(schema_obj) = schema.and_then(|s| s.as_object()) {
                 for (key, value) in schema_obj {
-                    if !matches!(key.as_str(), "slicing" | "elements" | "type") {
-                        extension[key] = value.clone();
+                    // Skip internal fields: min (handled above), slicing, elements, type
+                    if !matches!(key.as_str(), "min" | "slicing" | "elements" | "type") {
+                        // Handle circular reference: replace empty extensions object with "[Circular Reference]"
+                        // This happens when an Extension type has nested extension elements
+                        if key == "extensions" {
+                            if value.is_object() && value.as_object().map_or(false, |o| o.is_empty()) {
+                                extension[key] = json!("[Circular Reference]");
+                            } else {
+                                extension[key] = value.clone();
+                            }
+                        } else {
+                            extension[key] = value.clone();
+                        }
                     }
                 }
 
-                // Add min from schema if not 0 and not already added from sliceProps
-                if let Some(schema_min) = schema_obj.get("min")
-                    && schema_min.as_i64().unwrap_or(0) != 0
-                    && extension.get("min").is_none()
-                {
-                    extension["min"] = schema_min.clone();
+                // Add min from schema if >= 1 and not already added from slice
+                if let Some(schema_min) = schema_obj.get("min") {
+                    let min_val = schema_min.as_i64().unwrap_or(0);
+                    if min_val >= 1 && extension.get("min").is_none() {
+                        extension["min"] = schema_min.clone();
+                    }
                 }
             }
 

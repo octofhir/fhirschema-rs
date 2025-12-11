@@ -20,3 +20,5 @@ Thumbs.db
 .fcm/*
 !.fcm/.gitkeep
 /schemas
+tests/fixtures/r4b_reference/
+tests/fixtures/comparison_reports/

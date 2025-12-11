@@ -125,9 +125,9 @@ pub struct FhirSchemaElement {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slicing: Option<FhirSchemaSlicing>,
 
-    // Extensions
+    // Extensions - using Value to support both HashMap and "[Circular Reference]" string
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub extensions: Option<HashMap<String, FhirSchemaElement>>,
+    pub extensions: Option<serde_json::Value>,
 
     // Required/excluded elements
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -189,8 +189,9 @@ pub struct FhirSchema {
     pub required: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub excluded: Option<Vec<String>>,
+    // Extensions - using Value to support both HashMap and "[Circular Reference]" string
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub extensions: Option<HashMap<String, FhirSchemaElement>>,
+    pub extensions: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub constraint: Option<HashMap<String, FhirSchemaConstraint>>,
 
