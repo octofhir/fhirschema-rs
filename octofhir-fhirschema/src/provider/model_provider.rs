@@ -66,6 +66,130 @@ pub struct FhirSchemaModelProvider {
 }
 
 impl FhirSchemaModelProvider {
+    /// Get the nested elements of a backbone element by parent type and element path.
+    ///
+    /// Backbone elements in FHIR schemas have their nested elements stored inline
+    /// within the parent schema (not as separate top-level schemas). This method
+    /// navigates into the schema structure to extract those nested elements.
+    ///
+    /// # Arguments
+    /// * `parent_type` - The parent type name (e.g., "Task", "Patient")
+    /// * `element_path` - Dot-separated path to the backbone element (e.g., "input", "contact.telecom")
+    ///
+    /// # Returns
+    /// A vector of ElementInfo for all children of the backbone element
+    pub fn get_backbone_element_children(
+        &self,
+        parent_type: &str,
+        element_path: &str,
+    ) -> Vec<octofhir_fhir_model::provider::ElementInfo> {
+        use octofhir_fhir_model::provider::ElementInfo;
+
+        let mut result = Vec::new();
+
+        // Get the parent schema
+        let Some(schema) = self.get_schema(parent_type) else {
+            return result;
+        };
+
+        // Navigate to the backbone element through the path
+        let path_parts: Vec<&str> = element_path.split('.').collect();
+        let mut current_elements = schema.elements.as_ref();
+
+        for part in &path_parts {
+            let Some(elements) = current_elements else {
+                return result;
+            };
+
+            let Some(element) = elements.get(*part) else {
+                return result;
+            };
+
+            // Move to nested elements
+            current_elements = element.elements.as_ref();
+        }
+
+        // Now current_elements should be the nested elements of the backbone
+        if let Some(elements) = current_elements {
+            for (name, element) in elements {
+                // Determine element type
+                let element_type = if element.elements.is_some() {
+                    "BackboneElement".to_string()
+                } else {
+                    element
+                        .type_name
+                        .as_ref()
+                        .unwrap_or(&"Any".to_string())
+                        .clone()
+                };
+
+                result.push(ElementInfo {
+                    name: name.clone(),
+                    element_type,
+                    documentation: element.short.clone(),
+                });
+            }
+        }
+
+        result
+    }
+
+    /// Check if an element at the given path is a backbone element (has nested elements).
+    ///
+    /// # Arguments
+    /// * `parent_type` - The parent type name (e.g., "Task", "Patient")
+    /// * `element_path` - Dot-separated path to the element (e.g., "input", "contact.telecom")
+    ///
+    /// # Returns
+    /// True if the element at the path has nested elements (is a backbone element)
+    pub fn is_backbone_element(&self, parent_type: &str, element_path: &str) -> bool {
+        let Some(schema) = self.get_schema(parent_type) else {
+            return false;
+        };
+
+        let path_parts: Vec<&str> = element_path.split('.').collect();
+        let mut current_elements = schema.elements.as_ref();
+
+        for (i, part) in path_parts.iter().enumerate() {
+            let Some(elements) = current_elements else {
+                return false;
+            };
+
+            let Some(element) = elements.get(*part) else {
+                return false;
+            };
+
+            // If this is the last part, check if it has nested elements
+            if i == path_parts.len() - 1 {
+                return element.elements.is_some();
+            }
+
+            // Move to nested elements
+            current_elements = element.elements.as_ref();
+        }
+
+        false
+    }
+
+    /// Helper to get backbone element's nested elements by parent type and path.
+    /// Used internally by ModelProvider methods to navigate into inline backbone elements.
+    pub fn get_backbone_elements_by_path(
+        &self,
+        parent_type: &str,
+        element_path: &str,
+    ) -> Option<&std::collections::HashMap<String, crate::types::FhirSchemaElement>> {
+        let schema = self.get_schema(parent_type)?;
+        let mut current_elements = schema.elements.as_ref()?;
+
+        // Navigate through the path (handles nested backbones like "a.b.c")
+        for part in element_path.split('.') {
+            let element = current_elements.get(part)?;
+            current_elements = element.elements.as_ref()?;
+        }
+
+        Some(current_elements)
+    }
+
     /// Create new provider with schemas and FHIR version
     pub fn new(schemas: HashMap<String, FhirSchema>, fhir_version: ModelFhirVersion) -> Self {
         let type_mapping: HashMap<String, String> = TYPE_MAPPING
@@ -225,22 +349,53 @@ impl ModelProvider for FhirSchemaModelProvider {
         parent_type: &TypeInfo,
         property_name: &str,
     ) -> ModelResult<Option<TypeInfo>> {
-        if let Some(type_name) = &parent_type.name
-            && let Some(schema) = self.get_schema(type_name)
-            && let Some(elements) = &schema.elements
-        {
+        if let Some(type_name) = &parent_type.name {
+            // Check if this is a backbone element path (e.g., "Task.input")
+            let elements = if type_name.contains('.') {
+                // Split into parent type and element path
+                let parts: Vec<&str> = type_name.splitn(2, '.').collect();
+                if parts.len() == 2 {
+                    self.get_backbone_elements_by_path(parts[0], parts[1])
+                } else {
+                    None
+                }
+            } else {
+                // Regular type lookup
+                self.get_schema(type_name)
+                    .and_then(|schema| schema.elements.as_ref())
+            };
+
+            let Some(elements) = elements else {
+                return Ok(None);
+            };
             // First try direct property name match
-            if let Some(element) = elements.get(property_name)
-                && let Some(element_type_name) = &element.type_name
-            {
-                let mapped_type = self.map_fhir_type(element_type_name);
-                return Ok(Some(TypeInfo {
-                    type_name: mapped_type,
-                    singleton: Some(element.max == Some(1)),
-                    is_empty: Some(false),
-                    namespace: Some("FHIR".to_string()),
-                    name: Some(element_type_name.clone()),
-                }));
+            if let Some(element) = elements.get(property_name) {
+                // Check if this is a backbone element (has nested elements)
+                if element.elements.is_some() {
+                    // For backbone elements, use a path-based name so we can look up
+                    // nested elements later. Format: "ParentType.elementPath"
+                    // This works whether type_name is a simple type or already a path
+                    let backbone_path = format!("{}.{}", type_name, property_name);
+                    return Ok(Some(TypeInfo {
+                        type_name: "Any".to_string(),
+                        singleton: Some(element.max == Some(1)),
+                        is_empty: Some(false),
+                        namespace: Some("FHIR".to_string()),
+                        name: Some(backbone_path),
+                    }));
+                }
+
+                // Regular element with type_name
+                if let Some(element_type_name) = &element.type_name {
+                    let mapped_type = self.map_fhir_type(element_type_name);
+                    return Ok(Some(TypeInfo {
+                        type_name: mapped_type,
+                        singleton: Some(element.max == Some(1)),
+                        is_empty: Some(false),
+                        namespace: Some("FHIR".to_string()),
+                        name: Some(element_type_name.clone()),
+                    }));
+                }
             }
 
             // Handle choice navigation (e.g., value[x] -> valueString, valueInteger, etc.)
@@ -317,11 +472,31 @@ impl ModelProvider for FhirSchemaModelProvider {
 
     /// Get element names from complex type using schema
     fn get_element_names(&self, parent_type: &TypeInfo) -> Vec<String> {
-        if let Some(type_name) = &parent_type.name
-            && let Some(schema) = self.get_schema(type_name)
-            && let Some(elements) = &schema.elements
-        {
-            return elements.keys().cloned().collect();
+        if let Some(type_name) = &parent_type.name {
+            // Check if this is a backbone element path (e.g., "Task.input")
+            // Backbone paths contain dots and are used for inline nested elements
+            if type_name.contains('.') {
+                // Split into parent type and element path
+                let parts: Vec<&str> = type_name.splitn(2, '.').collect();
+                if parts.len() == 2 {
+                    let parent = parts[0];
+                    let element_path = parts[1];
+
+                    // Navigate to the backbone element's nested elements
+                    if let Some(elements) = self.get_backbone_elements_by_path(parent, element_path)
+                    {
+                        return elements.keys().cloned().collect();
+                    }
+                }
+                return Vec::new();
+            }
+
+            // Regular type lookup
+            if let Some(schema) = self.get_schema(type_name)
+                && let Some(elements) = &schema.elements
+            {
+                return elements.keys().cloned().collect();
+            }
         }
         Vec::new()
     }
@@ -356,13 +531,23 @@ impl ModelProvider for FhirSchemaModelProvider {
                         // Don't add duplicates (child elements override parent)
                         if !seen_names.contains(name) {
                             seen_names.insert(name.clone());
-                            element_infos.push(ElementInfo {
-                                name: name.clone(),
-                                element_type: element
+
+                            // Determine element type:
+                            // - If element has nested `elements`, it's a BackboneElement
+                            // - Otherwise use `type_name` or default to "Any"
+                            let element_type = if element.elements.is_some() {
+                                "BackboneElement".to_string()
+                            } else {
+                                element
                                     .type_name
                                     .as_ref()
                                     .unwrap_or(&"Any".to_string())
-                                    .clone(),
+                                    .clone()
+                            };
+
+                            element_infos.push(ElementInfo {
+                                name: name.clone(),
+                                element_type,
                                 documentation: element.short.clone(),
                             });
                         }
