@@ -341,29 +341,45 @@ impl ModelProvider for FhirSchemaModelProvider {
         }
     }
 
-    /// Get detailed information about elements of a type for completion suggestions
+    /// Get detailed information about elements of a type for completion suggestions.
+    /// Includes inherited elements from base types (Resource, DomainResource, etc.).
     async fn get_elements(&self, type_name: &str) -> ModelResult<Vec<ElementInfo>> {
-        if let Some(schema) = self.get_schema(type_name) {
-            if let Some(elements) = &schema.elements {
-                let mut element_infos = Vec::new();
-                for (name, element) in elements {
-                    element_infos.push(ElementInfo {
-                        name: name.clone(),
-                        element_type: element
-                            .type_name
-                            .as_ref()
-                            .unwrap_or(&"Any".to_string())
-                            .clone(),
-                        documentation: element.short.clone(),
-                    });
+        let mut element_infos = Vec::new();
+        let mut seen_names = std::collections::HashSet::new();
+
+        // Collect elements from the type hierarchy (child first, then parents)
+        let mut current_type = Some(type_name.to_string());
+        while let Some(ref type_to_check) = current_type {
+            if let Some(schema) = self.get_schema(type_to_check) {
+                if let Some(elements) = &schema.elements {
+                    for (name, element) in elements {
+                        // Don't add duplicates (child elements override parent)
+                        if !seen_names.contains(name) {
+                            seen_names.insert(name.clone());
+                            element_infos.push(ElementInfo {
+                                name: name.clone(),
+                                element_type: element
+                                    .type_name
+                                    .as_ref()
+                                    .unwrap_or(&"Any".to_string())
+                                    .clone(),
+                                documentation: element.short.clone(),
+                            });
+                        }
+                    }
                 }
-                Ok(element_infos)
+
+                // Move to parent type
+                current_type = schema.base.as_ref().and_then(|base_url| {
+                    // Extract type name from URL (e.g., "http://hl7.org/fhir/StructureDefinition/DomainResource" -> "DomainResource")
+                    base_url.rsplit('/').next().map(|s| s.to_string())
+                });
             } else {
-                Ok(Vec::new())
+                current_type = None;
             }
-        } else {
-            Ok(Vec::new())
         }
+
+        Ok(element_infos)
     }
 
     /// Get list of all resource types
