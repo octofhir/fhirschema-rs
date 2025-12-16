@@ -5,7 +5,7 @@ use crate::error::{FhirSchemaError, Result};
 use crate::path_parser::{enrich_path, parse_path};
 use crate::stack_processor::apply_actions;
 use crate::types::{
-    ConversionContext, FhirSchema, FhirSchemaElement, StructureDefinition,
+    ConversionContext, FhirSchema, FhirSchemaConstraint, FhirSchemaElement, StructureDefinition,
     StructureDefinitionElement,
 };
 use serde_json::{Value, json};
@@ -44,6 +44,30 @@ fn build_resource_header(
         && structure_definition.type_name != "Element"
     {
         schema.base = Some(base_definition.clone());
+    }
+
+    // Extract resource-level constraints from root element in snapshot
+    // The root element has path equal to the resource type (e.g., "Organization")
+    if let Some(snapshot) = &structure_definition.snapshot
+        && let Some(root_element) = snapshot
+            .element
+            .iter()
+            .find(|e| e.path == structure_definition.type_name)
+        && let Some(constraints) = &root_element.constraint
+        && !constraints.is_empty()
+    {
+        let mut constraint_map = HashMap::new();
+        for constraint in constraints {
+            constraint_map.insert(
+                constraint.key.clone(),
+                FhirSchemaConstraint {
+                    expression: constraint.expression.clone(),
+                    human: constraint.human.clone(),
+                    severity: constraint.severity.clone(),
+                },
+            );
+        }
+        schema.constraint = Some(constraint_map);
     }
 
     schema
