@@ -42,7 +42,8 @@ impl FhirPathEvaluator for AlwaysValidEvaluator {
         _resource: &JsonValue,
         _variables: &HashMap<String, EvaluationResult>,
     ) -> Result<EvaluationResult, ModelError> {
-        Ok(EvaluationResult::Empty)
+        // Return true for constraint validation (constraints pass when expression is truthy)
+        Ok(EvaluationResult::Boolean(true, None))
     }
 
     async fn compile(&self, expression: &str) -> Result<CompiledExpression, ModelError> {
@@ -120,7 +121,8 @@ impl FhirPathEvaluator for AlwaysInvalidEvaluator {
         _resource: &JsonValue,
         _variables: &HashMap<String, EvaluationResult>,
     ) -> Result<EvaluationResult, ModelError> {
-        Ok(EvaluationResult::Empty)
+        // Return false for constraint validation (constraints fail when expression is falsy)
+        Ok(EvaluationResult::Boolean(false, None))
     }
 
     async fn compile(&self, expression: &str) -> Result<CompiledExpression, ModelError> {
@@ -147,7 +149,10 @@ impl FhirPathEvaluator for AlwaysInvalidEvaluator {
     }
 }
 
-/// Mock FHIRPath evaluator with configurable responses per constraint key
+/// Mock FHIRPath evaluator with configurable responses per expression
+///
+/// Note: The validator calls `evaluate_with_variables` with the expression string,
+/// so responses are keyed by expression, not constraint key.
 pub struct ConfigurableEvaluator {
     responses: HashMap<String, bool>,
 }
@@ -159,9 +164,17 @@ impl ConfigurableEvaluator {
         }
     }
 
-    /// Set whether a specific constraint key should pass or fail
+    /// Set whether a specific key (constraint key or expression) should pass or fail.
+    ///
+    /// For `validate_constraints`, use the constraint key (e.g., "pat-1").
+    /// For `evaluate_with_variables`, use the expression (e.g., "name.exists()").
     pub fn set_constraint_result(&mut self, key: impl Into<String>, passes: bool) {
         self.responses.insert(key.into(), passes);
+    }
+
+    /// Alias for set_constraint_result - use the expression string as the key.
+    pub fn set_expression_result(&mut self, expression: impl Into<String>, passes: bool) {
+        self.set_constraint_result(expression, passes);
     }
 }
 
@@ -203,11 +216,13 @@ impl FhirPathEvaluator for ConfigurableEvaluator {
 
     async fn evaluate_with_variables(
         &self,
-        _expression: &str,
+        expression: &str,
         _resource: &JsonValue,
         _variables: &HashMap<String, EvaluationResult>,
     ) -> Result<EvaluationResult, ModelError> {
-        Ok(EvaluationResult::Empty)
+        // Look up the result by expression, defaulting to true (pass) if not configured
+        let passes = self.responses.get(expression).copied().unwrap_or(true);
+        Ok(EvaluationResult::Boolean(passes, None))
     }
 
     async fn compile(&self, expression: &str) -> Result<CompiledExpression, ModelError> {

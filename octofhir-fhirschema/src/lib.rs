@@ -39,6 +39,7 @@ pub mod stack_processor;
 pub mod embedded;
 pub mod error;
 pub mod provider;
+pub mod reference;
 pub mod terminology;
 pub mod types;
 pub mod validation;
@@ -77,6 +78,12 @@ pub use terminology::{
     BindingStrength, CacheConfig, CacheStats, CachedTerminologyService, CodeValidationResult,
     InMemoryTerminologyService, TerminologyError, TerminologyErrorCode, TerminologyProviderAdapter,
     TerminologyResult, TerminologyService,
+};
+
+// Reference validation exports
+pub use reference::{
+    BundleContext, ContainedContext, NoOpReferenceResolver, ReferenceError, ReferenceErrorCode,
+    ReferenceResolutionResult, ReferenceResolver, ReferenceResult,
 };
 
 // Re-export key types from fhir-model-rs for convenience

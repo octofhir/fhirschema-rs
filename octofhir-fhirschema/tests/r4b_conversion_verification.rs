@@ -218,6 +218,7 @@ pub async fn convert_all_parallel(
 }
 
 #[tokio::test]
+#[ignore] // Requires network access - run with --ignored flag
 async fn test_r4b_all_resources_convert() {
     // Downloads all R4B StructureDefinitions from hl7.fhir.r4b.core@4.3.0
     // and verifies they convert successfully using translate()

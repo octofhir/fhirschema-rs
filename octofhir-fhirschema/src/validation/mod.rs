@@ -4,16 +4,48 @@
 //! in the FHIR Schema documentation. It provides comprehensive validation
 //! including schemata resolution, data element validation, and constraint checking.
 
+use crate::reference::{ReferenceError, ReferenceResolver};
 use crate::terminology::{BindingStrength, TerminologyService};
 use crate::types::{
     FhirSchema, FhirSchemaConstraint, FhirSchemaElement, FhirSchemaSliceMatch, FhirSchemaSlicing,
     ValidationError, ValidationResult,
 };
 use async_recursion::async_recursion;
-use octofhir_fhir_model::{ErrorSeverity, FhirPathConstraint, FhirPathEvaluator};
+use octofhir_fhir_model::{EvaluationResult, FhirPathEvaluator};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+/// Convert a JSON value to an EvaluationResult for use as a FHIRPath variable.
+/// This is needed to pass %rootResource to constraint evaluation.
+fn json_to_evaluation_result(value: &JsonValue) -> EvaluationResult {
+    match value {
+        JsonValue::Null => EvaluationResult::Empty,
+        JsonValue::Bool(b) => EvaluationResult::boolean(*b),
+        JsonValue::Number(n) => {
+            // For numbers, prefer integer if possible, otherwise use string representation
+            // The FHIRPath engine will handle type coercion as needed
+            if let Some(i) = n.as_i64() {
+                EvaluationResult::integer(i)
+            } else {
+                // For decimals/floats, convert to string - the engine will parse as needed
+                EvaluationResult::string(n.to_string())
+            }
+        }
+        JsonValue::String(s) => EvaluationResult::string(s.clone()),
+        JsonValue::Array(arr) => {
+            let items = arr.iter().map(json_to_evaluation_result).collect();
+            EvaluationResult::collection(items)
+        }
+        JsonValue::Object(obj) => {
+            let mut map = HashMap::new();
+            for (key, val) in obj {
+                map.insert(key.clone(), json_to_evaluation_result(val));
+            }
+            EvaluationResult::object(map)
+        }
+    }
+}
 
 /// Error codes for FHIR Schema validation (following FS001-FS011 pattern)
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +62,7 @@ pub enum FhirSchemaErrorCode {
     ConstraintViolation = 1010,
     CardinalityViolation = 1011,
     BindingViolation = 1012,
+    ReferenceTypeViolation = 1013,
 }
 
 impl std::fmt::Display for FhirSchemaErrorCode {
@@ -47,6 +80,7 @@ impl std::fmt::Display for FhirSchemaErrorCode {
             FhirSchemaErrorCode::ConstraintViolation => write!(f, "FS1010"),
             FhirSchemaErrorCode::CardinalityViolation => write!(f, "FS1011"),
             FhirSchemaErrorCode::BindingViolation => write!(f, "FS1012"),
+            FhirSchemaErrorCode::ReferenceTypeViolation => write!(f, "FS1013"),
         }
     }
 }
@@ -97,6 +131,9 @@ pub struct FhirSchemaValidationContext {
     pub path: String,
     /// Accumulated validation errors
     pub errors: Vec<ValidationError>,
+    /// Root resource for FHIRPath constraint evaluation (%rootResource)
+    /// This is set when validation starts and passed to nested constraint evaluations
+    pub root_resource: Option<JsonValue>,
 }
 
 impl FhirSchemaValidationContext {
@@ -107,6 +144,22 @@ impl FhirSchemaValidationContext {
             current_schemata: HashMap::new(),
             path,
             errors: Vec::new(),
+            root_resource: None,
+        }
+    }
+
+    /// Create new validation context with root resource for constraint evaluation
+    pub fn new_with_root_resource(
+        schemas: HashMap<String, FhirSchema>,
+        path: String,
+        root_resource: JsonValue,
+    ) -> Self {
+        Self {
+            all_schemas: schemas,
+            current_schemata: HashMap::new(),
+            path,
+            errors: Vec::new(),
+            root_resource: Some(root_resource),
         }
     }
 
@@ -148,6 +201,9 @@ pub struct FhirSchemaValidator {
     /// Optional terminology service for binding validation
     /// None means binding validation will be skipped
     terminology_service: Option<Arc<dyn TerminologyService>>,
+    /// Optional reference resolver for existence validation
+    /// None means reference existence validation will be skipped
+    reference_resolver: Option<Arc<dyn ReferenceResolver>>,
 }
 
 impl FhirSchemaValidator {
@@ -182,6 +238,7 @@ impl FhirSchemaValidator {
             url_to_name,
             fhirpath_evaluator,
             terminology_service: None,
+            reference_resolver: None,
         }
     }
 
@@ -191,6 +248,15 @@ impl FhirSchemaValidator {
     /// coded elements against their bound value sets.
     pub fn with_terminology_service(mut self, service: Arc<dyn TerminologyService>) -> Self {
         self.terminology_service = Some(service);
+        self
+    }
+
+    /// Add a reference resolver for existence validation.
+    ///
+    /// When a reference resolver is provided, the validator will check that
+    /// referenced resources actually exist in the storage.
+    pub fn with_reference_resolver(mut self, resolver: Arc<dyn ReferenceResolver>) -> Self {
+        self.reference_resolver = Some(resolver);
         self
     }
 
@@ -1043,8 +1109,13 @@ impl FhirSchemaValidator {
             .and_then(|rt| rt.as_str())
             .unwrap_or("");
 
-        let mut context =
-            FhirSchemaValidationContext::new(self.schemas.clone(), resource_type.to_string());
+        // Create context with root_resource set for FHIRPath constraint evaluation
+        // This is needed for constraints like ref-1 that reference %rootResource.contained
+        let mut context = FhirSchemaValidationContext::new_with_root_resource(
+            self.schemas.clone(),
+            resource_type.to_string(),
+            resource.clone(),
+        );
 
         // Start validation with root schemas (async)
         self.validate_with_schemata(&mut context, resource, schema_urls)
@@ -1452,6 +1523,9 @@ impl FhirSchemaValidator {
                 // Validate bindings for coded elements
                 self.validate_element_bindings(context, value).await;
 
+                // Validate reference type constraints for Reference elements
+                self.validate_element_references(context, value).await;
+
                 // Valid array/non-array match, continue validation (async)
                 self.validate_data_element(context, value).await;
             }
@@ -1679,9 +1753,14 @@ impl FhirSchemaValidator {
     /// This method evaluates FHIRPath constraint expressions using the configured FHIRPath evaluator.
     /// If no evaluator is configured, constraint validation is skipped.
     ///
+    /// For nested element validation (e.g., Reference inside Patient), we need to:
+    /// - Evaluate the constraint expression against the element value (e.g., the Reference)
+    /// - But set %rootResource to the root resource (e.g., the Patient) for constraints
+    ///   like ref-1 that need access to contained resources
+    ///
     /// # Arguments
     /// * `context` - Validation context for error tracking
-    /// * `obj` - Resource data to validate
+    /// * `obj` - Element data to validate (current context for the constraint)
     /// * `constraints` - Map of constraint key to constraint definition
     async fn validate_constraints(
         &self,
@@ -1699,64 +1778,50 @@ impl FhirSchemaValidator {
             return;
         }
 
-        // Build FHIRPath constraints from schema constraints
-        let fhirpath_constraints: Vec<FhirPathConstraint> = constraints
-            .iter()
-            .map(|(key, constraint)| {
-                let severity = match constraint.severity.as_str() {
-                    "error" => ErrorSeverity::Error,
-                    "warning" => ErrorSeverity::Warning,
-                    _ => ErrorSeverity::Error, // Default to error for unknown severity
-                };
+        // Convert element to full JSON value for FHIRPath evaluation
+        let element_value = JsonValue::Object(obj.clone());
 
-                FhirPathConstraint::new(
-                    key.clone(),
-                    constraint.human.clone(),
-                    constraint.expression.clone(),
-                )
-                .with_severity(severity)
-            })
-            .collect();
+        // Build variables map with %rootResource pointing to the actual root resource
+        // This is critical for constraints like ref-1 that reference %rootResource.contained
+        let mut variables = std::collections::HashMap::new();
+        if let Some(root_resource) = &context.root_resource {
+            // Convert JsonValue to EvaluationResult for the variables map
+            variables.insert(
+                "rootResource".to_string(),
+                json_to_evaluation_result(root_resource),
+            );
+        }
 
-        // Convert map to full JSON value for FHIRPath evaluation
-        let resource_value = JsonValue::Object(obj.clone());
+        // Evaluate each constraint individually with the proper %rootResource context
+        for (key, constraint) in constraints {
+            let is_warning = constraint.severity.as_str() == "warning";
 
-        // Properly await the async evaluation
-        match evaluator
-            .validate_constraints(&resource_value, &fhirpath_constraints)
-            .await
-        {
-            Ok(result) => {
-                if !result.is_valid {
-                    for error in result.errors {
-                        // Determine error code based on severity
-                        let error_code = match error.severity {
-                            ErrorSeverity::Error | ErrorSeverity::Fatal => {
-                                FhirSchemaErrorCode::ConstraintViolation
-                            }
-                            ErrorSeverity::Warning | ErrorSeverity::Information => {
-                                // For now, we'll still use ConstraintViolation
-                                // In Phase 1.5, we'll add proper warning support
-                                FhirSchemaErrorCode::ConstraintViolation
-                            }
-                        };
+            // Skip warning constraints - they are guidance, not rules
+            // In the future, we may want to collect warnings separately
+            if is_warning {
+                continue;
+            }
 
+            // Evaluate the constraint expression with element as context and root as %rootResource
+            match evaluator
+                .evaluate_with_variables(&constraint.expression, &element_value, &variables)
+                .await
+            {
+                Ok(result) => {
+                    // Check if the result is truthy (constraint passed)
+                    if !result.to_boolean() {
                         context.add_error(
-                            error_code,
-                            format!(
-                                "Constraint '{}' failed: {}",
-                                error.code.as_deref().unwrap_or("unknown"),
-                                error.message
-                            ),
+                            FhirSchemaErrorCode::ConstraintViolation,
+                            format!("Constraint '{}' failed: {}", key, constraint.human),
                         );
                     }
                 }
-            }
-            Err(e) => {
-                context.add_error(
-                    FhirSchemaErrorCode::ConstraintViolation,
-                    format!("FHIRPath constraint evaluation failed: {}", e),
-                );
+                Err(e) => {
+                    context.add_error(
+                        FhirSchemaErrorCode::ConstraintViolation,
+                        format!("Constraint '{}' evaluation failed: {}", key, e),
+                    );
+                }
             }
         }
     }
@@ -1889,6 +1954,341 @@ impl FhirSchemaValidator {
         }
 
         codes
+    }
+
+    /// Validate reference type constraints for Reference elements.
+    ///
+    /// This checks that the resourceType in a Reference matches the allowed
+    /// target types defined in the schema's `refers` field.
+    ///
+    /// # Arguments
+    /// * `context` - Validation context for error tracking
+    /// * `value` - The Reference value to validate
+    async fn validate_element_references(
+        &self,
+        context: &mut FhirSchemaValidationContext,
+        value: &JsonValue,
+    ) {
+        // Check if current element is a Reference type
+        let is_reference_type = context
+            .current_schemata
+            .values()
+            .any(|schema| schema.type_name == "Reference" || schema.name == "Reference");
+
+        if !is_reference_type {
+            return;
+        }
+
+        // Get allowed target types from refers field
+        let mut allowed_types: Vec<String> = Vec::new();
+
+        // Extract the current element name from the path
+        let element_name = context
+            .path
+            .split('.')
+            .next_back()
+            .unwrap_or("")
+            .split('[')
+            .next()
+            .unwrap_or("");
+
+        // Check current schemata for refers
+        for schema in context.current_schemata.values() {
+            if let Some(elements) = &schema.elements
+                && let Some(element) = elements.get(element_name)
+                && let Some(refers) = &element.refers
+            {
+                allowed_types.extend(refers.clone());
+            }
+        }
+
+        // Also check in all_schemas - the parent schema may have the refers
+        if allowed_types.is_empty()
+            && let Some(dot_pos) = context.path.rfind('.')
+        {
+            let parent_path = &context.path[..dot_pos];
+            let parent_type = parent_path.split('.').next().unwrap_or(parent_path);
+
+            if let Some(parent_schema) = context.all_schemas.get(parent_type)
+                && let Some(elements) = &parent_schema.elements
+                && let Some(element) = elements.get(element_name)
+                && let Some(refers) = &element.refers
+            {
+                allowed_types.extend(refers.clone());
+            }
+        }
+
+        // Validate the reference type matches allowed types (if type restrictions exist)
+        if !allowed_types.is_empty() {
+            self.validate_reference_type(context, value, &allowed_types);
+        }
+
+        // Validate referenced resource exists (if reference resolver is configured)
+        if let Some(root_resource) = &context.root_resource.clone() {
+            self.validate_reference_exists(context, value, root_resource)
+                .await;
+        }
+    }
+
+    /// Validate that a Reference's resourceType matches allowed target types.
+    ///
+    /// # Arguments
+    /// * `context` - Validation context for error tracking
+    /// * `reference_value` - The Reference JSON object
+    /// * `allowed_types` - List of allowed target type URLs from schema's `refers` field
+    fn validate_reference_type(
+        &self,
+        context: &mut FhirSchemaValidationContext,
+        reference_value: &JsonValue,
+        allowed_types: &[String],
+    ) {
+        // Extract reference string from Reference.reference field
+        let reference_str = match reference_value.get("reference").and_then(|v| v.as_str()) {
+            Some(r) => r,
+            None => return, // No reference field, might be logical reference - skip
+        };
+
+        // Skip contained references - they need special handling
+        if reference_str.starts_with('#') {
+            return;
+        }
+
+        // Parse reference to extract resourceType
+        if let Some(resource_type) = self.extract_resource_type_from_reference(reference_str) {
+            // If refers contains "Resource" or ends with /Resource, allow any type
+            let allows_any = allowed_types
+                .iter()
+                .any(|t| t == "Resource" || t.ends_with("/Resource"));
+
+            if allows_any {
+                return;
+            }
+
+            // Check if resourceType matches any allowed type
+            let is_allowed = allowed_types.iter().any(|allowed| {
+                // Handle both plain type names and profile URLs
+                // e.g., "Patient" or "http://hl7.org/fhir/StructureDefinition/Patient"
+                allowed == &resource_type || allowed.ends_with(&format!("/{}", resource_type))
+            });
+
+            if !is_allowed {
+                // Format allowed types for error message
+                let allowed_display: Vec<&str> = allowed_types
+                    .iter()
+                    .map(|t| {
+                        // Extract just the type name from URL if present
+                        t.rsplit('/').next().unwrap_or(t.as_str())
+                    })
+                    .collect();
+
+                context.add_error(
+                    FhirSchemaErrorCode::ReferenceTypeViolation,
+                    format!(
+                        "Reference type '{}' is not allowed. Expected one of: {:?}",
+                        resource_type, allowed_display
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Extract resourceType from a reference string.
+    ///
+    /// Handles various reference formats:
+    /// - Relative: "Patient/123"
+    /// - Absolute: "http://example.org/fhir/Patient/123"
+    /// - With history: "Patient/123/_history/1"
+    ///
+    /// Returns None for contained references (#id) or if type cannot be determined.
+    fn extract_resource_type_from_reference(&self, reference: &str) -> Option<String> {
+        // Skip contained references
+        if reference.starts_with('#') {
+            return None;
+        }
+
+        // Skip urn:uuid: and urn:oid: references
+        if reference.starts_with("urn:") {
+            return None;
+        }
+
+        // Handle absolute URLs: extract path portion
+        let path = if reference.contains("://") {
+            // Find the path after the domain
+            reference
+                .find("://")
+                .and_then(|i| reference[i + 3..].find('/'))
+                .map(|i| {
+                    let start = reference.find("://").unwrap() + 3 + i;
+                    &reference[start..]
+                })
+                .unwrap_or(reference)
+        } else {
+            reference
+        };
+
+        // Split path into segments
+        let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
+
+        // Pattern is ResourceType/id or ResourceType/id/_history/version
+        // We need the segment that looks like a resource type
+        if segments.len() >= 2 {
+            // Check for _history pattern
+            let type_idx =
+                if segments.len() >= 4 && segments.get(segments.len() - 2) == Some(&"_history") {
+                    // ResourceType/id/_history/version - type is at len-4
+                    segments.len().saturating_sub(4)
+                } else {
+                    // ResourceType/id - type is at len-2
+                    segments.len().saturating_sub(2)
+                };
+
+            if let Some(candidate) = segments.get(type_idx) {
+                // Validate it looks like a resource type (starts with capital letter)
+                if candidate
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_uppercase())
+                    .unwrap_or(false)
+                {
+                    return Some(candidate.to_string());
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Validate that a reference points to an existing resource.
+    ///
+    /// This method checks reference existence using the configured reference resolver.
+    /// It handles:
+    /// - Regular references (Patient/123) - checks via resolver
+    /// - Contained references (#id) - checks within the resource's contained array
+    /// - External/urn references - skipped (cannot validate)
+    ///
+    /// # Arguments
+    /// * `context` - Validation context for error tracking
+    /// * `value` - The Reference value to validate
+    /// * `resource` - The root resource being validated (for contained reference resolution)
+    async fn validate_reference_exists(
+        &self,
+        context: &mut FhirSchemaValidationContext,
+        value: &JsonValue,
+        resource: &JsonValue,
+    ) {
+        // Skip if no reference resolver configured
+        let Some(resolver) = &self.reference_resolver else {
+            return;
+        };
+
+        // Check if current element is a Reference type
+        let is_reference_type = context
+            .current_schemata
+            .values()
+            .any(|schema| schema.type_name == "Reference" || schema.name == "Reference");
+
+        if !is_reference_type {
+            return;
+        }
+
+        // Extract reference string from Reference.reference field
+        let reference_str = match value.get("reference").and_then(|v| v.as_str()) {
+            Some(r) => r,
+            None => return, // No reference field, might be logical reference - skip
+        };
+
+        // Handle contained references (#id)
+        if let Some(contained_id) = reference_str.strip_prefix('#') {
+            if !self.resolve_contained_reference(resource, contained_id) {
+                context.errors.push(ValidationError {
+                    error_type: "REF1002".to_string(),
+                    path: context
+                        .path
+                        .split('.')
+                        .map(|s| JsonValue::String(s.to_string()))
+                        .collect(),
+                    message: Some(format!(
+                        "Contained reference #{} not found in resource",
+                        contained_id
+                    )),
+                    value: Some(JsonValue::String(reference_str.to_string())),
+                    expected: None,
+                    got: None,
+                    schema_path: None,
+                    constraint_key: None,
+                    constraint_expression: None,
+                    constraint_severity: None,
+                });
+            }
+            return;
+        }
+
+        // Skip urn:uuid: and urn:oid: references (Bundle internal references)
+        if reference_str.starts_with("urn:") {
+            return;
+        }
+
+        // Resolve external reference via resolver
+        match resolver.resolve_reference(reference_str).await {
+            Ok(result) if !result.exists => {
+                context.errors.push(ValidationError {
+                    error_type: "REF1001".to_string(),
+                    path: context
+                        .path
+                        .split('.')
+                        .map(|s| JsonValue::String(s.to_string()))
+                        .collect(),
+                    message: Some(format!(
+                        "Referenced resource {} does not exist",
+                        reference_str
+                    )),
+                    value: Some(JsonValue::String(reference_str.to_string())),
+                    expected: None,
+                    got: None,
+                    schema_path: None,
+                    constraint_key: None,
+                    constraint_expression: None,
+                    constraint_severity: None,
+                });
+            }
+            Err(ReferenceError::ServiceUnavailable { .. }) => {
+                // Skip validation when service is unavailable
+                // This prevents validation failures due to temporary service issues
+            }
+            Err(e) => {
+                context.errors.push(ValidationError {
+                    error_type: e.code().to_string(),
+                    path: context
+                        .path
+                        .split('.')
+                        .map(|s| JsonValue::String(s.to_string()))
+                        .collect(),
+                    message: Some(e.to_string()),
+                    value: Some(JsonValue::String(reference_str.to_string())),
+                    expected: None,
+                    got: None,
+                    schema_path: None,
+                    constraint_key: None,
+                    constraint_expression: None,
+                    constraint_severity: None,
+                });
+            }
+            _ => {} // Reference exists, no error
+        }
+    }
+
+    /// Resolve a contained reference within the resource.
+    ///
+    /// Checks if a resource with the given ID exists in the resource's `contained` array.
+    fn resolve_contained_reference(&self, resource: &JsonValue, contained_id: &str) -> bool {
+        if let Some(contained) = resource.get("contained").and_then(|c| c.as_array()) {
+            for item in contained {
+                if item.get("id").and_then(|id| id.as_str()) == Some(contained_id) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 

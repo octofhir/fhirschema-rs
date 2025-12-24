@@ -262,8 +262,8 @@ async fn test_validation_with_configurable_evaluator() {
     constraints.insert(
         "pat-2".to_string(),
         FhirSchemaConstraint {
-            severity: "warning".to_string(),
-            human: "Gender should exist".to_string(),
+            severity: "error".to_string(),
+            human: "Gender must exist".to_string(),
             expression: "gender.exists()".to_string(),
         },
     );
@@ -294,10 +294,10 @@ async fn test_validation_with_configurable_evaluator() {
 
     schemas.insert("Patient".to_string(), patient_schema);
 
-    // Create configurable evaluator - pat-1 passes, pat-2 fails
+    // Create configurable evaluator - name.exists() passes, gender.exists() fails
     let mut evaluator = ConfigurableEvaluator::new();
-    evaluator.set_constraint_result("pat-1", true);
-    evaluator.set_constraint_result("pat-2", false);
+    evaluator.set_expression_result("name.exists()", true);
+    evaluator.set_expression_result("gender.exists()", false);
 
     let validator = FhirSchemaValidator::new(schemas, Some(Arc::new(evaluator)));
 
@@ -375,8 +375,14 @@ async fn test_validation_with_warning_severity() {
         .validate(&resource, vec!["Patient".to_string()])
         .await;
 
-    // Warnings still cause validation to fail for now
-    // (Phase 1.5 will add proper warning support)
-    assert!(!result.valid);
-    assert!(!result.errors.is_empty());
+    // Warning-severity constraints are currently skipped, so validation should pass
+    // A future enhancement could collect warnings separately
+    assert!(
+        result.valid,
+        "Validation should pass since warnings are skipped"
+    );
+    assert!(
+        result.errors.is_empty(),
+        "Should have no errors since warnings are skipped"
+    );
 }
