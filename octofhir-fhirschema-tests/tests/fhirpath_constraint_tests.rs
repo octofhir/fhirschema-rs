@@ -4,7 +4,7 @@
 //! with FhirPathEvaluator implementations to validate FHIRPath constraints.
 
 use octofhir_fhirschema::types::{FhirSchema, FhirSchemaConstraint, FhirSchemaElement};
-use octofhir_fhirschema::validation::FhirSchemaValidator;
+use octofhir_fhirschema::validation::FhirValidator;
 use octofhir_fhirschema_tests::mock_evaluator::{
     AlwaysInvalidEvaluator, AlwaysValidEvaluator, ConfigurableEvaluator,
 };
@@ -97,7 +97,7 @@ async fn test_validation_without_evaluator_skips_constraints() {
     schemas.insert("Patient".to_string(), patient_schema);
 
     // Create validator WITHOUT evaluator
-    let validator = FhirSchemaValidator::new(schemas, None);
+    let validator = FhirValidator::from_schemas(schemas, None);
 
     // Resource that would fail the constraint (no name)
     // Use only resourceType to avoid structural validation issues
@@ -161,7 +161,7 @@ async fn test_validation_with_always_valid_evaluator() {
 
     // Create validator WITH mock evaluator that always returns valid
     let evaluator = Arc::new(AlwaysValidEvaluator);
-    let validator = FhirSchemaValidator::new(schemas, Some(evaluator));
+    let validator = FhirValidator::from_schemas(schemas, Some(evaluator));
 
     let resource = json!({
         "resourceType": "Patient"
@@ -219,7 +219,7 @@ async fn test_validation_with_always_invalid_evaluator() {
 
     // Create validator with mock evaluator that always fails
     let evaluator = Arc::new(AlwaysInvalidEvaluator::new("Name is required"));
-    let validator = FhirSchemaValidator::new(schemas, Some(evaluator));
+    let validator = FhirValidator::from_schemas(schemas, Some(evaluator));
 
     let resource = json!({
         "resourceType": "Patient"
@@ -299,7 +299,7 @@ async fn test_validation_with_configurable_evaluator() {
     evaluator.set_expression_result("name.exists()", true);
     evaluator.set_expression_result("gender.exists()", false);
 
-    let validator = FhirSchemaValidator::new(schemas, Some(Arc::new(evaluator)));
+    let validator = FhirValidator::from_schemas(schemas, Some(Arc::new(evaluator)));
 
     let resource = json!({
         "resourceType": "Patient",
@@ -365,7 +365,7 @@ async fn test_validation_with_warning_severity() {
     schemas.insert("Patient".to_string(), patient_schema);
 
     let evaluator = Arc::new(AlwaysInvalidEvaluator::new("Gender missing"));
-    let validator = FhirSchemaValidator::new(schemas, Some(evaluator));
+    let validator = FhirValidator::from_schemas(schemas, Some(evaluator));
 
     let resource = json!({
         "resourceType": "Patient"

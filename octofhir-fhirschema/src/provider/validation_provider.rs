@@ -229,7 +229,7 @@ impl ValidationProvider for FhirSchemaValidationProvider {
             })?;
 
         // Create FHIR Schema validator with all available schemas
-        let mut validator = crate::validation::FhirSchemaValidator::new(
+        let mut validator = crate::validation::FhirValidator::from_schemas(
             self.schema_provider.schemas().clone(),
             self.fhirpath_evaluator.clone(),
         );

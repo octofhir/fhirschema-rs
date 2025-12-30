@@ -76,6 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     name,
                     version: ver,
                     priority: 1,
+                    url: None,
                 })
             })
             .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;

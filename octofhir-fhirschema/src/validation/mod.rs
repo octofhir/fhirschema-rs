@@ -3,18 +3,142 @@
 //! This module implements the FHIR Schema validation algorithm as specified
 //! in the FHIR Schema documentation. It provides comprehensive validation
 //! including schemata resolution, data element validation, and constraint checking.
+//!
+//! ## Architecture
+//!
+//! The validation system uses pre-compiled schemas for performance:
+//! - `CompiledSchema` - Schema with all nested types inlined
+//! - `SchemaCompiler` - Lazily compiles and caches schemas
+//! - `FhirValidator` - Fast validator using compiled schemas
+
+pub mod compiled;
+pub mod compiler;
+
+pub use compiled::*;
+pub use compiler::*;
 
 use crate::reference::{ReferenceError, ReferenceResolver};
-use crate::terminology::{BindingStrength, TerminologyService};
+use crate::terminology::{BindingStrength as TermBindingStrength, TerminologyService};
 use crate::types::{
     FhirSchema, FhirSchemaConstraint, FhirSchemaElement, FhirSchemaSliceMatch, FhirSchemaSlicing,
     ValidationError, ValidationResult,
 };
 use async_recursion::async_recursion;
+use async_trait::async_trait;
+// Note: futures crate kept for potential future parallel evaluation
 use octofhir_fhir_model::{EvaluationResult, FhirPathEvaluator};
+use once_cell::sync::OnceCell;
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+// =============================================================================
+// Schema Provider Trait for Lazy/Async Schema Loading
+// =============================================================================
+
+/// Trait for async schema lookup, enabling lazy loading from external sources.
+///
+/// This trait allows the validator to fetch schemas on-demand from sources like
+/// databases or cached providers (e.g., OctoFhirModelProvider with Moka cache).
+///
+/// # Example
+/// ```ignore
+/// #[async_trait]
+/// impl SchemaProvider for MyModelProvider {
+///     async fn get_schema(&self, name: &str) -> Option<Arc<FhirSchema>> {
+///         // Lookup from cache, load from DB if needed
+///         self.cached_get_schema(name).await
+///     }
+/// }
+/// ```
+#[async_trait]
+pub trait SchemaProvider: Send + Sync {
+    /// Get a schema by name or URL.
+    /// Returns Arc for efficient sharing without cloning the full schema.
+    async fn get_schema(&self, name: &str) -> Option<Arc<FhirSchema>>;
+
+    /// Get a schema by URL (optional, default delegates to get_schema).
+    async fn get_schema_by_url(&self, url: &str) -> Option<Arc<FhirSchema>> {
+        self.get_schema(url).await
+    }
+}
+
+// =============================================================================
+// InMemorySchemaProvider - Simple provider for tests
+// =============================================================================
+
+/// In-memory schema provider for testing.
+///
+/// Holds schemas in a HashMap and provides them synchronously wrapped in async.
+/// Useful for unit tests where schemas are loaded upfront.
+///
+/// # Example
+/// ```ignore
+/// let mut provider = InMemorySchemaProvider::new();
+/// provider.add_schema("Patient", patient_schema);
+/// provider.add_schema("Observation", observation_schema);
+///
+/// let validator = FhirValidator::new(Arc::new(provider));
+/// ```
+pub struct InMemorySchemaProvider {
+    schemas: HashMap<String, Arc<FhirSchema>>,
+}
+
+impl InMemorySchemaProvider {
+    /// Create a new empty in-memory provider.
+    pub fn new() -> Self {
+        Self {
+            schemas: HashMap::new(),
+        }
+    }
+
+    /// Create from a pre-built schema map.
+    pub fn from_map(schemas: HashMap<String, Arc<FhirSchema>>) -> Self {
+        Self { schemas }
+    }
+
+    /// Add a schema to the provider.
+    pub fn add_schema(&mut self, name: impl Into<String>, schema: Arc<FhirSchema>) {
+        self.schemas.insert(name.into(), schema);
+    }
+
+    /// Add a schema, taking ownership (will wrap in Arc).
+    pub fn add_schema_owned(&mut self, name: impl Into<String>, schema: FhirSchema) {
+        self.schemas.insert(name.into(), Arc::new(schema));
+    }
+
+    /// Get all schema names in the provider.
+    pub fn schema_names(&self) -> Vec<&String> {
+        self.schemas.keys().collect()
+    }
+
+    /// Check if a schema exists.
+    pub fn has_schema(&self, name: &str) -> bool {
+        self.schemas.contains_key(name)
+    }
+}
+
+impl Default for InMemorySchemaProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl SchemaProvider for InMemorySchemaProvider {
+    async fn get_schema(&self, name: &str) -> Option<Arc<FhirSchema>> {
+        self.schemas.get(name).cloned()
+    }
+
+    async fn get_schema_by_url(&self, url: &str) -> Option<Arc<FhirSchema>> {
+        // Try direct lookup first
+        if let Some(schema) = self.schemas.get(url) {
+            return Some(schema.clone());
+        }
+        // Then search by schema URL field
+        self.schemas.values().find(|s| s.url == url).cloned()
+    }
+}
 
 /// Convert a JSON value to an EvaluationResult for use as a FHIRPath variable.
 /// This is needed to pass %rootResource to constraint evaluation.
@@ -109,6 +233,16 @@ static PRIMITIVE_TYPES: &[&str] = &[
     "xhtml",
 ];
 
+/// Cached element information from schema lookup (single pass optimization).
+/// Collects all needed info about an element in one iteration over schemata.
+#[derive(Debug, Default)]
+pub struct ElementInfo {
+    /// Whether the element is expected to be an array
+    pub is_array: bool,
+    /// Slicing definition if present
+    pub slicing: Option<FhirSchemaSlicing>,
+}
+
 /// Result of classifying a single array item against slice definitions
 #[derive(Debug, Clone, PartialEq)]
 pub enum SliceClassification {
@@ -121,36 +255,44 @@ pub enum SliceClassification {
 }
 
 /// Main validation context for tracking schemas and errors
-#[derive(Debug)]
 pub struct FhirSchemaValidationContext {
-    /// All schemas available for validation
-    pub all_schemas: HashMap<String, FhirSchema>,
-    /// Current schemata set for the element being validated
-    pub current_schemata: HashMap<String, FhirSchema>,
+    /// All schemas available for validation (shared via Arc for zero-copy)
+    pub all_schemas: Arc<HashMap<String, Arc<FhirSchema>>>,
+    /// Current schemata set for the element being validated (Arc for cheap clones)
+    pub current_schemata: HashMap<String, Arc<FhirSchema>>,
     /// Current path in the data being validated
     pub path: String,
     /// Accumulated validation errors
     pub errors: Vec<ValidationError>,
     /// Root resource for FHIRPath constraint evaluation (%rootResource)
     /// This is set when validation starts and passed to nested constraint evaluations
-    pub root_resource: Option<JsonValue>,
+    /// Uses Arc for cheap cloning when passing to nested validations
+    pub root_resource: Option<Arc<JsonValue>>,
+    /// Cached EvaluationResult for root_resource (lazy initialization)
+    /// Avoids repeated conversion of root_resource to EvaluationResult for each constraint
+    root_resource_eval: OnceCell<EvaluationResult>,
+    /// Cached variables map for constraint evaluation (reused across constraints)
+    constraint_variables: OnceCell<HashMap<String, EvaluationResult>>,
 }
 
 impl FhirSchemaValidationContext {
     /// Create new validation context
-    pub fn new(schemas: HashMap<String, FhirSchema>, path: String) -> Self {
+    pub fn new(schemas: Arc<HashMap<String, Arc<FhirSchema>>>, path: String) -> Self {
         Self {
             all_schemas: schemas,
             current_schemata: HashMap::new(),
             path,
             errors: Vec::new(),
             root_resource: None,
+            root_resource_eval: OnceCell::new(),
+            constraint_variables: OnceCell::new(),
         }
     }
 
-    /// Create new validation context with root resource for constraint evaluation
+    /// Create new validation context with root resource for constraint evaluation.
+    /// The root_resource is wrapped in Arc for cheap cloning during nested validation.
     pub fn new_with_root_resource(
-        schemas: HashMap<String, FhirSchema>,
+        schemas: Arc<HashMap<String, Arc<FhirSchema>>>,
         path: String,
         root_resource: JsonValue,
     ) -> Self {
@@ -159,8 +301,25 @@ impl FhirSchemaValidationContext {
             current_schemata: HashMap::new(),
             path,
             errors: Vec::new(),
-            root_resource: Some(root_resource),
+            root_resource: Some(Arc::new(root_resource)),
+            root_resource_eval: OnceCell::new(),
+            constraint_variables: OnceCell::new(),
         }
+    }
+
+    /// Get cached constraint variables map (lazy initialization).
+    /// Converts root_resource to EvaluationResult only once per validation.
+    pub fn get_constraint_variables(&self) -> &HashMap<String, EvaluationResult> {
+        self.constraint_variables.get_or_init(|| {
+            let mut variables = HashMap::with_capacity(1);
+            if let Some(root_resource) = &self.root_resource {
+                let eval = self
+                    .root_resource_eval
+                    .get_or_init(|| json_to_evaluation_result(root_resource));
+                variables.insert("rootResource".to_string(), eval.clone());
+            }
+            variables
+        })
     }
 
     /// Add an error to the validation context
@@ -191,10 +350,14 @@ impl FhirSchemaValidationContext {
 
 /// FHIR Schema Validator implementing the official specification
 pub struct FhirSchemaValidator {
-    /// Available schemas for validation
-    schemas: HashMap<String, FhirSchema>,
-    /// URL to schema name mapping for O(1) lookup by URL
-    url_to_name: HashMap<String, String>,
+    /// Available schemas for validation wrapped in Arc for zero-copy sharing.
+    /// Using Arc<FhirSchema> avoids expensive clones on every schema lookup.
+    schemas: Arc<HashMap<String, Arc<FhirSchema>>>,
+    /// Direct URL to Arc<FhirSchema> mapping for O(1) lookup by URL without intermediate lookup
+    url_to_schema: Arc<HashMap<String, Arc<FhirSchema>>>,
+    /// Optional async schema provider for lazy loading from external sources
+    /// When set, schemas are loaded on-demand from this provider
+    schema_provider: Option<Arc<dyn SchemaProvider>>,
     /// Optional FHIRPath evaluator for constraint validation
     /// None means only structural validation will be performed
     fhirpath_evaluator: Option<Arc<dyn FhirPathEvaluator>>,
@@ -204,6 +367,16 @@ pub struct FhirSchemaValidator {
     /// Optional reference resolver for existence validation
     /// None means reference existence validation will be skipped
     reference_resolver: Option<Arc<dyn ReferenceResolver>>,
+    /// Cache for fully-expanded schemata (after collect operation converges).
+    /// Key: type name (e.g., "Patient", "HumanName", "string")
+    /// Value: HashMap of all schemas in the expanded set
+    /// This avoids re-running collect_element_type_schemas loop for each property.
+    expanded_schemata_cache: moka::future::Cache<String, HashMap<String, Arc<FhirSchema>>>,
+    /// Cache for follow_operation results.
+    /// Key: "{sorted_schema_keys}:{path_item}" (e.g., "Patient:name", "HumanName:given")
+    /// Value: HashMap of element schemas for this path
+    /// This avoids recreating inline schemas and re-fetching type schemas for same paths.
+    follow_cache: moka::future::Cache<String, HashMap<String, Arc<FhirSchema>>>,
 }
 
 impl FhirSchemaValidator {
@@ -227,18 +400,65 @@ impl FhirSchemaValidator {
         schemas: HashMap<String, FhirSchema>,
         fhirpath_evaluator: Option<Arc<dyn FhirPathEvaluator>>,
     ) -> Self {
-        // Build URL to name mapping for O(1) lookup
-        let url_to_name: HashMap<String, String> = schemas
+        // Wrap all schemas in Arc once during construction
+        let arc_schemas: HashMap<String, Arc<FhirSchema>> = schemas
+            .into_iter()
+            .map(|(name, schema)| (name, Arc::new(schema)))
+            .collect();
+
+        // Build direct URL to Arc<FhirSchema> mapping for O(1) lookup without intermediate step
+        let url_to_schema: HashMap<String, Arc<FhirSchema>> = arc_schemas
             .iter()
-            .map(|(name, schema)| (schema.url.clone(), name.clone()))
+            .map(|(_, schema)| (schema.url.clone(), Arc::clone(schema)))
             .collect();
 
         Self {
-            schemas,
-            url_to_name,
+            schemas: Arc::new(arc_schemas),
+            url_to_schema: Arc::new(url_to_schema),
+            schema_provider: None,
             fhirpath_evaluator,
             terminology_service: None,
             reference_resolver: None,
+            // Cache for ~500 type expansions, should cover most FHIR types
+            expanded_schemata_cache: moka::future::Cache::new(500),
+            // Cache for ~1000 follow operation results (schema+path combinations)
+            follow_cache: moka::future::Cache::new(1000),
+        }
+    }
+
+    /// Create a new validator with an async schema provider for lazy loading.
+    ///
+    /// This constructor creates a validator that loads schemas on-demand from
+    /// the provided SchemaProvider. This is ideal for production use where
+    /// schemas should be cached and loaded lazily.
+    ///
+    /// # Arguments
+    /// * `provider` - Schema provider for async schema lookup
+    /// * `fhirpath_evaluator` - Optional FHIRPath evaluator for constraint validation
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Create validator with lazy schema loading from model provider
+    /// let validator = FhirSchemaValidator::new_with_provider(
+    ///     model_provider.clone(),
+    ///     Some(fhirpath_engine.clone())
+    /// );
+    /// ```
+    pub fn new_with_provider(
+        provider: Arc<dyn SchemaProvider>,
+        fhirpath_evaluator: Option<Arc<dyn FhirPathEvaluator>>,
+    ) -> Self {
+        Self {
+            schemas: Arc::new(HashMap::new()),
+            url_to_schema: Arc::new(HashMap::new()),
+            schema_provider: Some(provider),
+            fhirpath_evaluator,
+            terminology_service: None,
+            reference_resolver: None,
+            // Cache for ~500 type expansions, should cover most FHIR types
+            expanded_schemata_cache: moka::future::Cache::new(500),
+            // Cache for ~1000 follow operation results (schema+path combinations)
+            follow_cache: moka::future::Cache::new(1000),
         }
     }
 
@@ -260,15 +480,27 @@ impl FhirSchemaValidator {
         self
     }
 
-    /// Get schema by URL or name (like model provider)
-    fn get_schema_by_url_or_name(&self, url_or_name: &str) -> Option<&FhirSchema> {
-        // Try direct name lookup first
+    /// Get schema by URL or name.
+    ///
+    /// First checks local pre-loaded schemas, then falls back to the
+    /// schema provider for lazy loading. Uses Arc::clone for zero-copy sharing.
+    async fn get_schema(&self, url_or_name: &str) -> Option<Arc<FhirSchema>> {
+        // Try name lookup first (fast path - just Arc::clone, no data copy)
         if let Some(schema) = self.schemas.get(url_or_name) {
-            return Some(schema);
+            return Some(Arc::clone(schema));
         }
-        // Try URL lookup with O(1) mapping
-        if let Some(name) = self.url_to_name.get(url_or_name) {
-            return self.schemas.get(name);
+        // Try URL lookup with direct O(1) mapping (also just Arc::clone)
+        if let Some(schema) = self.url_to_schema.get(url_or_name) {
+            return Some(Arc::clone(schema));
+        }
+        // Fall back to provider for lazy loading
+        if let Some(provider) = &self.schema_provider {
+            if let Some(schema) = provider.get_schema(url_or_name).await {
+                return Some(schema);
+            }
+            if let Some(schema) = provider.get_schema_by_url(url_or_name).await {
+                return Some(schema);
+            }
         }
         None
     }
@@ -284,12 +516,12 @@ impl FhirSchemaValidator {
     /// * `profile_url` - URL or name of the profile to resolve
     ///
     /// # Returns
-    /// * `Ok(Vec<&FhirSchema>)` - Chain of schemas from base to derived
+    /// * `Ok(Vec<Arc<FhirSchema>>)` - Chain of schemas from base to derived
     /// * `Err(Box<ValidationError>)` - If cycle detected or schema not found
-    pub fn resolve_profile_chain(
+    pub async fn resolve_profile_chain(
         &self,
         profile_url: &str,
-    ) -> Result<Vec<&FhirSchema>, Box<ValidationError>> {
+    ) -> Result<Vec<Arc<FhirSchema>>, Box<ValidationError>> {
         let mut chain = Vec::new();
         let mut visited = HashSet::new();
         let mut current_url = profile_url.to_string();
@@ -311,28 +543,27 @@ impl FhirSchemaValidator {
                 }));
             }
 
-            let schema = self
-                .get_schema_by_url_or_name(&current_url)
-                .ok_or_else(|| {
-                    Box::new(ValidationError {
-                        error_type: FhirSchemaErrorCode::UnknownSchema.to_string(),
-                        path: vec![],
-                        message: Some(format!("Schema not found: {}", current_url)),
-                        value: None,
-                        expected: None,
-                        got: None,
-                        schema_path: None,
-                        constraint_key: None,
-                        constraint_expression: None,
-                        constraint_severity: None,
-                    })
-                })?;
+            let schema = self.get_schema(&current_url).await.ok_or_else(|| {
+                Box::new(ValidationError {
+                    error_type: FhirSchemaErrorCode::UnknownSchema.to_string(),
+                    path: vec![],
+                    message: Some(format!("Schema not found: {}", current_url)),
+                    value: None,
+                    expected: None,
+                    got: None,
+                    schema_path: None,
+                    constraint_key: None,
+                    constraint_expression: None,
+                    constraint_severity: None,
+                })
+            })?;
 
+            let base_url = schema.base.clone();
             chain.push(schema);
 
             // Follow base chain
-            if let Some(base_url) = &schema.base {
-                current_url = base_url.clone();
+            if let Some(url) = base_url {
+                current_url = url;
             } else {
                 break;
             }
@@ -558,7 +789,7 @@ impl FhirSchemaValidator {
     }
 
     // ============================================================================
-    // Slicing Validation (Phase 5)
+    // Slicing Validation
     // ============================================================================
 
     /// Deep partial match for pattern comparison.
@@ -838,30 +1069,24 @@ impl FhirSchemaValidator {
         self.validate_slice_cardinality(context, &slice_counts, slicing, element_path);
     }
 
-    /// Get slicing definition for the current element from schemata.
-    /// Extracts element name from path and searches current schemata.
-    ///
-    /// # Arguments
-    /// * `context` - Validation context with current schemata
-    /// * `element_name` - Name of the element to get slicing for
-    ///
-    /// # Returns
-    /// * Optional slicing definition if found
-    fn get_slicing_for_element(
+    /// Get element information in a single pass over schemata.
+    /// Collects is_array and slicing info together to avoid multiple iterations.
+    fn get_element_info(
         &self,
         context: &FhirSchemaValidationContext,
         element_name: &str,
-    ) -> Option<FhirSchemaSlicing> {
-        // Search current schemata for element with slicing
+    ) -> ElementInfo {
         for schema in context.current_schemata.values() {
-            if let Some(elements) = &schema.elements
-                && let Some(element) = elements.get(element_name)
-                && element.slicing.is_some()
-            {
-                return element.slicing.clone();
+            if let Some(elements) = &schema.elements {
+                if let Some(element) = elements.get(element_name) {
+                    return ElementInfo {
+                        is_array: element.array.unwrap_or(false),
+                        slicing: element.slicing.clone(),
+                    };
+                }
             }
         }
-        None
+        ElementInfo::default()
     }
 
     /// Merge an entire profile chain into a single schema.
@@ -872,7 +1097,7 @@ impl FhirSchemaValidator {
     ///
     /// # Returns
     /// * Single merged schema combining all constraints
-    pub fn merge_profile_chain(&self, chain: &[&FhirSchema]) -> Option<FhirSchema> {
+    pub fn merge_profile_chain(&self, chain: &[Arc<FhirSchema>]) -> Option<FhirSchema> {
         if chain.is_empty() {
             return None;
         }
@@ -916,7 +1141,7 @@ impl FhirSchemaValidator {
         let mut merged_schemas: Vec<FhirSchema> = Vec::new();
 
         for profile_url in &profile_urls {
-            match self.resolve_profile_chain(profile_url) {
+            match self.resolve_profile_chain(profile_url).await {
                 Ok(chain) => {
                     // Merge entire chain into single schema
                     if let Some(merged) = self.merge_profile_chain(&chain) {
@@ -950,36 +1175,26 @@ impl FhirSchemaValidator {
             // Clear base to prevent collect_operation from adding original base
             merged_schema.base = None;
 
-            // Add by URL for URL-based lookups
-            context
-                .all_schemas
-                .insert(merged_schema.url.clone(), merged_schema.clone());
-            context
-                .current_schemata
-                .insert(merged_schema.url.clone(), merged_schema.clone());
+            // Wrap in Arc once - all subsequent clones are cheap Arc::clone
+            let arc_schema = Arc::new(merged_schema);
 
-            // Also add by name for name-based lookups (e.g., "Patient")
-            context
-                .all_schemas
-                .insert(merged_schema.name.clone(), merged_schema.clone());
+            // Add merged schema to current_schemata only (all_schemas is immutable)
+            // Add by URL, name, and type_name for various lookup patterns
             context
                 .current_schemata
-                .insert(merged_schema.name.clone(), merged_schema.clone());
-
-            // Override the resource type schema with merged schema
-            // This ensures the merged elements are used during validation
-            context
-                .all_schemas
-                .insert(merged_schema.type_name.clone(), merged_schema.clone());
+                .insert(arc_schema.url.clone(), Arc::clone(&arc_schema));
             context
                 .current_schemata
-                .insert(merged_schema.type_name.clone(), merged_schema.clone());
+                .insert(arc_schema.name.clone(), Arc::clone(&arc_schema));
+            context
+                .current_schemata
+                .insert(arc_schema.type_name.clone(), Arc::clone(&arc_schema));
         }
 
         // Apply collect operation to get base type schemas (e.g., string, code)
         loop {
             let initial_size = context.current_schemata.len();
-            self.collect_operation(&mut context);
+            self.collect_operation(&mut context).await;
             if context.current_schemata.len() == initial_size {
                 break;
             }
@@ -1137,22 +1352,23 @@ impl FhirSchemaValidator {
         schema_urls: Vec<String>,
     ) {
         // Step 1: Resolve schemata for the given URLs
-        self.resolve_schemata(context, schema_urls);
+        self.resolve_schemata(context, schema_urls).await;
 
         // Step 2: Validate the data element (async)
         self.validate_data_element(context, data).await;
     }
 
     /// Resolve schemata using collect and follow operations (FHIR Schema spec algorithm)
-    fn resolve_schemata(
+    async fn resolve_schemata(
         &self,
         context: &mut FhirSchemaValidationContext,
         schema_urls: Vec<String>,
     ) {
         // Start with initial schemas
         for url in schema_urls {
-            if let Some(schema) = self.get_schema_by_url_or_name(&url) {
-                context.current_schemata.insert(url.clone(), schema.clone());
+            if let Some(schema) = self.get_schema(&url).await {
+                // schema is already Arc<FhirSchema>, just Arc::clone (cheap)
+                context.current_schemata.insert(url.clone(), schema);
             } else {
                 context.add_error(
                     FhirSchemaErrorCode::UnknownSchema,
@@ -1164,7 +1380,7 @@ impl FhirSchemaValidator {
         // Apply collect operation until set stops growing
         loop {
             let initial_size = context.current_schemata.len();
-            self.collect_operation(context);
+            self.collect_operation(context).await;
             if context.current_schemata.len() == initial_size {
                 break; // Set stopped growing
             }
@@ -1174,19 +1390,24 @@ impl FhirSchemaValidator {
     /// Collect operation: adds referred schemas to the schemata set
     /// According to FHIR Schema spec: only add base schemas for root schemas and
     /// type/elementReference schemas for the current element being validated
-    fn collect_operation(&self, context: &mut FhirSchemaValidationContext) {
-        let current_schemas: Vec<FhirSchema> = context.current_schemata.values().cloned().collect();
+    async fn collect_operation(&self, context: &mut FhirSchemaValidationContext) {
+        // Collect Arc references - cloning Arc is cheap (just increment refcount)
+        let current_schemas: Vec<Arc<FhirSchema>> =
+            context.current_schemata.values().cloned().collect();
 
         for schema in current_schemas {
             // For root schemas, add base schema (inheritance chain)
-            if (schema.kind == "resource" || schema.kind == "complex-type")
-                && let Some(base_url) = &schema.base
-                && let Some(base_schema) = self.get_schema_by_url_or_name(base_url)
-                && !context.current_schemata.contains_key(base_url)
+            // Include "logical" kind for logical models like ViewDefinition that inherit from CanonicalResource
+            if schema.kind == "resource" || schema.kind == "complex-type" || schema.kind == "logical"
             {
-                context
-                    .current_schemata
-                    .insert(base_url.clone(), base_schema.clone());
+                if let Some(base_url) = &schema.base {
+                    if !context.current_schemata.contains_key(base_url) {
+                        if let Some(base_schema) = self.get_schema(base_url).await {
+                            // base_schema is already Arc, just insert it
+                            context.current_schemata.insert(base_url.clone(), base_schema);
+                        }
+                    }
+                }
             }
 
             // CRITICAL FIX: Do NOT add type schemas from ALL elements
@@ -1201,32 +1422,53 @@ impl FhirSchemaValidator {
     /// Specialized collect operation for element type schemas after follow operation
     /// This implements the FHIR Schema spec requirement to collect type inheritance
     /// after following to element schemas
-    fn collect_element_type_schemas(&self, context: &mut FhirSchemaValidationContext) {
-        let current_schemas: Vec<FhirSchema> = context.current_schemata.values().cloned().collect();
+    async fn collect_element_type_schemas(&self, context: &mut FhirSchemaValidationContext) {
+        // Collect Arc references - cloning Arc is cheap
+        let current_schemas: Vec<Arc<FhirSchema>> =
+            context.current_schemata.values().cloned().collect();
 
         for schema in current_schemas {
             // Add base schemas for complex types (inheritance chain)
-            if (schema.kind == "complex-type" || schema.kind == "primitive-type")
-                && let Some(base_url) = &schema.base
-                && let Some(base_schema) = self.get_schema_by_url_or_name(base_url)
-                && !context.current_schemata.contains_key(base_url)
-            {
-                context
-                    .current_schemata
-                    .insert(base_url.clone(), base_schema.clone());
+            if schema.kind == "complex-type" || schema.kind == "primitive-type" {
+                if let Some(base_url) = &schema.base {
+                    if !context.current_schemata.contains_key(base_url) {
+                        if let Some(base_schema) = self.get_schema(base_url).await {
+                            // base_schema is already Arc, just insert it
+                            context.current_schemata.insert(base_url.clone(), base_schema);
+                        }
+                    }
+                }
             }
         }
     }
 
     /// Follow operation: navigate to element schemas for a given path item
-    fn follow_operation(
+    async fn follow_operation(
         &self,
         context: &mut FhirSchemaValidationContext,
         path_item: &str,
-    ) -> HashMap<String, FhirSchema> {
-        let mut result_schemata = HashMap::new();
+    ) -> HashMap<String, Arc<FhirSchema>> {
+        // Generate cache key from current schemata keys + path_item
+        // Using sorted keys ensures consistent cache key regardless of HashMap order
+        let mut schema_keys: Vec<&str> = context.current_schemata.keys().map(|s| s.as_str()).collect();
+        schema_keys.sort_unstable();
+        let cache_key = format!("{}:{}", schema_keys.join("+"), path_item);
 
-        for (schema_key, schema) in &context.current_schemata {
+        // Check cache first (optimization)
+        if let Some(cached) = self.follow_cache.get(&cache_key).await {
+            return cached;
+        }
+
+        let mut result_schemata: HashMap<String, Arc<FhirSchema>> = HashMap::new();
+
+        // Clone Arc references - cheap operation (just increment refcount)
+        let current_schemata: Vec<(String, Arc<FhirSchema>)> = context
+            .current_schemata
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::clone(v)))
+            .collect();
+
+        for (schema_key, schema) in current_schemata {
             if let Some(elements) = &schema.elements {
                 if let Some(element) = elements.get(path_item) {
                     // Check if element has inline nested elements (BackboneElement case)
@@ -1257,24 +1499,29 @@ impl FhirSchemaValidator {
                             primitive_type: None,
                             choices: None,
                         };
-                        result_schemata.insert(format!("{schema_key}.{path_item}"), inline_schema);
+                        result_schemata.insert(
+                            format!("{schema_key}.{path_item}"),
+                            Arc::new(inline_schema),
+                        );
                     }
 
                     // According to FHIR Schema spec: Add type schemas for this specific element
                     // This ensures we get the correct type schema for the element being validated
                     let mut type_schema_found = false;
-                    if let Some(type_name) = &element.type_name
-                        && let Some(type_schema) = self.get_schema_by_url_or_name(type_name)
-                    {
-                        result_schemata.insert(type_name.clone(), type_schema.clone());
-                        type_schema_found = true;
+                    if let Some(type_name) = &element.type_name {
+                        if let Some(type_schema) = self.get_schema(type_name).await {
+                            // type_schema is already Arc, just insert it
+                            result_schemata.insert(type_name.clone(), type_schema);
+                            type_schema_found = true;
+                        }
                     }
 
                     // Add elementReference schemas if present
                     if let Some(element_refs) = &element.element_reference {
                         for element_ref in element_refs {
-                            if let Some(ref_schema) = self.get_schema_by_url_or_name(element_ref) {
-                                result_schemata.insert(element_ref.clone(), ref_schema.clone());
+                            if let Some(ref_schema) = self.get_schema(element_ref).await {
+                                // ref_schema is already Arc
+                                result_schemata.insert(element_ref.clone(), ref_schema);
                             }
                         }
                     }
@@ -1288,20 +1535,27 @@ impl FhirSchemaValidator {
                     {
                         let element_schema =
                             self.element_to_schema(element, &format!("{schema_key}.{path_item}"));
-                        result_schemata.insert(format!("{schema_key}.{path_item}"), element_schema);
+                        result_schemata.insert(
+                            format!("{schema_key}.{path_item}"),
+                            Arc::new(element_schema),
+                        );
                     }
                 } else if let Some(base_name) = path_item.strip_prefix('_') {
                     // Handle primitive extensions (e.g., _birthDate)
                     // Remove '_' prefix
-                    if let Some(_base_element) = elements.get(base_name) {
+                    if elements.get(base_name).is_some() {
                         // Primitive extensions are always Element type
-                        if let Some(element_schema) = self.get_schema_by_url_or_name("Element") {
-                            result_schemata.insert("Element".to_string(), element_schema.clone());
+                        if let Some(element_schema) = self.get_schema("Element").await {
+                            // element_schema is already Arc
+                            result_schemata.insert("Element".to_string(), element_schema);
                         }
                     }
                 }
             }
         }
+
+        // Cache the result for future use (optimization)
+        self.follow_cache.insert(cache_key, result_schemata.clone()).await;
 
         result_schemata
     }
@@ -1343,7 +1597,8 @@ impl FhirSchemaValidator {
         match data {
             JsonValue::Object(obj) => {
                 // Validate the object against each schema from schemata (async)
-                self.validate_object_against_schemata(context, obj).await;
+                // Pass both data (for constraint evaluation) and obj (for field access)
+                self.validate_object_against_schemata(context, data, obj).await;
 
                 // Validate every property of the object
                 for (key, value) in obj {
@@ -1351,23 +1606,23 @@ impl FhirSchemaValidator {
                         continue; // Skip resourceType validation
                     }
 
-                    let prev_path = context.path.clone();
-                    context.path = if context.path.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{}.{}", context.path, key)
-                    };
+                    // Push path segment (avoid format! allocation by using push_str)
+                    let path_start_len = context.path.len();
+                    if !context.path.is_empty() {
+                        context.path.push('.');
+                    }
+                    context.path.push_str(key);
 
                     // Special handling for XHTML content in text.div
                     // According to FHIR spec, div contains XHTML and should not be validated as FHIR elements
                     if context.path.ends_with(".div") && value.is_string() {
                         // For div elements containing XHTML strings, skip FHIR element validation
-                        context.path = prev_path;
+                        context.path.truncate(path_start_len);
                         continue;
                     }
 
                     // Follow operation to get element schemas
-                    let element_schemata = self.follow_operation(context, key);
+                    let element_schemata = self.follow_operation(context, key).await;
 
                     if element_schemata.is_empty() {
                         // Special case: If we're inside a div element, don't report unknown elements
@@ -1380,38 +1635,57 @@ impl FhirSchemaValidator {
                             );
                         }
                     } else {
-                        // Check array expectation BEFORE changing context (when current context has parent schema)
-                        // The element definition should be in the CURRENT context (parent) where the element is defined
-                        let is_array_expected = self.is_array_expected_for_element(context, key);
+                        // Get element info in single pass over schemata (avoids multiple iterations)
+                        let element_info = self.get_element_info(context, key);
 
                         // Check for slicing validation BEFORE changing context
                         // Slicing is defined on the element in the parent schema
                         if let JsonValue::Array(arr) = value
-                            && let Some(slicing) = self.get_slicing_for_element(context, key)
+                            && let Some(ref slicing) = element_info.slicing
                         {
                             let element_path = context.path.clone();
-                            self.validate_slicing(context, arr, &slicing, &element_path);
+                            self.validate_slicing(context, arr, slicing, &element_path);
                         }
 
                         // Update context with element schemata
-                        let prev_schemata = context.current_schemata.clone();
-                        context.current_schemata = element_schemata;
+                        // Use mem::replace to swap without cloning the HashMap
+                        let prev_schemata =
+                            std::mem::replace(&mut context.current_schemata, element_schemata);
 
-                        // Apply collect operation for element schemata to get type inheritance
-                        // This implements the FHIR Schema specification collect operation after follow
-                        loop {
-                            let initial_size = context.current_schemata.len();
-                            self.collect_element_type_schemas(context);
-                            if context.current_schemata.len() == initial_size {
-                                break;
+                        // Generate cache key from type names in element_schemata
+                        // Sorting ensures consistent key regardless of HashMap iteration order
+                        let mut type_names: Vec<&str> = context
+                            .current_schemata
+                            .values()
+                            .map(|s| s.type_name.as_str())
+                            .collect();
+                        type_names.sort_unstable();
+                        let cache_key = type_names.join("+");
+
+                        // Check expanded schemata cache first (optimization)
+                        if let Some(cached_schemata) = self.expanded_schemata_cache.get(&cache_key).await {
+                            // Cache hit - use pre-expanded schemata directly
+                            context.current_schemata = cached_schemata;
+                        } else {
+                            // Cache miss - run collect operation and cache the result
+                            loop {
+                                let initial_size = context.current_schemata.len();
+                                self.collect_element_type_schemas(context).await;
+                                if context.current_schemata.len() == initial_size {
+                                    break;
+                                }
                             }
+                            // Cache the expanded schemata for future use
+                            self.expanded_schemata_cache
+                                .insert(cache_key, context.current_schemata.clone())
+                                .await;
                         }
 
                         // Validate the property value with pre-determined array expectation (async)
                         self.validate_element_value_with_array_check(
                             context,
                             value,
-                            is_array_expected,
+                            element_info.is_array,
                         )
                         .await;
 
@@ -1419,16 +1693,89 @@ impl FhirSchemaValidator {
                         context.current_schemata = prev_schemata;
                     }
 
-                    context.path = prev_path;
+                    // Pop path segment (restore to original length)
+                    context.path.truncate(path_start_len);
                 }
             }
             JsonValue::Array(arr) => {
+                // Check if current element type is "Resource" (e.g., contained array)
+                let is_resource_array = context
+                    .current_schemata
+                    .values()
+                    .any(|s| s.name == "Resource" || s.type_name == "Resource");
+
                 // Validate every entry of the array
                 for (index, item) in arr.iter().enumerate() {
-                    let prev_path = context.path.clone();
-                    context.path = format!("{}[{}]", context.path, index);
-                    self.validate_data_element(context, item).await;
-                    context.path = prev_path;
+                    // Push array index to path (avoid format! allocation)
+                    let path_start_len = context.path.len();
+                    context.path.push('[');
+                    // Use itoa for fast integer to string conversion
+                    use std::fmt::Write;
+                    let _ = write!(context.path, "{}]", index);
+
+                    // For Resource arrays (like contained), look up schema by resourceType
+                    if is_resource_array {
+                        if let Some(obj) = item.as_object() {
+                            if let Some(resource_type) =
+                                obj.get("resourceType").and_then(|v| v.as_str())
+                            {
+                                // Load the specific resource schema
+                                if let Some(schema) = self.get_schema(resource_type).await {
+                                    // Save current schemata and replace with resource-specific
+                                    let prev_schemata =
+                                        std::mem::take(&mut context.current_schemata);
+                                    context
+                                        .current_schemata
+                                        .insert(resource_type.to_string(), schema);
+
+                                    // Check expanded schemata cache for resource type (optimization)
+                                    let cache_key = resource_type.to_string();
+                                    if let Some(cached_schemata) =
+                                        self.expanded_schemata_cache.get(&cache_key).await
+                                    {
+                                        // Cache hit - use pre-expanded schemata
+                                        context.current_schemata = cached_schemata;
+                                    } else {
+                                        // Cache miss - run collect_operation and cache
+                                        loop {
+                                            let initial_size = context.current_schemata.len();
+                                            self.collect_operation(context).await;
+                                            if context.current_schemata.len() == initial_size {
+                                                break;
+                                            }
+                                        }
+                                        self.expanded_schemata_cache
+                                            .insert(cache_key, context.current_schemata.clone())
+                                            .await;
+                                    }
+
+                                    self.validate_data_element(context, item).await;
+
+                                    // Restore previous schemata
+                                    context.current_schemata = prev_schemata;
+                                } else {
+                                    // Unknown resource type in contained
+                                    context.add_error(
+                                        FhirSchemaErrorCode::UnknownElement,
+                                        format!(
+                                            "Unknown resource type {} in contained",
+                                            resource_type
+                                        ),
+                                    );
+                                }
+                            } else {
+                                // No resourceType - validate as generic Resource
+                                self.validate_data_element(context, item).await;
+                            }
+                        } else {
+                            self.validate_data_element(context, item).await;
+                        }
+                    } else {
+                        self.validate_data_element(context, item).await;
+                    }
+
+                    // Pop path segment
+                    context.path.truncate(path_start_len);
                 }
             }
             _ => {
@@ -1442,16 +1789,18 @@ impl FhirSchemaValidator {
     async fn validate_object_against_schemata(
         &self,
         context: &mut FhirSchemaValidationContext,
+        data: &JsonValue,
         obj: &serde_json::Map<String, JsonValue>,
     ) {
-        let schemata_clone: Vec<(String, FhirSchema)> = context
+        // Clone Arc references - cheap operation
+        let schemata_clone: Vec<(String, Arc<FhirSchema>)> = context
             .current_schemata
             .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
+            .map(|(k, v)| (k.clone(), Arc::clone(v)))
             .collect();
 
         for (schema_key, schema) in schemata_clone {
-            self.validate_object_against_schema(context, obj, &schema, &schema_key)
+            self.validate_object_against_schema(context, data, obj, &schema, &schema_key)
                 .await;
         }
     }
@@ -1460,13 +1809,14 @@ impl FhirSchemaValidator {
     async fn validate_object_against_schema(
         &self,
         context: &mut FhirSchemaValidationContext,
+        data: &JsonValue,
         obj: &serde_json::Map<String, JsonValue>,
         schema: &FhirSchema,
         _schema_key: &str,
     ) {
-        // Validate constraints (async)
+        // Validate constraints (async) - pass data directly to avoid cloning
         if let Some(constraints) = &schema.constraint {
-            self.validate_constraints(context, obj, constraints).await;
+            self.validate_constraints(context, data, constraints).await;
         }
 
         // Validate required elements only for resource schemas
@@ -1475,7 +1825,26 @@ impl FhirSchemaValidator {
             && let Some(required) = &schema.required
         {
             for required_element in required {
-                if !obj.contains_key(required_element) {
+                // Check if element exists directly
+                let element_present = if obj.contains_key(required_element) {
+                    true
+                } else if let Some(elements) = &schema.elements {
+                    // Check for choice type variants (e.g., medication -> medicationCodeableConcept)
+                    if let Some(element_def) = elements.get(required_element) {
+                        if let Some(choices) = &element_def.choices {
+                            // Required element is a choice type - check if any variant exists
+                            choices.iter().any(|choice| obj.contains_key(choice))
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if !element_present {
                     context.add_error(
                         FhirSchemaErrorCode::CardinalityViolation,
                         format!("Required element {required_element} is missing"),
@@ -1753,19 +2122,17 @@ impl FhirSchemaValidator {
     /// This method evaluates FHIRPath constraint expressions using the configured FHIRPath evaluator.
     /// If no evaluator is configured, constraint validation is skipped.
     ///
-    /// For nested element validation (e.g., Reference inside Patient), we need to:
-    /// - Evaluate the constraint expression against the element value (e.g., the Reference)
-    /// - But set %rootResource to the root resource (e.g., the Patient) for constraints
-    ///   like ref-1 that need access to contained resources
+    /// Constraints are evaluated in PARALLEL for maximum performance. Each constraint
+    /// evaluation is independent and can safely run concurrently.
     ///
     /// # Arguments
     /// * `context` - Validation context for error tracking
-    /// * `obj` - Element data to validate (current context for the constraint)
+    /// * `element_value` - Element data as JsonValue (avoids cloning from Map)
     /// * `constraints` - Map of constraint key to constraint definition
     async fn validate_constraints(
         &self,
         context: &mut FhirSchemaValidationContext,
-        obj: &serde_json::Map<String, JsonValue>,
+        element_value: &JsonValue,
         constraints: &HashMap<String, FhirSchemaConstraint>,
     ) {
         // Skip if no evaluator configured - structural validation only
@@ -1778,49 +2145,67 @@ impl FhirSchemaValidator {
             return;
         }
 
-        // Convert element to full JSON value for FHIRPath evaluation
-        let element_value = JsonValue::Object(obj.clone());
+        // element_value is passed by reference - no cloning needed!
 
-        // Build variables map with %rootResource pointing to the actual root resource
-        // This is critical for constraints like ref-1 that reference %rootResource.contained
-        let mut variables = std::collections::HashMap::new();
-        if let Some(root_resource) = &context.root_resource {
-            // Convert JsonValue to EvaluationResult for the variables map
-            variables.insert(
-                "rootResource".to_string(),
-                json_to_evaluation_result(root_resource),
-            );
-        }
+        // Get cached variables map with %rootResource (lazy initialized once per validation)
+        // Clone once to avoid borrow conflict with context.errors
+        let variables = context.get_constraint_variables().clone();
 
-        // Evaluate each constraint individually with the proper %rootResource context
-        for (key, constraint) in constraints {
-            let is_warning = constraint.severity.as_str() == "warning";
-
-            // Skip warning constraints - they are guidance, not rules
-            // In the future, we may want to collect warnings separately
-            if is_warning {
+        // Evaluate constraints sequentially (more efficient for CPU-bound FHIRPath evaluation)
+        for (key, constraint) in constraints.iter() {
+            // Skip warning constraints
+            if constraint.severity.as_str() == "warning" {
                 continue;
             }
 
-            // Evaluate the constraint expression with element as context and root as %rootResource
+            // Evaluate FHIRPath expression
             match evaluator
-                .evaluate_with_variables(&constraint.expression, &element_value, &variables)
+                .evaluate_with_variables(&constraint.expression, element_value, &variables)
                 .await
             {
                 Ok(result) => {
-                    // Check if the result is truthy (constraint passed)
-                    if !result.to_boolean() {
-                        context.add_error(
-                            FhirSchemaErrorCode::ConstraintViolation,
-                            format!("Constraint '{}' failed: {}", key, constraint.human),
-                        );
+                    // Per FHIR spec: "If the expression returns empty, the constraint is considered satisfied."
+                    // Only fail constraint if result is explicitly Boolean(false)
+                    let constraint_violated = matches!(result, EvaluationResult::Boolean(false, _));
+                    if constraint_violated {
+                        context.errors.push(ValidationError {
+                            error_type: FhirSchemaErrorCode::ConstraintViolation.to_string(),
+                            path: context
+                                .path
+                                .split('.')
+                                .map(|s| JsonValue::String(s.to_string()))
+                                .collect(),
+                            message: Some(format!(
+                                "Constraint '{}' failed: {}",
+                                key, constraint.human
+                            )),
+                            value: None,
+                            expected: None,
+                            got: None,
+                            schema_path: None,
+                            constraint_key: None,
+                            constraint_expression: None,
+                            constraint_severity: None,
+                        });
                     }
                 }
                 Err(e) => {
-                    context.add_error(
-                        FhirSchemaErrorCode::ConstraintViolation,
-                        format!("Constraint '{}' evaluation failed: {}", key, e),
-                    );
+                    context.errors.push(ValidationError {
+                        error_type: FhirSchemaErrorCode::ConstraintViolation.to_string(),
+                        path: context
+                            .path
+                            .split('.')
+                            .map(|s| JsonValue::String(s.to_string()))
+                            .collect(),
+                        message: Some(format!("Constraint '{}' evaluation failed: {}", key, e)),
+                        value: None,
+                        expected: None,
+                        got: None,
+                        schema_path: None,
+                        constraint_key: None,
+                        constraint_expression: None,
+                        constraint_severity: None,
+                    });
                 }
             }
         }
@@ -1855,13 +2240,18 @@ impl FhirSchemaValidator {
         };
 
         // Parse binding strength
-        let strength = match BindingStrength::parse_str(&binding.strength) {
+        let strength = match TermBindingStrength::parse_str(&binding.strength) {
             Some(s) => s,
             None => return, // Unknown strength, skip validation
         };
 
-        // Skip validation for example bindings
-        if matches!(strength, BindingStrength::Example) {
+        // Skip validation for non-required bindings
+        // Per FHIR spec:
+        // - Example: No validation (informational only)
+        // - Preferred: Just a recommendation, not required
+        // - Extensible: Should use value set if applicable, but not a hard requirement
+        // Only "required" bindings affect resource validity
+        if !matches!(strength, TermBindingStrength::Required) {
             return;
         }
 
@@ -1880,40 +2270,25 @@ impl FhirSchemaValidator {
             {
                 Ok(result) => {
                     if !result.valid {
-                        let message = format!(
-                            "Code '{}' (system: {}) is not in value set '{}'",
-                            code,
-                            system.as_deref().unwrap_or("none"),
-                            value_set_url
+                        // Since we only validate required bindings (early return above),
+                        // any failure here is an error
+                        context.add_error(
+                            FhirSchemaErrorCode::BindingViolation,
+                            format!(
+                                "Code '{}' (system: {}) is not in value set '{}'",
+                                code,
+                                system.as_deref().unwrap_or("none"),
+                                value_set_url
+                            ),
                         );
-
-                        match strength {
-                            BindingStrength::Required => {
-                                context.add_error(FhirSchemaErrorCode::BindingViolation, message);
-                            }
-                            BindingStrength::Extensible | BindingStrength::Preferred => {
-                                // For extensible/preferred, add as warning
-                                // In current implementation, we add it as error with softer message
-                                // A more complete implementation would use a warning severity
-                                context.add_error(
-                                    FhirSchemaErrorCode::BindingViolation,
-                                    format!("Warning: {}", message),
-                                );
-                            }
-                            BindingStrength::Example => {
-                                // Already handled above
-                            }
-                        }
                     }
                 }
                 Err(e) => {
-                    // Only report errors for required bindings
-                    if strength.is_error_on_failure() {
-                        context.add_error(
-                            FhirSchemaErrorCode::BindingViolation,
-                            format!("Failed to validate code against value set: {}", e),
-                        );
-                    }
+                    // Required binding validation failed
+                    context.add_error(
+                        FhirSchemaErrorCode::BindingViolation,
+                        format!("Failed to validate code against value set: {}", e),
+                    );
                 }
             }
         }
@@ -2024,8 +2399,9 @@ impl FhirSchemaValidator {
         }
 
         // Validate referenced resource exists (if reference resolver is configured)
-        if let Some(root_resource) = &context.root_resource.clone() {
-            self.validate_reference_exists(context, value, root_resource)
+        // Arc clone is cheap (just refcount increment), and Arc<JsonValue> derefs to &JsonValue
+        if let Some(root_resource) = context.root_resource.clone() {
+            self.validate_reference_exists(context, value, &root_resource)
                 .await;
         }
     }
@@ -2289,6 +2665,822 @@ impl FhirSchemaValidator {
             }
         }
         false
+    }
+}
+
+// =============================================================================
+// FhirValidator - High-performance validator using pre-compiled schemas
+// =============================================================================
+
+/// High-performance FHIR validator using pre-compiled schemas with lazy loading.
+///
+/// Schemas are loaded and compiled on-demand via `SchemaProvider` and cached
+/// for subsequent validations. This avoids loading all FHIR schemas upfront.
+pub struct FhirValidator {
+    /// Schema compiler with caching
+    compiler: SchemaCompiler,
+    /// Optional FHIRPath evaluator for constraint validation
+    fhirpath_evaluator: Option<Arc<dyn FhirPathEvaluator>>,
+    /// Optional terminology service for binding validation
+    terminology_service: Option<Arc<dyn TerminologyService>>,
+    /// Optional reference resolver for existence validation
+    reference_resolver: Option<Arc<dyn ReferenceResolver>>,
+}
+
+impl FhirValidator {
+    /// Create a new compiled validator with a schema provider
+    pub fn new(schema_provider: Arc<dyn SchemaProvider>) -> Self {
+        Self {
+            compiler: SchemaCompiler::new(schema_provider),
+            fhirpath_evaluator: None,
+            terminology_service: None,
+            reference_resolver: None,
+        }
+    }
+
+    /// Create a new compiled validator with FHIRPath evaluator
+    pub fn new_with_fhirpath(
+        schema_provider: Arc<dyn SchemaProvider>,
+        fhirpath_evaluator: Arc<dyn FhirPathEvaluator>,
+    ) -> Self {
+        Self {
+            compiler: SchemaCompiler::new(schema_provider),
+            fhirpath_evaluator: Some(fhirpath_evaluator),
+            terminology_service: None,
+            reference_resolver: None,
+        }
+    }
+
+    // =========================================================================
+    // Convenience constructors for tests (compatible with FhirSchemaValidator API)
+    // =========================================================================
+
+    /// Create validator from a HashMap of schemas (test convenience method).
+    ///
+    /// This provides API compatibility with the legacy FhirSchemaValidator::new()
+    /// for easier test migration. Wraps schemas in InMemorySchemaProvider.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut schemas = HashMap::new();
+    /// schemas.insert("Patient".to_string(), patient_schema);
+    /// let validator = FhirValidator::from_schemas(schemas, None);
+    /// ```
+    pub fn from_schemas(
+        schemas: HashMap<String, FhirSchema>,
+        fhirpath_evaluator: Option<Arc<dyn FhirPathEvaluator>>,
+    ) -> Self {
+        let provider = InMemorySchemaProvider::from_map(
+            schemas.into_iter().map(|(k, v)| (k, Arc::new(v))).collect(),
+        );
+        let provider_arc = Arc::new(provider);
+
+        match fhirpath_evaluator {
+            Some(evaluator) => Self::new_with_fhirpath(provider_arc, evaluator),
+            None => Self::new(provider_arc),
+        }
+    }
+
+    /// Create validator from Arc-wrapped schemas map (test convenience method).
+    ///
+    /// Use this when you already have `Arc<FhirSchema>` to avoid rewrapping.
+    pub fn from_arc_schemas(
+        schemas: HashMap<String, Arc<FhirSchema>>,
+        fhirpath_evaluator: Option<Arc<dyn FhirPathEvaluator>>,
+    ) -> Self {
+        let provider = InMemorySchemaProvider::from_map(schemas);
+        let provider_arc = Arc::new(provider);
+
+        match fhirpath_evaluator {
+            Some(evaluator) => Self::new_with_fhirpath(provider_arc, evaluator),
+            None => Self::new(provider_arc),
+        }
+    }
+
+    /// Add terminology service for binding validation
+    pub fn with_terminology_service(mut self, service: Arc<dyn TerminologyService>) -> Self {
+        self.terminology_service = Some(service);
+        self
+    }
+
+    /// Add reference resolver for existence validation
+    pub fn with_reference_resolver(mut self, resolver: Arc<dyn ReferenceResolver>) -> Self {
+        self.reference_resolver = Some(resolver);
+        self
+    }
+
+    /// Validate a resource against its resourceType schema.
+    ///
+    /// Performs both structural validation and FHIRPath constraint validation.
+    /// Structural validation runs synchronously, then constraint validation runs asynchronously.
+    pub async fn validate(
+        &self,
+        resource: &JsonValue,
+        schema_names: Vec<String>,
+    ) -> ValidationResult {
+        let mut errors = Vec::new();
+
+        // Prepare constraint variables once (includes %rootResource)
+        let variables = Self::prepare_constraint_variables(resource);
+
+        for schema_name in &schema_names {
+            // Get or compile schema (single cache lookup)
+            match self.compiler.compile(schema_name).await {
+                Ok(compiled) => {
+                    // Phase 1: Structural validation (sync)
+                    self.validate_resource(resource, &compiled, &mut errors, "");
+
+                    // Phase 2: Constraint validation (async)
+                    self.validate_constraints_recursive(
+                        resource,
+                        &compiled,
+                        &variables,
+                        &mut errors,
+                        "",
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    errors.push(ValidationError {
+                        error_type: FhirSchemaErrorCode::UnknownSchema.to_string(),
+                        path: vec![],
+                        message: Some(e.message),
+                        value: None,
+                        expected: None,
+                        got: None,
+                        schema_path: None,
+                        constraint_key: None,
+                        constraint_expression: None,
+                        constraint_severity: None,
+                    });
+                }
+            }
+        }
+
+        ValidationResult {
+            valid: errors.is_empty(),
+            errors,
+            warnings: vec![],
+        }
+    }
+
+    /// Prepare constraint variables map for FHIRPath evaluation.
+    ///
+    /// Creates a variables map containing `%rootResource` which is required
+    /// for evaluating constraints like `ref-1` that reference contained resources.
+    fn prepare_constraint_variables(root_resource: &JsonValue) -> HashMap<String, EvaluationResult> {
+        let mut variables = HashMap::with_capacity(1);
+        variables.insert(
+            "rootResource".to_string(),
+            json_to_evaluation_result(root_resource),
+        );
+        variables
+    }
+
+    /// Validate resource against compiled schema
+    fn validate_resource(
+        &self,
+        data: &JsonValue,
+        schema: &CompiledSchema,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        let JsonValue::Object(obj) = data else {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::WrongType.to_string(),
+                path: self.path_to_vec(path),
+                message: Some("Expected object".to_string()),
+                value: None,
+                expected: Some(JsonValue::String("object".to_string())),
+                got: Some(JsonValue::String(self.json_type_name(data).to_string())),
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+            return;
+        };
+
+        // Check required elements
+        for required in &schema.required {
+            if !obj.contains_key(required) && !self.has_choice_variant(obj, required, &schema.elements) {
+                errors.push(ValidationError {
+                    error_type: FhirSchemaErrorCode::CardinalityViolation.to_string(),
+                    path: self.path_to_vec(path),
+                    message: Some(format!("Required element '{}' is missing", required)),
+                    value: None,
+                    expected: None,
+                    got: None,
+                    schema_path: None,
+                    constraint_key: None,
+                    constraint_expression: None,
+                    constraint_severity: None,
+                });
+            }
+        }
+
+        // Check excluded elements
+        for excluded in &schema.excluded {
+            if obj.contains_key(excluded) {
+                errors.push(ValidationError {
+                    error_type: FhirSchemaErrorCode::UnknownElement.to_string(),
+                    path: self.path_to_vec(path),
+                    message: Some(format!("Excluded element '{}' is present", excluded)),
+                    value: None,
+                    expected: None,
+                    got: None,
+                    schema_path: None,
+                    constraint_key: None,
+                    constraint_expression: None,
+                    constraint_severity: None,
+                });
+            }
+        }
+
+        // Validate each property
+        for (key, value) in obj {
+            // Skip special FHIR keys
+            if key == "resourceType" || key == "fhir_comments" {
+                continue;
+            }
+
+            // Handle primitive extensions (_element)
+            if key.starts_with('_') {
+                // Primitive extension - validate as Element
+                continue; // For now, skip - can add Element validation later
+            }
+
+            if let Some(element) = schema.elements.get(key) {
+                let element_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", path, key)
+                };
+                self.validate_element(value, element, errors, &element_path);
+            } else {
+                // Check if this is a choice type variant (e.g., valueString for value[x])
+                let is_choice_variant = schema.elements.values().any(|el| {
+                    el.choices.as_ref().map_or(false, |c| c.contains(key))
+                });
+
+                if !is_choice_variant {
+                    errors.push(ValidationError {
+                        error_type: FhirSchemaErrorCode::UnknownElement.to_string(),
+                        path: self.path_to_vec(path),
+                        message: Some(format!("Unknown element '{}'", key)),
+                        value: None,
+                        expected: None,
+                        got: None,
+                        schema_path: None,
+                        constraint_key: None,
+                        constraint_expression: None,
+                        constraint_severity: None,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Validate an element value
+    fn validate_element(
+        &self,
+        value: &JsonValue,
+        element: &CompiledElement,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        // Array check
+        let is_array = value.is_array();
+        if is_array != element.is_array {
+            errors.push(ValidationError {
+                error_type: if element.is_array {
+                    FhirSchemaErrorCode::ExpectedArray
+                } else {
+                    FhirSchemaErrorCode::UnexpectedArray
+                }
+                .to_string(),
+                path: self.path_to_vec(path),
+                message: Some(if element.is_array {
+                    format!("Expected array for element '{}'", element.name)
+                } else {
+                    format!("Unexpected array for element '{}'", element.name)
+                }),
+                value: None,
+                expected: None,
+                got: None,
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+            return;
+        }
+
+        // Handle arrays
+        if is_array {
+            if let JsonValue::Array(arr) = value {
+                for (i, item) in arr.iter().enumerate() {
+                    let item_path = format!("{}[{}]", path, i);
+                    self.validate_element_value(item, element, errors, &item_path);
+                }
+            }
+        } else {
+            self.validate_element_value(value, element, errors, path);
+        }
+    }
+
+    /// Validate a single element value (not array)
+    fn validate_element_value(
+        &self,
+        value: &JsonValue,
+        element: &CompiledElement,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        match &element.type_info {
+            CompiledTypeInfo::Primitive(ptype) => {
+                self.validate_primitive(value, *ptype, errors, path);
+            }
+            CompiledTypeInfo::Complex | CompiledTypeInfo::BackboneElement => {
+                // Recursively validate using inlined children
+                self.validate_complex(value, &element.children, errors, path);
+            }
+            CompiledTypeInfo::Reference => {
+                self.validate_reference(value, &element.reference_targets, errors, path);
+            }
+            CompiledTypeInfo::Resource => {
+                // For contained resources - validate by resourceType
+                self.validate_contained_resource(value, errors, path);
+            }
+            CompiledTypeInfo::Extension => {
+                // Extensions have their own structure
+                self.validate_extension(value, errors, path);
+            }
+        }
+    }
+
+    /// Validate primitive value
+    fn validate_primitive(
+        &self,
+        value: &JsonValue,
+        ptype: compiled::PrimitiveType,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        use compiled::PrimitiveType::*;
+
+        let valid = match ptype {
+            Boolean => value.is_boolean(),
+            Integer | Integer64 | UnsignedInt | PositiveInt => value.is_i64() || value.is_u64(),
+            Decimal => value.is_number(),
+            String | Uri | Url | Canonical | Code | Oid | Id | Markdown | Uuid | Xhtml => {
+                value.is_string()
+            }
+            Base64Binary => value.is_string(),
+            Instant | Date | DateTime | Time => value.is_string(),
+        };
+
+        if !valid {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::WrongType.to_string(),
+                path: self.path_to_vec(path),
+                message: Some(format!(
+                    "Expected {} but got {}",
+                    ptype.as_str(),
+                    self.json_type_name(value)
+                )),
+                value: None,
+                expected: Some(JsonValue::String(ptype.as_str().to_string())),
+                got: Some(JsonValue::String(self.json_type_name(value).to_string())),
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+        }
+    }
+
+    /// Validate complex type with children
+    fn validate_complex(
+        &self,
+        value: &JsonValue,
+        children: &HashMap<String, CompiledElement>,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        let JsonValue::Object(obj) = value else {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::WrongType.to_string(),
+                path: self.path_to_vec(path),
+                message: Some("Expected object".to_string()),
+                value: None,
+                expected: Some(JsonValue::String("object".to_string())),
+                got: Some(JsonValue::String(self.json_type_name(value).to_string())),
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+            return;
+        };
+
+        // Validate each property
+        for (key, val) in obj {
+            // Skip primitive extensions
+            if key.starts_with('_') {
+                continue;
+            }
+
+            if let Some(element) = children.get(key) {
+                let element_path = format!("{}.{}", path, key);
+                self.validate_element(val, element, errors, &element_path);
+            } else {
+                // Check for choice type variants
+                let is_choice = children.values().any(|el| {
+                    el.choices.as_ref().map_or(false, |c| c.contains(key))
+                });
+
+                if !is_choice && key != "extension" && key != "id" {
+                    errors.push(ValidationError {
+                        error_type: FhirSchemaErrorCode::UnknownElement.to_string(),
+                        path: self.path_to_vec(path),
+                        message: Some(format!("Unknown element '{}'", key)),
+                        value: None,
+                        expected: None,
+                        got: None,
+                        schema_path: None,
+                        constraint_key: None,
+                        constraint_expression: None,
+                        constraint_severity: None,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Validate Reference element
+    fn validate_reference(
+        &self,
+        value: &JsonValue,
+        _targets: &Option<Vec<String>>,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        let JsonValue::Object(obj) = value else {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::WrongType.to_string(),
+                path: self.path_to_vec(path),
+                message: Some("Reference must be an object".to_string()),
+                value: None,
+                expected: None,
+                got: None,
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+            return;
+        };
+
+        // Basic structure check - must have reference, identifier, or display
+        let has_reference = obj.get("reference").map_or(false, |v| v.is_string());
+        let has_identifier = obj.contains_key("identifier");
+        let has_display = obj.get("display").map_or(false, |v| v.is_string());
+
+        if !has_reference && !has_identifier && !has_display {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::CardinalityViolation.to_string(),
+                path: self.path_to_vec(path),
+                message: Some(
+                    "Reference must have at least one of: reference, identifier, display"
+                        .to_string(),
+                ),
+                value: None,
+                expected: None,
+                got: None,
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+        }
+    }
+
+    /// Validate contained resource
+    fn validate_contained_resource(
+        &self,
+        value: &JsonValue,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        let JsonValue::Object(obj) = value else {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::WrongType.to_string(),
+                path: self.path_to_vec(path),
+                message: Some("Contained resource must be an object".to_string()),
+                value: None,
+                expected: None,
+                got: None,
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+            return;
+        };
+
+        // Get resourceType
+        let Some(resource_type) = obj.get("resourceType").and_then(|v| v.as_str()) else {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::CardinalityViolation.to_string(),
+                path: self.path_to_vec(path),
+                message: Some("Contained resource must have resourceType".to_string()),
+                value: None,
+                expected: None,
+                got: None,
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+            return;
+        };
+
+        // Contained resources cannot have contained (per FHIR spec)
+        if obj.contains_key("contained") {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::UnknownElement.to_string(),
+                path: self.path_to_vec(path),
+                message: Some("Contained resources cannot have nested contained".to_string()),
+                value: None,
+                expected: None,
+                got: None,
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+        }
+
+        // Note: Full validation of contained resource by type would require async
+        // For now, we just do structural validation
+        // TODO: Add async validation via compile() for contained resources
+        let _ = resource_type; // Acknowledge we have the type but don't use it yet
+    }
+
+    /// Validate Extension element
+    fn validate_extension(
+        &self,
+        value: &JsonValue,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        let JsonValue::Object(obj) = value else {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::WrongType.to_string(),
+                path: self.path_to_vec(path),
+                message: Some("Extension must be an object".to_string()),
+                value: None,
+                expected: None,
+                got: None,
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+            return;
+        };
+
+        // Extension must have url
+        if !obj.contains_key("url") {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::CardinalityViolation.to_string(),
+                path: self.path_to_vec(path),
+                message: Some("Extension must have url".to_string()),
+                value: None,
+                expected: None,
+                got: None,
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+        }
+    }
+
+    /// Check if a choice type variant exists
+    fn has_choice_variant(
+        &self,
+        obj: &serde_json::Map<String, JsonValue>,
+        element_name: &str,
+        elements: &HashMap<String, CompiledElement>,
+    ) -> bool {
+        if let Some(element) = elements.get(element_name) {
+            if let Some(choices) = &element.choices {
+                return choices.iter().any(|choice| obj.contains_key(choice));
+            }
+        }
+        false
+    }
+
+    /// Convert path string to vector for ValidationError
+    fn path_to_vec(&self, path: &str) -> Vec<JsonValue> {
+        if path.is_empty() {
+            vec![]
+        } else {
+            path.split('.')
+                .map(|s| JsonValue::String(s.to_string()))
+                .collect()
+        }
+    }
+
+    /// Get JSON type name for error messages
+    fn json_type_name(&self, value: &JsonValue) -> &'static str {
+        match value {
+            JsonValue::Null => "null",
+            JsonValue::Bool(_) => "boolean",
+            JsonValue::Number(_) => "number",
+            JsonValue::String(_) => "string",
+            JsonValue::Array(_) => "array",
+            JsonValue::Object(_) => "object",
+        }
+    }
+
+    // =========================================================================
+    // Constraint Validation
+    // =========================================================================
+
+    /// Validate FHIRPath constraints against a resource.
+    ///
+    /// Evaluates all error-severity constraints using the configured FHIRPath evaluator.
+    /// Warning-severity constraints are skipped. If no evaluator is configured,
+    /// constraint validation is skipped entirely.
+    async fn validate_constraints(
+        &self,
+        data: &JsonValue,
+        constraints: &[compiled::CompiledConstraint],
+        variables: &HashMap<String, EvaluationResult>,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        let Some(evaluator) = &self.fhirpath_evaluator else {
+            return;
+        };
+
+        if constraints.is_empty() {
+            return;
+        }
+
+        for constraint in constraints {
+            // Skip warning constraints
+            if constraint.severity == compiled::ConstraintSeverity::Warning {
+                continue;
+            }
+
+            match evaluator
+                .evaluate_with_variables(&constraint.expression, data, variables)
+                .await
+            {
+                Ok(result) => {
+                    // Per FHIR spec: empty result = satisfied, only Boolean(false) = violation
+                    let violated = matches!(result, EvaluationResult::Boolean(false, _));
+                    if violated {
+                        errors.push(ValidationError {
+                            error_type: FhirSchemaErrorCode::ConstraintViolation.to_string(),
+                            path: self.path_to_vec(path),
+                            message: Some(format!(
+                                "Constraint '{}' failed: {}",
+                                constraint.key, constraint.human
+                            )),
+                            value: None,
+                            expected: None,
+                            got: None,
+                            schema_path: None,
+                            constraint_key: Some(constraint.key.clone()),
+                            constraint_expression: Some(constraint.expression.clone()),
+                            constraint_severity: Some("error".to_string()),
+                        });
+                    }
+                }
+                Err(e) => {
+                    errors.push(ValidationError {
+                        error_type: FhirSchemaErrorCode::ConstraintViolation.to_string(),
+                        path: self.path_to_vec(path),
+                        message: Some(format!(
+                            "Constraint '{}' evaluation failed: {}",
+                            constraint.key, e
+                        )),
+                        value: None,
+                        expected: None,
+                        got: None,
+                        schema_path: None,
+                        constraint_key: Some(constraint.key.clone()),
+                        constraint_expression: Some(constraint.expression.clone()),
+                        constraint_severity: Some("error".to_string()),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Recursively validate constraints for a resource and all its elements.
+    ///
+    /// This walks through the compiled schema and evaluates constraints at each level:
+    /// - Schema-level constraints on the resource itself
+    /// - Element-level constraints on each field
+    #[async_recursion::async_recursion]
+    async fn validate_constraints_recursive(
+        &self,
+        data: &JsonValue,
+        schema: &CompiledSchema,
+        variables: &HashMap<String, EvaluationResult>,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        // Validate schema-level constraints
+        self.validate_constraints(data, &schema.constraints, variables, errors, path)
+            .await;
+
+        // Validate element-level constraints
+        let JsonValue::Object(obj) = data else {
+            return;
+        };
+
+        for (key, value) in obj {
+            if key == "resourceType" || key == "fhir_comments" || key.starts_with('_') {
+                continue;
+            }
+
+            if let Some(element) = schema.elements.get(key) {
+                let element_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", path, key)
+                };
+
+                self.validate_element_constraints(value, element, variables, errors, &element_path)
+                    .await;
+            }
+        }
+    }
+
+    /// Validate constraints for an element value.
+    #[async_recursion::async_recursion]
+    async fn validate_element_constraints(
+        &self,
+        value: &JsonValue,
+        element: &compiled::CompiledElement,
+        variables: &HashMap<String, EvaluationResult>,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        // Handle arrays
+        if let JsonValue::Array(arr) = value {
+            for (i, item) in arr.iter().enumerate() {
+                let item_path = format!("{}[{}]", path, i);
+                self.validate_single_element_constraints(item, element, variables, errors, &item_path)
+                    .await;
+            }
+        } else {
+            self.validate_single_element_constraints(value, element, variables, errors, path)
+                .await;
+        }
+    }
+
+    /// Validate constraints for a single (non-array) element value.
+    #[async_recursion::async_recursion]
+    async fn validate_single_element_constraints(
+        &self,
+        value: &JsonValue,
+        element: &compiled::CompiledElement,
+        variables: &HashMap<String, EvaluationResult>,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        // Validate element-level constraints
+        self.validate_constraints(value, &element.constraints, variables, errors, path)
+            .await;
+
+        // Recurse into children for complex types
+        if let JsonValue::Object(obj) = value {
+            for (key, child_value) in obj {
+                if key.starts_with('_') {
+                    continue;
+                }
+
+                if let Some(child_element) = element.children.get(key) {
+                    let child_path = format!("{}.{}", path, key);
+                    self.validate_element_constraints(
+                        child_value,
+                        child_element,
+                        variables,
+                        errors,
+                        &child_path,
+                    )
+                    .await;
+                }
+            }
+        }
     }
 }
 
@@ -2562,12 +3754,19 @@ mod tests {
 
         // Debug: Show which schemas are being used for validation
         println!("Schemas collected for validation:");
+        // Convert schemas to Arc format for the context
+        let arc_schemas: HashMap<String, Arc<FhirSchema>> = schemas
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
         let mut context_debug =
-            FhirSchemaValidationContext::new(schemas.clone(), "Patient".to_string());
-        validator.resolve_schemata(
-            &mut context_debug,
-            vec!["http://hl7.org/fhir/StructureDefinition/Patient".to_string()],
-        );
+            FhirSchemaValidationContext::new(Arc::new(arc_schemas), "Patient".to_string());
+        validator
+            .resolve_schemata(
+                &mut context_debug,
+                vec!["http://hl7.org/fhir/StructureDefinition/Patient".to_string()],
+            )
+            .await;
         for (url, schema) in &context_debug.current_schemata {
             println!(
                 "  - {}: {} (required: {:?})",

@@ -63,7 +63,10 @@ pub use types::{
 };
 
 // Validation exports
-pub use validation::{FhirSchemaErrorCode, FhirSchemaValidationContext, FhirSchemaValidator};
+pub use validation::{
+    FhirSchemaErrorCode, FhirSchemaValidationContext, FhirSchemaValidator, FhirValidator,
+    InMemorySchemaProvider, SchemaProvider,
+};
 
 // Provider exports (from new module structure)
 pub use provider::{

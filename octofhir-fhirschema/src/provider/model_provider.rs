@@ -699,10 +699,10 @@ impl EmbeddedSchemaProvider {
         resource: &serde_json::Value,
         profile_url: &str,
     ) -> Result<crate::types::ValidationResult, Box<crate::types::ValidationError>> {
-        use crate::validation::FhirSchemaValidator;
+        use crate::validation::FhirValidator;
 
         // Create validator without FHIRPath evaluator (structural validation only)
-        let validator = FhirSchemaValidator::new(self.inner.schemas.clone(), None);
+        let validator = FhirValidator::from_schemas(self.inner.schemas.clone(), None);
 
         // Find schema by URL
         if let Some(schema) = self.inner.schemas.values().find(|s| s.url == profile_url) {
@@ -731,10 +731,10 @@ impl EmbeddedSchemaProvider {
         resource: &serde_json::Value,
         resource_type: &str,
     ) -> Result<crate::types::ValidationResult, Box<crate::types::ValidationError>> {
-        use crate::validation::FhirSchemaValidator;
+        use crate::validation::FhirValidator;
 
         // Create validator without FHIRPath evaluator (structural validation only)
-        let validator = FhirSchemaValidator::new(self.inner.schemas.clone(), None);
+        let validator = FhirValidator::from_schemas(self.inner.schemas.clone(), None);
 
         // Check if resource type exists
         if self.inner.schemas.contains_key(resource_type) {

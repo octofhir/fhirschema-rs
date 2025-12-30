@@ -7,14 +7,14 @@
 //! - Roundtrip consistency
 
 use octofhir_fhirschema::embedded::{FhirVersion, get_schemas};
-use octofhir_fhirschema::validation::FhirSchemaValidator;
+use octofhir_fhirschema::validation::FhirValidator;
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
 /// Create validator with embedded R4 schemas
-fn create_r4_validator() -> FhirSchemaValidator {
+fn create_r4_validator() -> FhirValidator {
     let schemas = get_schemas(FhirVersion::R4);
-    FhirSchemaValidator::new(schemas.clone(), None)
+    FhirValidator::from_schemas(schemas.clone(), None)
 }
 
 // =============================================================================

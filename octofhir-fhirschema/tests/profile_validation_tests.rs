@@ -10,7 +10,7 @@ use octofhir_fhirschema::embedded::{FhirVersion, get_schemas};
 use octofhir_fhirschema::types::{
     FhirSchema, FhirSchemaElement, FhirSchemaPattern, FhirSchemaSliceMatch, FhirSchemaSlicing,
 };
-use octofhir_fhirschema::validation::FhirSchemaValidator;
+use octofhir_fhirschema::validation::FhirValidator;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -134,7 +134,7 @@ async fn test_single_profile_validation() {
     schemas.insert("Patient".to_string(), patient_schema);
     schemas.insert("RequiredGenderPatient".to_string(), profile);
 
-    let validator = FhirSchemaValidator::new(schemas, None);
+    let validator = FhirValidator::from_schemas(schemas, None);
 
     // Test: Resource with gender should pass
     let valid_patient = json!({
@@ -242,11 +242,12 @@ async fn test_profile_chain_resolution() {
     schemas.insert("NamedPatient".to_string(), profile_a);
     schemas.insert("FullPatient".to_string(), profile_b);
 
-    let validator = FhirSchemaValidator::new(schemas, None);
+    let validator = FhirValidator::from_schemas(schemas, None);
 
     // Resolve profile chain
     let chain = validator
         .resolve_profile_chain("FullPatient")
+        .await
         .expect("Should resolve profile chain");
 
     // Chain should be: Patient -> NamedPatient -> FullPatient
@@ -302,10 +303,10 @@ async fn test_profile_chain_cycle_detection() {
     schemas.insert("ProfileA".to_string(), profile_a);
     schemas.insert("ProfileB".to_string(), profile_b);
 
-    let validator = FhirSchemaValidator::new(schemas, None);
+    let validator = FhirValidator::from_schemas(schemas, None);
 
     // Attempt to resolve chain - should fail with cycle detection
-    let result = validator.resolve_profile_chain("ProfileA");
+    let result = validator.resolve_profile_chain("ProfileA").await;
 
     assert!(result.is_err(), "Should detect cycle in profile chain");
 
@@ -409,11 +410,11 @@ async fn test_multiple_compatible_profiles() {
     schemas.insert("ProfileA".to_string(), profile_a);
     schemas.insert("ProfileB".to_string(), profile_b);
 
-    let validator = FhirSchemaValidator::new(schemas, None);
+    let validator = FhirValidator::from_schemas(schemas, None);
 
     // No conflicts should be detected
-    let profile_a_chain = validator.resolve_profile_chain("ProfileA").unwrap();
-    let profile_b_chain = validator.resolve_profile_chain("ProfileB").unwrap();
+    let profile_a_chain = validator.resolve_profile_chain("ProfileA").await.unwrap();
+    let profile_b_chain = validator.resolve_profile_chain("ProfileB").await.unwrap();
 
     let merged_a = validator.merge_profile_chain(&profile_a_chain).unwrap();
     let merged_b = validator.merge_profile_chain(&profile_b_chain).unwrap();
@@ -510,11 +511,11 @@ async fn test_conflicting_profiles() {
     schemas.insert("MalePatient".to_string(), profile_a);
     schemas.insert("FemalePatient".to_string(), profile_b);
 
-    let validator = FhirSchemaValidator::new(schemas, None);
+    let validator = FhirValidator::from_schemas(schemas, None);
 
     // Detect conflicts
-    let profile_a_chain = validator.resolve_profile_chain("MalePatient").unwrap();
-    let profile_b_chain = validator.resolve_profile_chain("FemalePatient").unwrap();
+    let profile_a_chain = validator.resolve_profile_chain("MalePatient").await.unwrap();
+    let profile_b_chain = validator.resolve_profile_chain("FemalePatient").await.unwrap();
 
     let merged_a = validator.merge_profile_chain(&profile_a_chain).unwrap();
     let merged_b = validator.merge_profile_chain(&profile_b_chain).unwrap();
@@ -592,7 +593,7 @@ async fn test_deep_element_merge() {
     schemas.insert("Base".to_string(), base.clone());
     schemas.insert("Profile".to_string(), profile.clone());
 
-    let validator = FhirSchemaValidator::new(schemas, None);
+    let validator = FhirValidator::from_schemas(schemas, None);
 
     // Merge and verify deep merge
     let merged = validator.merge_schemas(&base, &profile);
@@ -688,7 +689,7 @@ async fn test_slicing_merge() {
     schemas.insert("Base".to_string(), base.clone());
     schemas.insert("Profile".to_string(), profile.clone());
 
-    let validator = FhirSchemaValidator::new(schemas, None);
+    let validator = FhirValidator::from_schemas(schemas, None);
 
     // Merge and verify slicing merge
     let merged = validator.merge_schemas(&base, &profile);
@@ -758,11 +759,12 @@ async fn test_derivation_types() {
     schemas.insert("BaseResource".to_string(), base);
     schemas.insert("ConstraintProfile".to_string(), constraint);
 
-    let validator = FhirSchemaValidator::new(schemas, None);
+    let validator = FhirValidator::from_schemas(schemas, None);
 
     // Resolve chain
     let chain = validator
         .resolve_profile_chain("ConstraintProfile")
+        .await
         .expect("Should resolve constraint profile chain");
 
     assert_eq!(chain.len(), 2);
@@ -785,9 +787,9 @@ async fn test_derivation_types() {
 #[tokio::test]
 async fn test_schema_not_found_error() {
     let schemas = HashMap::new();
-    let validator = FhirSchemaValidator::new(schemas, None);
+    let validator = FhirValidator::from_schemas(schemas, None);
 
-    let result = validator.resolve_profile_chain("http://nonexistent/Profile");
+    let result = validator.resolve_profile_chain("http://nonexistent/Profile").await;
 
     assert!(result.is_err(), "Should fail for non-existent schema");
     let error = result.unwrap_err();
@@ -804,10 +806,10 @@ async fn test_schema_not_found_error() {
 #[tokio::test]
 async fn test_embedded_r4_profile_chain() {
     let schemas = get_schemas(FhirVersion::R4);
-    let validator = FhirSchemaValidator::new(schemas.clone(), None);
+    let validator = FhirValidator::from_schemas(schemas.clone(), None);
 
     // Patient should have a base chain to DomainResource -> Resource -> Base
-    let chain = validator.resolve_profile_chain("Patient");
+    let chain = validator.resolve_profile_chain("Patient").await;
 
     assert!(chain.is_ok(), "Should resolve Patient chain");
     let chain = chain.unwrap();

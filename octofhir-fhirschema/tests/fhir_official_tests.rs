@@ -8,16 +8,16 @@
 //! Run with: cargo test --test fhir_official_tests -- --ignored
 
 use octofhir_fhirschema::embedded::{FhirVersion, get_schemas};
-use octofhir_fhirschema::validation::FhirSchemaValidator;
+use octofhir_fhirschema::validation::FhirValidator;
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
 /// Helper to create validator with embedded R4 schemas
-fn create_r4_validator() -> FhirSchemaValidator {
+fn create_r4_validator() -> FhirValidator {
     let schemas = get_schemas(FhirVersion::R4);
-    FhirSchemaValidator::new(schemas.clone(), None)
+    FhirValidator::from_schemas(schemas.clone(), None)
 }
 
 /// Download a file from URL with caching
