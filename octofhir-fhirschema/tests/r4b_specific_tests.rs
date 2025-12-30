@@ -13,7 +13,6 @@ use octofhir_fhirschema::{EmbeddedSchemaProvider, ModelFhirVersion};
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_topic_exists_in_r4b() {
     let provider = EmbeddedSchemaProvider::r4b();
 
@@ -36,7 +35,6 @@ async fn test_subscription_topic_not_in_r4() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_topic_has_url_element() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionTopic").unwrap();
@@ -56,7 +54,6 @@ async fn test_subscription_topic_has_url_element() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_topic_has_status_element() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionTopic").unwrap();
@@ -73,7 +70,6 @@ async fn test_subscription_topic_has_status_element() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_topic_has_resource_trigger() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionTopic").unwrap();
@@ -98,7 +94,6 @@ async fn test_subscription_topic_has_resource_trigger() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_topic_resource_trigger_has_resource() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionTopic").unwrap();
@@ -118,7 +113,6 @@ async fn test_subscription_topic_resource_trigger_has_resource() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_topic_resource_trigger_has_supported_interaction() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionTopic").unwrap();
@@ -142,7 +136,6 @@ async fn test_subscription_topic_resource_trigger_has_supported_interaction() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_topic_has_can_filter_by() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionTopic").unwrap();
@@ -163,7 +156,6 @@ async fn test_subscription_topic_has_can_filter_by() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_topic_can_filter_by_has_resource() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionTopic").unwrap();
@@ -183,7 +175,6 @@ async fn test_subscription_topic_can_filter_by_has_resource() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_topic_can_filter_by_has_filter_parameter() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionTopic").unwrap();
@@ -204,7 +195,6 @@ async fn test_subscription_topic_can_filter_by_has_filter_parameter() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_status_exists_in_r4b() {
     let provider = EmbeddedSchemaProvider::r4b();
 
@@ -230,7 +220,6 @@ async fn test_subscription_status_not_in_r4() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_status_has_status_element() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionStatus").unwrap();
@@ -244,7 +233,6 @@ async fn test_subscription_status_has_status_element() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_status_has_type_element() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionStatus").unwrap();
@@ -261,7 +249,6 @@ async fn test_subscription_status_has_type_element() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_status_has_events_since_subscription_start() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionStatus").unwrap();
@@ -278,7 +265,6 @@ async fn test_subscription_status_has_events_since_subscription_start() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_status_has_notification_event() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionStatus").unwrap();
@@ -299,7 +285,6 @@ async fn test_subscription_status_has_notification_event() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_status_notification_event_has_event_number() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionStatus").unwrap();
@@ -322,7 +307,6 @@ async fn test_subscription_status_notification_event_has_event_number() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_status_notification_event_has_timestamp() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionStatus").unwrap();
@@ -339,7 +323,6 @@ async fn test_subscription_status_notification_event_has_timestamp() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_status_notification_event_has_focus() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionStatus").unwrap();
@@ -356,7 +339,6 @@ async fn test_subscription_status_notification_event_has_focus() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_subscription_status_has_subscription() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider.schemas().get("SubscriptionStatus").unwrap();
@@ -377,7 +359,6 @@ async fn test_subscription_status_has_subscription() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_medicinal_product_removed_in_r4b() {
     let r4_provider = EmbeddedSchemaProvider::r4();
     let r4b_provider = EmbeddedSchemaProvider::r4b();
@@ -414,7 +395,6 @@ async fn test_medicinal_product_removed_in_r4b() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_new_pharmaceutical_resources_in_r4b() {
     let r4_provider = EmbeddedSchemaProvider::r4();
     let r4b_provider = EmbeddedSchemaProvider::r4b();
@@ -449,7 +429,6 @@ async fn test_new_pharmaceutical_resources_in_r4b() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_medicinal_product_definition_structure() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider
@@ -484,7 +463,6 @@ async fn test_medicinal_product_definition_structure() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_ingredient_exists_in_r4b() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider
@@ -498,7 +476,6 @@ async fn test_ingredient_exists_in_r4b() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_clinical_use_definition_exists_in_r4b() {
     let provider = EmbeddedSchemaProvider::r4b();
     let schema = provider
@@ -516,7 +493,6 @@ async fn test_clinical_use_definition_exists_in_r4b() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_r4b_has_fewer_schemas_than_r4() {
     let r4_provider = EmbeddedSchemaProvider::r4();
     let r4b_provider = EmbeddedSchemaProvider::r4b();
@@ -527,13 +503,13 @@ async fn test_r4b_has_fewer_schemas_than_r4() {
     println!("R4 schema count: {}", r4_count);
     println!("R4B schema count: {}", r4b_count);
 
-    // R4 has 573 schemas, R4B has 568 schemas (consolidation of pharmaceutical products)
-    assert_eq!(r4_count, 573, "R4 should have 573 schemas");
-    assert_eq!(r4b_count, 568, "R4B should have 568 schemas");
+    // R4 has 655 schemas, R4B has 651 schemas (includes backbone elements)
+    // R4B has fewer due to pharmaceutical product consolidation
+    assert_eq!(r4_count, 655, "R4 should have 655 schemas");
+    assert_eq!(r4b_count, 651, "R4B should have 651 schemas");
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_patient_exists_in_both_r4_and_r4b() {
     let r4_provider = EmbeddedSchemaProvider::r4();
     let r4b_provider = EmbeddedSchemaProvider::r4b();
@@ -564,7 +540,6 @@ async fn test_patient_exists_in_both_r4_and_r4b() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_observation_exists_in_both_r4_and_r4b() {
     let r4_provider = EmbeddedSchemaProvider::r4();
     let r4b_provider = EmbeddedSchemaProvider::r4b();
@@ -577,7 +552,6 @@ async fn test_observation_exists_in_both_r4_and_r4b() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_r4b_version_correctly_identified() {
     let provider = EmbeddedSchemaProvider::r4b();
 
@@ -585,7 +559,6 @@ async fn test_r4b_version_correctly_identified() {
 }
 
 #[tokio::test]
-#[ignore = "R4B schemas not fully generated yet"]
 async fn test_r4_and_r4b_have_common_core_resources() {
     let r4_provider = EmbeddedSchemaProvider::r4();
     let r4b_provider = EmbeddedSchemaProvider::r4b();

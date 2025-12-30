@@ -21,7 +21,7 @@
 //! let resolver: Arc<dyn ReferenceResolver> = Arc::new(MyStorageResolver::new(storage));
 //!
 //! // Use with validator
-//! let validator = FhirSchemaValidator::new(schemas, None)
+//! let validator = FhirValidator::from_schemas(schemas, None)
 //!     .with_reference_resolver(resolver);
 //! ```
 

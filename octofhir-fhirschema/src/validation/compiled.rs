@@ -43,7 +43,7 @@ pub enum SchemaKind {
 }
 
 impl SchemaKind {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "resource" => SchemaKind::Resource,
             "complex-type" => SchemaKind::ComplexType,
@@ -77,8 +77,10 @@ pub struct CompiledElement {
     pub constraints: Vec<CompiledConstraint>,
     /// Pattern/fixed value constraints
     pub pattern: Option<serde_json::Value>,
-    /// Choice type variants (e.g., for value[x])
+    /// Choice type variants
     pub choices: Option<Vec<String>>,
+    /// Slicing definition (for array elements with slices)
+    pub slicing: Option<CompiledSlicing>,
     /// Short description
     pub short: Option<String>,
     /// Must support flag
@@ -101,6 +103,7 @@ impl Default for CompiledElement {
             constraints: Vec::new(),
             pattern: None,
             choices: None,
+            slicing: None,
             short: None,
             must_support: false,
             is_modifier: false,
@@ -152,7 +155,7 @@ pub enum PrimitiveType {
 }
 
 impl PrimitiveType {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "boolean" => Some(PrimitiveType::Boolean),
             "integer" => Some(PrimitiveType::Integer),
@@ -208,7 +211,7 @@ impl PrimitiveType {
 
 /// Check if a type name is a primitive type
 pub fn is_primitive_type(type_name: &str) -> bool {
-    PrimitiveType::from_str(type_name).is_some()
+    PrimitiveType::parse(type_name).is_some()
 }
 
 /// Compiled FHIRPath constraint
@@ -232,7 +235,7 @@ pub enum ConstraintSeverity {
 }
 
 impl ConstraintSeverity {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "warning" => ConstraintSeverity::Warning,
             _ => ConstraintSeverity::Error,
@@ -261,7 +264,7 @@ pub enum BindingStrength {
 }
 
 impl BindingStrength {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "required" => BindingStrength::Required,
             "extensible" => BindingStrength::Extensible,
@@ -273,3 +276,104 @@ impl BindingStrength {
 
 /// Type alias for shared compiled schema
 pub type SharedCompiledSchema = Arc<CompiledSchema>;
+
+// =============================================================================
+// Slicing Types
+// =============================================================================
+
+/// Compiled slicing definition for array elements
+#[derive(Debug, Clone)]
+pub struct CompiledSlicing {
+    /// Slicing rules: "open", "closed", or "openAtEnd"
+    pub rules: SlicingRules,
+    /// Whether order matters
+    pub ordered: bool,
+    /// Discriminator definitions
+    pub discriminators: Vec<CompiledDiscriminator>,
+    /// Individual slice definitions
+    pub slices: HashMap<String, CompiledSlice>,
+}
+
+/// Slicing rules
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SlicingRules {
+    /// Additional content allowed anywhere
+    #[default]
+    Open,
+    /// No additional content allowed
+    Closed,
+    /// Additional content allowed only at the end
+    OpenAtEnd,
+}
+
+impl SlicingRules {
+    pub fn parse(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "closed" => SlicingRules::Closed,
+            "openatend" => SlicingRules::OpenAtEnd,
+            _ => SlicingRules::Open,
+        }
+    }
+}
+
+/// Compiled discriminator
+#[derive(Debug, Clone)]
+pub struct CompiledDiscriminator {
+    /// Discriminator type
+    pub discriminator_type: DiscriminatorType,
+    /// Path to discriminating element
+    pub path: String,
+}
+
+/// Discriminator type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscriminatorType {
+    /// Match by value
+    Value,
+    /// Match by existence
+    Exists,
+    /// Match by pattern
+    Pattern,
+    /// Match by type
+    Type,
+    /// Match by profile
+    Profile,
+}
+
+impl DiscriminatorType {
+    pub fn parse(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "exists" => DiscriminatorType::Exists,
+            "pattern" => DiscriminatorType::Pattern,
+            "type" => DiscriminatorType::Type,
+            "profile" => DiscriminatorType::Profile,
+            _ => DiscriminatorType::Value,
+        }
+    }
+}
+
+/// Compiled slice definition
+#[derive(Debug, Clone)]
+pub struct CompiledSlice {
+    /// Slice name
+    pub name: String,
+    /// Match pattern (for discriminator matching)
+    pub match_value: Option<serde_json::Value>,
+    /// Minimum cardinality for this slice
+    pub min: Option<i32>,
+    /// Maximum cardinality for this slice
+    pub max: Option<i32>,
+    /// Schema for items in this slice (nested element definition)
+    pub schema: Option<Box<CompiledElement>>,
+}
+
+/// Result of classifying an array item against slices
+#[derive(Debug, Clone, PartialEq)]
+pub enum SliceClassification {
+    /// Item matched exactly one slice
+    Matched(String),
+    /// Item didn't match any slice
+    Unmatched,
+    /// Item matched multiple slices (ambiguous)
+    Ambiguous(Vec<String>),
+}

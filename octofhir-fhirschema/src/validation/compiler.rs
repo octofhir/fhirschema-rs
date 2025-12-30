@@ -9,11 +9,12 @@ use std::sync::Arc;
 use async_recursion::async_recursion;
 
 use super::SchemaProvider;
-use crate::types::{FhirSchema, FhirSchemaConstraint, FhirSchemaElement};
+use crate::types::{FhirSchema, FhirSchemaConstraint, FhirSchemaElement, FhirSchemaSlicing};
 
 use super::compiled::{
-    BindingStrength, CompiledBinding, CompiledConstraint, CompiledElement, CompiledSchema,
-    CompiledTypeInfo, ConstraintSeverity, PrimitiveType, SchemaKind, SharedCompiledSchema,
+    BindingStrength, CompiledBinding, CompiledConstraint, CompiledDiscriminator, CompiledElement,
+    CompiledSchema, CompiledSlice, CompiledSlicing, CompiledTypeInfo, ConstraintSeverity,
+    DiscriminatorType, PrimitiveType, SchemaKind, SharedCompiledSchema, SlicingRules,
     is_primitive_type,
 };
 
@@ -75,12 +76,14 @@ impl SchemaCompiler {
     #[async_recursion]
     async fn compile_internal(&self, schema_name: &str) -> Result<CompiledSchema, CompileError> {
         // 1. Load base schema
-        let schema = self.schema_provider.get_schema(schema_name).await.ok_or_else(|| {
-            CompileError {
+        let schema = self
+            .schema_provider
+            .get_schema(schema_name)
+            .await
+            .ok_or_else(|| CompileError {
                 message: format!("Schema not found: {}", schema_name),
                 schema_name: Some(schema_name.to_string()),
-            }
-        })?;
+            })?;
 
         // 2. Resolve inheritance chain and merge
         let chain = self.resolve_chain(&schema).await?;
@@ -113,12 +116,15 @@ impl SchemaCompiler {
             required,
             excluded,
             is_resource: schema.kind == "resource",
-            kind: SchemaKind::from_str(&schema.kind),
+            kind: SchemaKind::parse(&schema.kind),
         })
     }
 
     /// Resolve inheritance chain from base to derived
-    async fn resolve_chain(&self, schema: &FhirSchema) -> Result<Vec<Arc<FhirSchema>>, CompileError> {
+    async fn resolve_chain(
+        &self,
+        schema: &FhirSchema,
+    ) -> Result<Vec<Arc<FhirSchema>>, CompileError> {
         let mut chain = vec![Arc::new(schema.clone())];
         let mut current = schema.clone();
         let mut visited = HashSet::new();
@@ -212,7 +218,11 @@ impl SchemaCompiler {
     }
 
     /// Merge two elements
-    fn merge_elements(&self, base: &FhirSchemaElement, overlay: &FhirSchemaElement) -> FhirSchemaElement {
+    fn merge_elements(
+        &self,
+        base: &FhirSchemaElement,
+        overlay: &FhirSchemaElement,
+    ) -> FhirSchemaElement {
         let mut result = base.clone();
 
         // Overlay cardinality
@@ -309,12 +319,14 @@ impl SchemaCompiler {
                     children = Box::pin(self.expand_elements(Some(nested))).await?;
                 }
                 // If element has a type, recursively compile that type's elements
-                else if let Some(type_name) = &element.type_name {
-                    if !is_primitive_type(type_name) && type_name != "Resource" && type_name != "Reference" {
-                        // Get compiled schema for this type
-                        if let Ok(type_schema) = self.compile(type_name).await {
-                            children = type_schema.elements.clone();
-                        }
+                else if let Some(type_name) = &element.type_name
+                    && !is_primitive_type(type_name)
+                    && type_name != "Resource"
+                    && type_name != "Reference"
+                {
+                    // Get compiled schema for this type
+                    if let Ok(type_schema) = self.compile(type_name).await {
+                        children = type_schema.elements.clone();
                     }
                 }
             }
@@ -329,9 +341,12 @@ impl SchemaCompiler {
         // Extract binding
         let binding = element.binding.as_ref().map(|b| CompiledBinding {
             value_set: b.value_set.clone().unwrap_or_default(),
-            strength: BindingStrength::from_str(&b.strength),
+            strength: BindingStrength::parse(&b.strength),
             description: b.binding_name.clone(),
         });
+
+        // Compile slicing if present
+        let slicing = element.slicing.as_ref().map(|s| self.compile_slicing(s));
 
         Ok(CompiledElement {
             name: name.to_string(),
@@ -345,6 +360,7 @@ impl SchemaCompiler {
             constraints,
             pattern: element.pattern.as_ref().map(|p| p.value.clone()),
             choices: element.choices.clone(),
+            slicing,
             short: element.short.clone(),
             must_support: element.must_support.unwrap_or(false),
             is_modifier: element.is_modifier.unwrap_or(false),
@@ -363,7 +379,7 @@ impl SchemaCompiler {
         };
 
         // Check for primitive
-        if let Some(ptype) = PrimitiveType::from_str(type_name) {
+        if let Some(ptype) = PrimitiveType::parse(type_name) {
             return CompiledTypeInfo::Primitive(ptype);
         }
 
@@ -405,12 +421,63 @@ impl SchemaCompiler {
     }
 
     /// Convert FhirSchemaConstraint to CompiledConstraint
-    fn convert_constraint(&self, key: &str, constraint: &FhirSchemaConstraint) -> CompiledConstraint {
+    fn convert_constraint(
+        &self,
+        key: &str,
+        constraint: &FhirSchemaConstraint,
+    ) -> CompiledConstraint {
         CompiledConstraint {
             key: key.to_string(),
             expression: constraint.expression.clone(),
             human: constraint.human.clone(),
-            severity: ConstraintSeverity::from_str(&constraint.severity),
+            severity: ConstraintSeverity::parse(&constraint.severity),
+        }
+    }
+
+    /// Compile slicing definition
+    fn compile_slicing(&self, slicing: &FhirSchemaSlicing) -> CompiledSlicing {
+        // Compile discriminators
+        let discriminators = slicing
+            .discriminator
+            .as_ref()
+            .map(|discs| {
+                discs
+                    .iter()
+                    .map(|d| CompiledDiscriminator {
+                        discriminator_type: DiscriminatorType::parse(&d.type_name),
+                        path: d.path.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Compile slices
+        let slices = slicing
+            .slices
+            .as_ref()
+            .map(|slice_map| {
+                slice_map
+                    .iter()
+                    .map(|(name, slice_def)| {
+                        let compiled_slice = CompiledSlice {
+                            name: name.clone(),
+                            match_value: slice_def.match_value.clone(),
+                            min: slice_def.min,
+                            max: slice_def.max,
+                            // TODO: compile nested schema if needed
+                            schema: None,
+                        };
+                        (name.clone(), compiled_slice)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        CompiledSlicing {
+            rules: SlicingRules::parse(slicing.rules.as_deref().unwrap_or("open")),
+            ordered: slicing.ordered.unwrap_or(false),
+            discriminators,
+            slices,
         }
     }
 }

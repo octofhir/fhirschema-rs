@@ -20,4 +20,4 @@ pub mod mock_evaluator;
 
 pub use octofhir_fhir_model::FhirPathEvaluator;
 /// Re-export for convenience
-pub use octofhir_fhirschema::validation::{FhirSchemaValidator, FhirValidator};
+pub use octofhir_fhirschema::validation::FhirValidator;

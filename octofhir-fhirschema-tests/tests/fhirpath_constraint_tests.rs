@@ -1,6 +1,6 @@
 //! Integration tests for FHIRPath constraint validation
 //!
-//! These tests verify that the FhirSchemaValidator correctly integrates
+//! These tests verify that the FhirValidator correctly integrates
 //! with FhirPathEvaluator implementations to validate FHIRPath constraints.
 
 use octofhir_fhirschema::types::{FhirSchema, FhirSchemaConstraint, FhirSchemaElement};

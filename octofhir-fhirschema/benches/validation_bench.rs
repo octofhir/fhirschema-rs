@@ -6,10 +6,10 @@
 //! Profiling with flamegraph:
 //!   cargo flamegraph --bench validation_bench -- --bench validate_bundle
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use octofhir_fhirschema::{FhirValidator, FhirVersion, get_schemas};
+use serde_json::{Value as JsonValue, json};
 use std::hint::black_box;
-use octofhir_fhirschema::{FhirSchemaValidator, FhirValidator, FhirVersion, get_schemas};
-use serde_json::{json, Value as JsonValue};
 use tokio::runtime::Runtime;
 
 /// Create runtime for async benchmarks
@@ -191,7 +191,7 @@ fn bench_schema_lookup(c: &mut Criterion) {
 fn bench_validate_patient(c: &mut Criterion) {
     let rt = create_runtime();
     let schemas = get_schemas(FhirVersion::R4).clone();
-    let validator = FhirSchemaValidator::new(schemas, None);
+    let validator = FhirValidator::from_schemas(schemas, None);
 
     let patient_min = patient_minimal();
     let patient_simple = patient_simple();
@@ -236,7 +236,7 @@ fn bench_validate_patient(c: &mut Criterion) {
 fn bench_validate_observation(c: &mut Criterion) {
     let rt = create_runtime();
     let schemas = get_schemas(FhirVersion::R4).clone();
-    let validator = FhirSchemaValidator::new(schemas, None);
+    let validator = FhirValidator::from_schemas(schemas, None);
 
     let observation = observation_simple();
 
@@ -255,7 +255,7 @@ fn bench_validate_observation(c: &mut Criterion) {
 fn bench_validate_bundle(c: &mut Criterion) {
     let rt = create_runtime();
     let schemas = get_schemas(FhirVersion::R4).clone();
-    let validator = FhirSchemaValidator::new(schemas, None);
+    let validator = FhirValidator::from_schemas(schemas, None);
 
     let mut group = c.benchmark_group("validate_bundle");
 
@@ -281,7 +281,7 @@ fn bench_validate_bundle(c: &mut Criterion) {
 fn bench_throughput(c: &mut Criterion) {
     let rt = create_runtime();
     let schemas = get_schemas(FhirVersion::R4).clone();
-    let validator = FhirSchemaValidator::new(schemas, None);
+    let validator = FhirValidator::from_schemas(schemas, None);
 
     // Подготовим batch разных ресурсов
     let resources: Vec<JsonValue> = (0..100)
@@ -324,7 +324,7 @@ fn bench_validator_creation(c: &mut Criterion) {
 
     c.bench_function("validator_creation", |b| {
         b.iter(|| {
-            let _ = black_box(FhirSchemaValidator::new(schemas.clone(), None));
+            let _ = black_box(FhirValidator::from_schemas(schemas.clone(), None));
         });
     });
 }
