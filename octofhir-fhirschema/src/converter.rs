@@ -99,6 +99,30 @@ fn get_differential(structure_definition: &StructureDefinition) -> Vec<Structure
         .unwrap_or_default()
 }
 
+/// Sort elements by path hierarchy to ensure BackboneElement children are contiguous.
+/// This fixes the bug where non-contiguous children (e.g., engine.type, matcher.*, engine.script)
+/// cause the first child to be lost during stack-based processing.
+fn sort_elements_by_path(
+    mut elements: Vec<StructureDefinitionElement>,
+) -> Vec<StructureDefinitionElement> {
+    elements.sort_by(|a, b| {
+        let parts_a: Vec<&str> = a.path.split('.').collect();
+        let parts_b: Vec<&str> = b.path.split('.').collect();
+
+        // Compare each path component hierarchically
+        for (pa, pb) in parts_a.iter().zip(parts_b.iter()) {
+            match pa.cmp(pb) {
+                std::cmp::Ordering::Equal => continue,
+                other => return other,
+            }
+        }
+
+        // Shorter paths come first (parent before children)
+        parts_a.len().cmp(&parts_b.len())
+    });
+    elements
+}
+
 fn sort_elements_by_index(mut elements: HashMap<String, Value>) -> HashMap<String, Value> {
     // Get all entries and sort by index
     let mut entries: Vec<(String, Value)> = elements.drain().collect();
@@ -194,6 +218,9 @@ pub fn translate(
 
     let header = build_resource_header(&structure_definition, context.as_ref());
     let elements = get_differential(&structure_definition);
+
+    // Sort elements by path hierarchy to ensure BackboneElement children are contiguous
+    let elements = sort_elements_by_path(elements);
 
     // Initialize stack with header
     let header_json = serde_json::to_value(&header).map_err(FhirSchemaError::SerializationError)?;
@@ -339,5 +366,121 @@ mod tests {
         assert_eq!(result.type_name, "string");
         assert_eq!(result.kind, "primitive-type");
         assert_eq!(result.class, "primitive-type");
+    }
+
+    #[test]
+    fn test_non_contiguous_backbone_children() {
+        use crate::types::{StructureDefinitionDifferential, StructureDefinitionType};
+
+        // This test reproduces the bug where non-contiguous BackboneElement children
+        // (e.g., engine.type, then matcher.*, then engine.script) cause the first
+        // child to be lost during stack-based processing.
+        let structure_def = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.com/Test".to_string(),
+            name: "Test".to_string(),
+            status: "active".to_string(),
+            kind: "logical".to_string(),
+            type_name: "Test".to_string(),
+            derivation: Some("specialization".to_string()),
+            base_definition: Some(
+                "http://hl7.org/fhir/StructureDefinition/DomainResource".to_string(),
+            ),
+            id: None,
+            version: None,
+            title: None,
+            date: None,
+            description: None,
+            abstract_type: None,
+            package_name: None,
+            package_version: None,
+            package_id: None,
+            snapshot: None,
+            differential: Some(StructureDefinitionDifferential {
+                element: vec![
+                    StructureDefinitionElement {
+                        id: Some("Test".to_string()),
+                        path: "Test".to_string(),
+                        ..Default::default()
+                    },
+                    StructureDefinitionElement {
+                        id: Some("Test.engine".to_string()),
+                        path: "Test.engine".to_string(),
+                        type_info: Some(vec![StructureDefinitionType {
+                            code: "BackboneElement".to_string(),
+                            profile: None,
+                            target_profile: None,
+                            extension: None,
+                        }]),
+                        ..Default::default()
+                    },
+                    StructureDefinitionElement {
+                        id: Some("Test.engine.type".to_string()),
+                        path: "Test.engine.type".to_string(),
+                        type_info: Some(vec![StructureDefinitionType {
+                            code: "code".to_string(),
+                            profile: None,
+                            target_profile: None,
+                            extension: None,
+                        }]),
+                        ..Default::default()
+                    },
+                    // Non-contiguous: matcher elements come between engine children
+                    StructureDefinitionElement {
+                        id: Some("Test.matcher".to_string()),
+                        path: "Test.matcher".to_string(),
+                        type_info: Some(vec![StructureDefinitionType {
+                            code: "BackboneElement".to_string(),
+                            profile: None,
+                            target_profile: None,
+                            extension: None,
+                        }]),
+                        ..Default::default()
+                    },
+                    StructureDefinitionElement {
+                        id: Some("Test.matcher.value".to_string()),
+                        path: "Test.matcher.value".to_string(),
+                        type_info: Some(vec![StructureDefinitionType {
+                            code: "string".to_string(),
+                            profile: None,
+                            target_profile: None,
+                            extension: None,
+                        }]),
+                        ..Default::default()
+                    },
+                    // engine.script comes after matcher - this was lost before the fix!
+                    StructureDefinitionElement {
+                        id: Some("Test.engine.script".to_string()),
+                        path: "Test.engine.script".to_string(),
+                        type_info: Some(vec![StructureDefinitionType {
+                            code: "string".to_string(),
+                            profile: None,
+                            target_profile: None,
+                            extension: None,
+                        }]),
+                        ..Default::default()
+                    },
+                ],
+            }),
+        };
+
+        let result = translate(structure_def, None).unwrap();
+
+        // Both engine children should be present
+        let elements = result.elements.as_ref().expect("elements should exist");
+        let engine = elements.get("engine").expect("engine should exist");
+        let engine_elements = engine
+            .elements
+            .as_ref()
+            .expect("engine.elements should exist");
+
+        assert!(
+            engine_elements.contains_key("type"),
+            "engine.type should be present"
+        );
+        assert!(
+            engine_elements.contains_key("script"),
+            "engine.script should be present"
+        );
     }
 }

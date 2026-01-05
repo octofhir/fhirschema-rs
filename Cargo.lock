@@ -2229,9 +2229,9 @@ dependencies = [
 
 [[package]]
 name = "octofhir-canonical-manager"
-version = "0.1.25"
+version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60d4c5496a02aed5a0353d9b551a9c1050f4cdcd410dcb792a0f1cd518575004"
+checksum = "81b1637fa76ce6919fc2dd417de4769475538d6117311f702fb26c2eaa97951b"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -2339,7 +2339,7 @@ dependencies = [
 
 [[package]]
 name = "octofhir-fhirschema"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "async-recursion",
  "async-trait",
