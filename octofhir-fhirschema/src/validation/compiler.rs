@@ -75,10 +75,10 @@ impl SchemaCompiler {
     /// Internal compilation logic
     #[async_recursion]
     async fn compile_internal(&self, schema_name: &str) -> Result<CompiledSchema, CompileError> {
-        // 1. Load base schema
+        // 1. Load base schema (use get_schema_by_url to support both names and URLs)
         let schema = self
             .schema_provider
-            .get_schema(schema_name)
+            .get_schema_by_url(schema_name)
             .await
             .ok_or_else(|| CompileError {
                 message: format!("Schema not found: {}", schema_name),
