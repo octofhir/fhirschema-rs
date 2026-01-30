@@ -21,7 +21,7 @@ use crate::reference::ReferenceResolver;
 use crate::terminology::TerminologyService;
 use crate::types::{FhirSchema, FhirSchemaSlicing, ValidationError, ValidationResult};
 use async_trait::async_trait;
-use octofhir_fhir_model::{EvaluationResult, FhirPathEvaluator};
+use octofhir_fhir_model::FhirPathEvaluator;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -131,37 +131,6 @@ impl SchemaProvider for InMemorySchemaProvider {
         }
         // Then search by schema URL field
         self.schemas.values().find(|s| s.url == url).cloned()
-    }
-}
-
-/// Convert a JSON value to an EvaluationResult for use as a FHIRPath variable.
-/// This is needed to pass %rootResource to constraint evaluation.
-fn json_to_evaluation_result(value: &JsonValue) -> EvaluationResult {
-    match value {
-        JsonValue::Null => EvaluationResult::Empty,
-        JsonValue::Bool(b) => EvaluationResult::boolean(*b),
-        JsonValue::Number(n) => {
-            // For numbers, prefer integer if possible, otherwise use string representation
-            // The FHIRPath engine will handle type coercion as needed
-            if let Some(i) = n.as_i64() {
-                EvaluationResult::integer(i)
-            } else {
-                // For decimals/floats, convert to string - the engine will parse as needed
-                EvaluationResult::string(n.to_string())
-            }
-        }
-        JsonValue::String(s) => EvaluationResult::string(s.clone()),
-        JsonValue::Array(arr) => {
-            let items = arr.iter().map(json_to_evaluation_result).collect();
-            EvaluationResult::collection(items)
-        }
-        JsonValue::Object(obj) => {
-            let mut map = HashMap::new();
-            for (key, val) in obj {
-                map.insert(key.clone(), json_to_evaluation_result(val));
-            }
-            EvaluationResult::object(map)
-        }
     }
 }
 
@@ -383,14 +352,9 @@ impl FhirValidator {
     ///
     /// Creates a variables map containing `%rootResource` which is required
     /// for evaluating constraints like `ref-1` that reference contained resources.
-    fn prepare_constraint_variables(
-        root_resource: &JsonValue,
-    ) -> HashMap<String, EvaluationResult> {
+    fn prepare_constraint_variables(root_resource: &JsonValue) -> HashMap<String, Arc<JsonValue>> {
         let mut variables = HashMap::with_capacity(1);
-        variables.insert(
-            "rootResource".to_string(),
-            json_to_evaluation_result(root_resource),
-        );
+        variables.insert("rootResource".to_string(), Arc::new(root_resource.clone()));
         variables
     }
 
@@ -883,7 +847,7 @@ impl FhirValidator {
         &self,
         data: &JsonValue,
         constraints: &[compiled::CompiledConstraint],
-        variables: &HashMap<String, EvaluationResult>,
+        variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
         path: &str,
     ) {
@@ -902,13 +866,11 @@ impl FhirValidator {
             }
 
             match evaluator
-                .evaluate_with_variables(&constraint.expression, data, variables)
+                .evaluate_constraint_with_variables(&constraint.expression, data, variables)
                 .await
             {
-                Ok(result) => {
-                    // Per FHIR spec: empty result = satisfied, only Boolean(false) = violation
-                    let violated = matches!(result, EvaluationResult::Boolean(false, _));
-                    if violated {
+                Ok(satisfied) => {
+                    if !satisfied {
                         errors.push(ValidationError {
                             error_type: FhirSchemaErrorCode::ConstraintViolation.to_string(),
                             path: self.path_to_vec(path),
@@ -957,7 +919,7 @@ impl FhirValidator {
         &self,
         data: &JsonValue,
         schema: &CompiledSchema,
-        variables: &HashMap<String, EvaluationResult>,
+        variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
         path: &str,
     ) {
@@ -994,7 +956,7 @@ impl FhirValidator {
         &self,
         value: &JsonValue,
         element: &compiled::CompiledElement,
-        variables: &HashMap<String, EvaluationResult>,
+        variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
         path: &str,
     ) {
@@ -1019,7 +981,7 @@ impl FhirValidator {
         &self,
         value: &JsonValue,
         element: &compiled::CompiledElement,
-        variables: &HashMap<String, EvaluationResult>,
+        variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
         path: &str,
     ) {
