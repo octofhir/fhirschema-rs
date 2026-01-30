@@ -1,6 +1,6 @@
 [package]
 name = "octofhir-fhirschema"
-version = "0.3.14"
+version = "0.3.15"
 edition = "2024"
 authors = ["OctoFHIR Team<funyloony@gmail.com>"]
 description = "FHIR schema conversion and validation library"
