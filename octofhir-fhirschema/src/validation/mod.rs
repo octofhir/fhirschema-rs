@@ -859,6 +859,9 @@ impl FhirValidator {
             return;
         }
 
+        // Wrap data in Arc once — shared across all constraint evaluations at this level
+        let data_arc = Arc::new(data.clone());
+
         for constraint in constraints {
             // Skip warning constraints
             if constraint.severity == compiled::ConstraintSeverity::Warning {
@@ -866,7 +869,11 @@ impl FhirValidator {
             }
 
             match evaluator
-                .evaluate_constraint_with_variables(&constraint.expression, data, variables)
+                .evaluate_constraint_with_variables(
+                    &constraint.expression,
+                    data_arc.clone(),
+                    variables,
+                )
                 .await
             {
                 Ok(satisfied) => {

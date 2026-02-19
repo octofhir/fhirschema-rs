@@ -178,9 +178,9 @@ impl FhirSchemaValidationProvider {
             return Ok(true);
         }
 
-        // Validate all constraints using FHIRPath evaluator
+        // Validate all constraints using FHIRPath evaluator (Arc avoids deep clone)
         let result = evaluator
-            .validate_constraints(resource, &constraints)
+            .validate_constraints(Arc::new(resource.clone()), &constraints)
             .await?;
 
         Ok(result.is_valid)

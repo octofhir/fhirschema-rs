@@ -2085,9 +2085,9 @@ dependencies = [
 
 [[package]]
 name = "octofhir-fhir-model"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e92e2b5411f2eec13efb8b9345cf4c1bef6a9036750ff5b9ccf1e696655f555c"
+checksum = "10272e2894f12aa15fc666e0c2cd1830775fe2d4eb6bcb24fb9501ea4d9ea25c"
 dependencies = [
  "async-trait",
  "indexmap",
@@ -2104,7 +2104,7 @@ dependencies = [
 
 [[package]]
 name = "octofhir-fhirschema"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "async-recursion",
  "async-trait",

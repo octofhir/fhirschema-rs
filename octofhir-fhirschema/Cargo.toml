@@ -1,6 +1,6 @@
 [package]
 name = "octofhir-fhirschema"
-version = "0.3.16"
+version = "0.3.17"
 edition = "2024"
 authors = ["OctoFHIR Team<funyloony@gmail.com>"]
 description = "FHIR schema conversion and validation library"
@@ -24,7 +24,7 @@ moka = { version = "0.12", features = ["future"] }
 futures = "0.3"
 
 # FHIR dependencies
-octofhir-fhir-model = { version = "0.1.9", features = ["caching", "http-client"] }
+octofhir-fhir-model = { version = "0.1.10", features = ["caching", "http-client"] }
 octofhir-canonical-manager = { version = "0.1.24", features = ["cli"]}
 
 [dev-dependencies]
