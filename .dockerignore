@@ -1,0 +1,7 @@
+target/
+.git/
+docs/
+spec/
+schemas/
+*.log
+.DS_Store

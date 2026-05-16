@@ -22,9 +22,62 @@ use crate::terminology::TerminologyService;
 use crate::types::{FhirSchema, FhirSchemaSlicing, ValidationError, ValidationResult};
 use async_trait::async_trait;
 use octofhir_fhir_model::FhirPathEvaluator;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+// FHIR R4 primitive type regexes (anchored full-match)
+// Source: https://www.hl7.org/fhir/R4/datatypes.html
+const INT32_MIN: i64 = -2_147_483_648;
+const INT32_MAX: i64 = 2_147_483_647;
+
+static RE_DATE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)(-(0[1-9]|1[0-2])(-(0[1-9]|[1-2][0-9]|3[0-1]))?)?$").unwrap()
+});
+static RE_DATETIME: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)(-(0[1-9]|1[0-2])(-(0[1-9]|[1-2][0-9]|3[0-1])(T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\.[0-9]{1,9})?(Z|[+\-]((0[0-9]|1[0-3]):[0-5][0-9]|14:00)))?)?)?$").unwrap()
+});
+static RE_INSTANT: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\.[0-9]{1,9})?(Z|[+\-]((0[0-9]|1[0-3]):[0-5][0-9]|14:00))$").unwrap()
+});
+static RE_TIME: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\.[0-9]{1,9})?$").unwrap()
+});
+static RE_CODE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[^\s]+(\s[^\s]+)*$").unwrap());
+static RE_ID: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9\-\.]{1,64}$").unwrap());
+static RE_OID: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^urn:oid:[0-2](\.(0|[1-9][0-9]*))+$").unwrap());
+static RE_UUID: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"^urn:uuid:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+    )
+    .unwrap()
+});
+static RE_BASE64: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(\s*[0-9a-zA-Z+/=]\s*){4,}$").unwrap());
+
+/// Calendar validity for a FHIR date/dateTime/instant date portion. Accepts
+/// partial dates (`YYYY`, `YYYY-MM`) — only `YYYY-MM-DD` triggers a day-level
+/// check (e.g. rejects `2024-02-31`, `2023-02-29`).
+fn is_valid_calendar_date(s: &str) -> bool {
+    if s.len() < 10 {
+        return true;
+    }
+    let year: i32 = match s[0..4].parse() {
+        Ok(y) => y,
+        Err(_) => return false,
+    };
+    let month: u32 = match s[5..7].parse() {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let day: u32 = match s[8..10].parse() {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    chrono::NaiveDate::from_ymd_opt(year, month, day).is_some()
+}
 
 // =============================================================================
 // Schema Provider Trait for Lazy/Async Schema Loading
@@ -150,6 +203,7 @@ pub enum FhirSchemaErrorCode {
     CardinalityViolation = 1011,
     BindingViolation = 1012,
     ReferenceTypeViolation = 1013,
+    InvalidValue = 1014,
 }
 
 impl std::fmt::Display for FhirSchemaErrorCode {
@@ -168,6 +222,7 @@ impl std::fmt::Display for FhirSchemaErrorCode {
             FhirSchemaErrorCode::CardinalityViolation => write!(f, "FS1011"),
             FhirSchemaErrorCode::BindingViolation => write!(f, "FS1012"),
             FhirSchemaErrorCode::ReferenceTypeViolation => write!(f, "FS1013"),
+            FhirSchemaErrorCode::InvalidValue => write!(f, "FS1014"),
         }
     }
 }
@@ -307,12 +362,20 @@ impl FhirValidator {
         // Prepare constraint variables once (includes %rootResource)
         let variables = Self::prepare_constraint_variables(resource);
 
+        // Start FHIRPath expressions at the resource's resourceType (e.g. "Patient",
+        // "Parameters") so issue.expression matches the FHIRPath spec.
+        let root_path: std::string::String = resource
+            .get("resourceType")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+
         for schema_name in &schema_names {
             // Get or compile schema (single cache lookup)
             match self.compiler.compile(schema_name).await {
                 Ok(compiled) => {
                     // Phase 1: Structural validation (sync)
-                    self.validate_resource(resource, &compiled, &mut errors, "");
+                    self.validate_resource(resource, &compiled, &mut errors, &root_path);
 
                     // Phase 2: Constraint validation (async)
                     self.validate_constraints_recursive(
@@ -320,9 +383,16 @@ impl FhirValidator {
                         &compiled,
                         &variables,
                         &mut errors,
-                        "",
+                        &root_path,
                     )
                     .await;
+
+                    // Phase 3: Walk the JSON tree and validate every Extension
+                    // against the StructureDefinition referenced by its `url`.
+                    // Covers nested extensions inside `_field` primitive
+                    // extensions too, which the constraint walker skips.
+                    self.validate_extensions_recursive(resource, &mut errors, &root_path)
+                        .await;
                 }
                 Err(e) => {
                     errors.push(ValidationError {
@@ -428,20 +498,42 @@ impl FhirValidator {
             }
 
             // Handle primitive extensions (_element)
-            if key.starts_with('_') {
-                // Primitive extension - validate as Element
-                continue; // For now, skip - can add Element validation later
+            if let Some(sibling) = key.strip_prefix('_') {
+                self.validate_primitive_extension(
+                    sibling,
+                    value,
+                    &schema.elements,
+                    obj,
+                    errors,
+                    path,
+                );
+                continue;
             }
 
-            // Compute element path once for both known and unknown elements
+            // Translate choice variants (e.g. valueBoolean → value.ofType(boolean)) for
+            // FHIRPath-style location strings. Lookup uses raw key; path uses display.
+            let display_key = self.choice_display_key(key, &schema.elements);
             let element_path = if path.is_empty() {
-                key.clone()
+                display_key.clone()
             } else {
-                format!("{}.{}", path, key)
+                format!("{}.{}", path, display_key)
             };
 
+            // Parallel primitive-extension array (`_key`) — used to allow `null`
+            // entries in the value array that are filled by an Element extension.
+            let underscore_arr = obj
+                .get(&format!("_{}", key))
+                .and_then(|v| v.as_array())
+                .map(|v| v.as_slice());
+
             if let Some(element) = schema.elements.get(key) {
-                self.validate_element(value, element, errors, &element_path);
+                self.validate_element_with_underscore(
+                    value,
+                    element,
+                    underscore_arr,
+                    errors,
+                    &element_path,
+                );
             } else {
                 // Check if this is a choice type variant (e.g., valueString for value[x])
                 let is_choice_variant = schema
@@ -449,7 +541,22 @@ impl FhirValidator {
                     .values()
                     .any(|el| el.choices.as_ref().is_some_and(|c| c.contains(key)));
 
-                if !is_choice_variant {
+                if is_choice_variant {
+                    // Validate against the choice variant's element (locate by stem).
+                    if let Some(stem_element) = schema
+                        .elements
+                        .values()
+                        .find(|el| el.choices.as_ref().is_some_and(|c| c.contains(key)))
+                    {
+                        self.validate_element_with_underscore(
+                            value,
+                            stem_element,
+                            underscore_arr,
+                            errors,
+                            &element_path,
+                        );
+                    }
+                } else {
                     errors.push(ValidationError {
                         error_type: FhirSchemaErrorCode::UnknownElement.to_string(),
                         path: self.path_to_vec(&element_path),
@@ -467,11 +574,15 @@ impl FhirValidator {
         }
     }
 
-    /// Validate an element value
-    fn validate_element(
+    /// Validate an element value, with optional access to the parallel
+    /// primitive-extension array (`_field`). `null` entries inside a primitive
+    /// array are allowed only at indices where the parallel `_field[i]` is a
+    /// non-null Element supplying extension content.
+    fn validate_element_with_underscore(
         &self,
         value: &JsonValue,
         element: &CompiledElement,
+        underscore_array: Option<&[JsonValue]>,
         errors: &mut Vec<ValidationError>,
         path: &str,
     ) {
@@ -505,18 +616,87 @@ impl FhirValidator {
         // Handle arrays
         if is_array {
             if let JsonValue::Array(arr) = value {
+                // FHIR JSON: empty arrays are invalid. An absent element is encoded
+                // by omitting the key; `[]` is not allowed.
+                if arr.is_empty() {
+                    errors.push(ValidationError {
+                        error_type: FhirSchemaErrorCode::CardinalityViolation.to_string(),
+                        path: self.path_to_vec(path),
+                        message: Some(format!(
+                            "Array element '{}' must not be empty",
+                            element.name
+                        )),
+                        value: None,
+                        expected: None,
+                        got: None,
+                        schema_path: None,
+                        constraint_key: None,
+                        constraint_expression: None,
+                        constraint_severity: None,
+                    });
+                    return;
+                }
+
                 // Validate slicing if defined
                 if let Some(slicing) = &element.slicing {
                     self.validate_slicing(arr, slicing, errors, path);
                 }
 
-                // Validate each item
+                // Validate each item. `null` is only valid in parallel primitive-extension
+                // arrays (`_field`); inside a regular value array it is invalid unless
+                // the parallel `_field` array supplies a non-null Element at the same
+                // index (extension-fill pattern).
                 for (i, item) in arr.iter().enumerate() {
                     let item_path = format!("{}[{}]", path, i);
+                    if item.is_null() {
+                        // null is allowed only when the parallel `_field[i]` is an
+                        // Element that actually provides content (extension or any
+                        // key beyond `id`). `{id: "x"}` alone violates ele-1 and
+                        // does not "fill" the null value position.
+                        let ext_fill = underscore_array
+                            .and_then(|arr| arr.get(i))
+                            .and_then(|v| v.as_object())
+                            .is_some_and(|obj| obj.keys().any(|k| k != "id"));
+                        if ext_fill {
+                            continue;
+                        }
+                        errors.push(ValidationError {
+                            error_type: FhirSchemaErrorCode::WrongType.to_string(),
+                            path: self.path_to_vec(&item_path),
+                            message: Some(format!(
+                                "null entries are not allowed in '{}' array",
+                                element.name
+                            )),
+                            value: None,
+                            expected: None,
+                            got: Some(JsonValue::String("null".to_string())),
+                            schema_path: None,
+                            constraint_key: None,
+                            constraint_expression: None,
+                            constraint_severity: None,
+                        });
+                        continue;
+                    }
                     self.validate_element_value(item, element, errors, &item_path);
                 }
             }
         } else {
+            // `null` for a non-array element is invalid.
+            if value.is_null() {
+                errors.push(ValidationError {
+                    error_type: FhirSchemaErrorCode::WrongType.to_string(),
+                    path: self.path_to_vec(path),
+                    message: Some(format!("Element '{}' must not be null", element.name)),
+                    value: None,
+                    expected: None,
+                    got: Some(JsonValue::String("null".to_string())),
+                    schema_path: None,
+                    constraint_key: None,
+                    constraint_expression: None,
+                    constraint_severity: None,
+                });
+                return;
+            }
             self.validate_element_value(value, element, errors, path);
         }
     }
@@ -561,9 +741,13 @@ impl FhirValidator {
     ) {
         use compiled::PrimitiveType::*;
 
-        let valid = match ptype {
+        // 1. JSON-level type check
+        let type_ok = match ptype {
             Boolean => value.is_boolean(),
-            Integer | Integer64 | UnsignedInt | PositiveInt => value.is_i64() || value.is_u64(),
+            Integer | Integer64 | UnsignedInt | PositiveInt => {
+                // JSON numbers; reject decimal/floats here (only allowed via is_i64/is_u64)
+                value.is_i64() || value.is_u64()
+            }
             Decimal => value.is_number(),
             String | Uri | Url | Canonical | Code | Oid | Id | Markdown | Uuid | Xhtml => {
                 value.is_string()
@@ -572,7 +756,7 @@ impl FhirValidator {
             Instant | Date | DateTime | Time => value.is_string(),
         };
 
-        if !valid {
+        if !type_ok {
             errors.push(ValidationError {
                 error_type: FhirSchemaErrorCode::WrongType.to_string(),
                 path: self.path_to_vec(path),
@@ -584,6 +768,142 @@ impl FhirValidator {
                 value: None,
                 expected: Some(JsonValue::String(ptype.as_str().to_string())),
                 got: Some(JsonValue::String(self.json_type_name(value).to_string())),
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+            return;
+        }
+
+        // 2. FHIR-specific format / range validation
+        let format_err: Option<std::string::String> = match ptype {
+            Boolean => None,
+            Integer => {
+                let n = value.as_i64().or_else(|| value.as_u64().map(|u| u as i64));
+                match n {
+                    Some(n) if (INT32_MIN..=INT32_MAX).contains(&n) => None,
+                    _ => Some(format!("integer out of 32-bit range: {}", value)),
+                }
+            }
+            UnsignedInt => match value.as_i64().or_else(|| value.as_u64().map(|u| u as i64)) {
+                Some(n) if (0..=INT32_MAX).contains(&n) => None,
+                _ => Some(format!("unsignedInt out of range [0, 2^31-1]: {}", value)),
+            },
+            PositiveInt => match value.as_i64().or_else(|| value.as_u64().map(|u| u as i64)) {
+                Some(n) if (1..=INT32_MAX).contains(&n) => None,
+                _ => Some(format!("positiveInt out of range [1, 2^31-1]: {}", value)),
+            },
+            Integer64 => None,
+            Decimal => {
+                // serde_json::Number always parses as valid number; spec regex enforces no leading
+                // zeros etc but we lean on JSON parser. Skip extra regex here.
+                None
+            }
+            String | Markdown | Xhtml => {
+                let s = value.as_str().unwrap_or("");
+                if s.is_empty() {
+                    Some(format!("{} must not be empty", ptype.as_str()))
+                } else {
+                    None
+                }
+            }
+            Uri | Url | Canonical => {
+                let s = value.as_str().unwrap_or("");
+                if s.is_empty() {
+                    Some(format!("{} must not be empty", ptype.as_str()))
+                } else {
+                    None
+                }
+            }
+            Code => {
+                let s = value.as_str().unwrap_or("");
+                if !RE_CODE.is_match(s) {
+                    Some(format!("code does not match FHIR regex: {:?}", s))
+                } else {
+                    None
+                }
+            }
+            Id => {
+                let s = value.as_str().unwrap_or("");
+                if !RE_ID.is_match(s) {
+                    Some(format!("id does not match FHIR regex: {:?}", s))
+                } else {
+                    None
+                }
+            }
+            Oid => {
+                let s = value.as_str().unwrap_or("");
+                if !RE_OID.is_match(s) {
+                    Some(format!("oid does not match FHIR regex: {:?}", s))
+                } else {
+                    None
+                }
+            }
+            Uuid => {
+                let s = value.as_str().unwrap_or("");
+                if !RE_UUID.is_match(s) {
+                    Some(format!("uuid does not match FHIR regex: {:?}", s))
+                } else {
+                    None
+                }
+            }
+            Base64Binary => {
+                let s = value.as_str().unwrap_or("");
+                if !RE_BASE64.is_match(s) {
+                    Some(format!("base64Binary does not match FHIR regex: {:?}", s))
+                } else {
+                    None
+                }
+            }
+            Date => {
+                let s = value.as_str().unwrap_or("");
+                if !RE_DATE.is_match(s) {
+                    Some(format!("date does not match FHIR regex: {:?}", s))
+                } else if !is_valid_calendar_date(s) {
+                    Some(format!("date is not a valid calendar date: {:?}", s))
+                } else {
+                    None
+                }
+            }
+            DateTime => {
+                let s = value.as_str().unwrap_or("");
+                if !RE_DATETIME.is_match(s) {
+                    Some(format!("dateTime does not match FHIR regex: {:?}", s))
+                } else if !is_valid_calendar_date(&s[..s.len().min(10)]) {
+                    Some(format!("dateTime is not a valid calendar date: {:?}", s))
+                } else {
+                    None
+                }
+            }
+            Instant => {
+                let s = value.as_str().unwrap_or("");
+                if !RE_INSTANT.is_match(s) {
+                    Some(format!("instant does not match FHIR regex: {:?}", s))
+                } else if !is_valid_calendar_date(&s[..10]) {
+                    Some(format!("instant is not a valid calendar date: {:?}", s))
+                } else {
+                    None
+                }
+            }
+            Time => {
+                let s = value.as_str().unwrap_or("");
+                if !RE_TIME.is_match(s) {
+                    Some(format!("time does not match FHIR regex: {:?}", s))
+                } else {
+                    None
+                }
+            }
+        };
+
+        if let Some(msg) = format_err {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::InvalidValue.to_string(),
+                path: self.path_to_vec(path),
+                message: Some(msg),
+                value: Some(value.clone()),
+                expected: Some(JsonValue::String(ptype.as_str().to_string())),
+                got: None,
                 schema_path: None,
                 constraint_key: None,
                 constraint_expression: None,
@@ -616,23 +936,74 @@ impl FhirValidator {
             return;
         };
 
+        // FHIR ele-1: complex element must have meaningful content. An object with
+        // no entries (or only `id`) violates the constraint and is rejected here so
+        // we produce a stable issue location even without FHIRPath constraint eval.
+        let meaningful = obj.keys().any(|k| k != "id");
+        if !meaningful {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::ConstraintViolation.to_string(),
+                path: self.path_to_vec(path),
+                message: Some("Element must have content (constraint ele-1)".to_string()),
+                value: None,
+                expected: None,
+                got: None,
+                schema_path: None,
+                constraint_key: Some("ele-1".to_string()),
+                constraint_expression: Some(
+                    "hasValue() or (children().count() > id.count())".to_string(),
+                ),
+                constraint_severity: Some("error".to_string()),
+            });
+            return;
+        }
+
         // Validate each property
         for (key, val) in obj {
-            // Skip primitive extensions
-            if key.starts_with('_') {
+            // Primitive extensions (`_field`): validate shape against the matching
+            // sibling primitive element.
+            if let Some(sibling) = key.strip_prefix('_') {
+                self.validate_primitive_extension(sibling, val, children, obj, errors, path);
                 continue;
             }
 
-            let element_path = format!("{}.{}", path, key);
+            let display_key = self.choice_display_key(key, children);
+            let element_path = format!("{}.{}", path, display_key);
+
+            let underscore_arr = obj
+                .get(&format!("_{}", key))
+                .and_then(|v| v.as_array())
+                .map(|v| v.as_slice());
 
             if let Some(element) = children.get(key) {
-                self.validate_element(val, element, errors, &element_path);
+                self.validate_element_with_underscore(
+                    val,
+                    element,
+                    underscore_arr,
+                    errors,
+                    &element_path,
+                );
             } else {
                 // Check for choice type variants
                 let is_choice = children
                     .values()
                     .any(|el| el.choices.as_ref().is_some_and(|c| c.contains(key)));
 
+                if is_choice {
+                    if let Some(stem_element) = children
+                        .values()
+                        .find(|el| el.choices.as_ref().is_some_and(|c| c.contains(key)))
+                    {
+                        self.validate_element_with_underscore(
+                            val,
+                            stem_element,
+                            underscore_arr,
+                            errors,
+                            &element_path,
+                        );
+                    }
+                    continue;
+                }
                 if !is_choice && key != "extension" && key != "id" {
                     errors.push(ValidationError {
                         error_type: FhirSchemaErrorCode::UnknownElement.to_string(),
@@ -822,6 +1193,222 @@ impl FhirValidator {
         }
     }
 
+    /// Validate a primitive extension property `_field`. `sibling` is the
+    /// stripped key (e.g. `"active"` for `_active`). The matching schema
+    /// element must exist, be primitive, and the value must be Element-shaped
+    /// (object for scalars, array of object|null for repeating primitives).
+    fn validate_primitive_extension(
+        &self,
+        sibling: &str,
+        value: &JsonValue,
+        elements: &HashMap<std::string::String, CompiledElement>,
+        _parent_obj: &serde_json::Map<std::string::String, JsonValue>,
+        errors: &mut Vec<ValidationError>,
+        parent_path: &str,
+    ) {
+        let underscore_path = if parent_path.is_empty() {
+            format!("_{}", sibling)
+        } else {
+            format!("{}._{}", parent_path, sibling)
+        };
+        let display_path = if parent_path.is_empty() {
+            self.choice_display_key(sibling, elements)
+        } else {
+            format!(
+                "{}.{}",
+                parent_path,
+                self.choice_display_key(sibling, elements)
+            )
+        };
+
+        // Find the sibling element: direct lookup, then choice variant.
+        let element_opt: Option<&CompiledElement> = elements.get(sibling).or_else(|| {
+            elements.values().find(|el| {
+                el.choices
+                    .as_ref()
+                    .is_some_and(|c| c.iter().any(|k| k == sibling))
+            })
+        });
+
+        let Some(element) = element_opt else {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::UnknownElement.to_string(),
+                path: self.path_to_vec(&underscore_path),
+                message: Some(format!(
+                    "Primitive extension '_{}' has no matching sibling element",
+                    sibling
+                )),
+                value: None,
+                expected: None,
+                got: None,
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+            return;
+        };
+
+        // _field is only valid on primitive elements.
+        if !matches!(element.type_info, CompiledTypeInfo::Primitive(_)) {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::WrongType.to_string(),
+                path: self.path_to_vec(&display_path),
+                message: Some(format!(
+                    "Primitive extension '_{}' only valid on primitive elements",
+                    sibling
+                )),
+                value: None,
+                expected: None,
+                got: None,
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+            return;
+        }
+
+        // Shape check: array primitive expects array of Element|null;
+        // scalar primitive expects a single Element object.
+        if element.is_array {
+            let JsonValue::Array(arr) = value else {
+                errors.push(ValidationError {
+                    error_type: FhirSchemaErrorCode::ExpectedArray.to_string(),
+                    path: self.path_to_vec(&display_path),
+                    message: Some(format!(
+                        "_{} must be an array (sibling primitive is repeating)",
+                        sibling
+                    )),
+                    value: None,
+                    expected: Some(JsonValue::String("array".to_string())),
+                    got: Some(JsonValue::String(self.json_type_name(value).to_string())),
+                    schema_path: None,
+                    constraint_key: None,
+                    constraint_expression: None,
+                    constraint_severity: None,
+                });
+                return;
+            };
+            for (i, item) in arr.iter().enumerate() {
+                let item_path = format!("{}[{}]", display_path, i);
+                if item.is_null() {
+                    continue;
+                }
+                self.validate_element_object(item, &item_path, errors);
+            }
+        } else {
+            if value.is_array() {
+                errors.push(ValidationError {
+                    error_type: FhirSchemaErrorCode::UnexpectedArray.to_string(),
+                    path: self.path_to_vec(&display_path),
+                    message: Some(format!(
+                        "_{} must be an Element object, not an array (sibling primitive is scalar)",
+                        sibling
+                    )),
+                    value: None,
+                    expected: Some(JsonValue::String("object".to_string())),
+                    got: Some(JsonValue::String("array".to_string())),
+                    schema_path: None,
+                    constraint_key: None,
+                    constraint_expression: None,
+                    constraint_severity: None,
+                });
+                return;
+            }
+            self.validate_element_object(value, &display_path, errors);
+        }
+    }
+
+    /// Validate a JSON value as a FHIR Element (object with optional id /
+    /// extension). Rejects non-objects and unknown keys.
+    fn validate_element_object(
+        &self,
+        value: &JsonValue,
+        path: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let JsonValue::Object(obj) = value else {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::WrongType.to_string(),
+                path: self.path_to_vec(path),
+                message: Some("Element subpart must be an object with id/extension".to_string()),
+                value: None,
+                expected: Some(JsonValue::String("object".to_string())),
+                got: Some(JsonValue::String(self.json_type_name(value).to_string())),
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+            return;
+        };
+        if obj.is_empty() {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::ConstraintViolation.to_string(),
+                path: self.path_to_vec(path),
+                message: Some("Element subpart must have content (id or extension)".to_string()),
+                value: None,
+                expected: None,
+                got: None,
+                schema_path: None,
+                constraint_key: Some("ele-1".to_string()),
+                constraint_expression: Some(
+                    "hasValue() or (children().count() > id.count())".to_string(),
+                ),
+                constraint_severity: Some("error".to_string()),
+            });
+            return;
+        }
+        for k in obj.keys() {
+            if k != "id" && k != "extension" {
+                errors.push(ValidationError {
+                    error_type: FhirSchemaErrorCode::UnknownElement.to_string(),
+                    path: self.path_to_vec(path),
+                    message: Some(format!(
+                        "Unknown key '{}' in Element (allowed: id, extension)",
+                        k
+                    )),
+                    value: None,
+                    expected: None,
+                    got: None,
+                    schema_path: None,
+                    constraint_key: None,
+                    constraint_expression: None,
+                    constraint_severity: None,
+                });
+            }
+        }
+    }
+
+    /// FHIRPath display for a choice variant element: `valueBoolean` →
+    /// `value.ofType(boolean)`. Returns the input key unchanged if it isn't a
+    /// choice variant of any element in `elements`.
+    fn choice_display_key(
+        &self,
+        key: &str,
+        elements: &HashMap<std::string::String, CompiledElement>,
+    ) -> std::string::String {
+        for el in elements.values() {
+            if let Some(choices) = el.choices.as_ref()
+                && choices.iter().any(|c| c == key)
+                && let Some(suffix) = key.strip_prefix(el.name.as_str())
+                && !suffix.is_empty()
+            {
+                let mut chars = suffix.chars();
+                if let Some(first) = chars.next() {
+                    let lower_first = first.to_ascii_lowercase();
+                    let mut lower_type: std::string::String =
+                        std::string::String::with_capacity(suffix.len());
+                    lower_type.push(lower_first);
+                    lower_type.push_str(chars.as_str());
+                    return format!("{}.ofType({})", el.name, lower_type);
+                }
+            }
+        }
+        key.to_string()
+    }
+
     /// Get JSON type name for error messages
     fn json_type_name(&self, value: &JsonValue) -> &'static str {
         match value {
@@ -996,6 +1583,9 @@ impl FhirValidator {
         self.validate_constraints(value, &element.constraints, variables, errors, path)
             .await;
 
+        // Validate required ValueSet bindings via the terminology service.
+        self.validate_binding(value, element, errors, path).await;
+
         // Recurse into children for complex types
         if let JsonValue::Object(obj) = value {
             for (key, child_value) in obj {
@@ -1013,6 +1603,208 @@ impl FhirValidator {
                         &child_path,
                     )
                     .await;
+                }
+            }
+        }
+    }
+
+    /// Walk the resource JSON and validate every Extension against the
+    /// StructureDefinition referenced by `extension.url`. Each Extension's
+    /// `value[x]` choice is checked against the profile's allowed choice
+    /// variants; mismatches emit `WrongType` errors. Missing/unresolvable
+    /// profiles are silently ignored to avoid noise when packages are partial.
+    #[async_recursion::async_recursion]
+    async fn validate_extensions_recursive(
+        &self,
+        value: &JsonValue,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        match value {
+            JsonValue::Object(obj) => {
+                if let Some(JsonValue::Array(exts)) = obj.get("extension") {
+                    for (i, ext) in exts.iter().enumerate() {
+                        let ext_path = format!("{}.extension[{}]", path, i);
+                        self.validate_one_extension(ext, errors, &ext_path).await;
+                    }
+                }
+                for (k, v) in obj {
+                    let child_path = if path.is_empty() {
+                        k.clone()
+                    } else if k.starts_with('_') {
+                        // Underscore-prefixed fields live alongside their
+                        // primitive sibling — keep them in the path verbatim
+                        // so nested extension expressions are unambiguous.
+                        format!("{}.{}", path, k)
+                    } else {
+                        format!("{}.{}", path, k)
+                    };
+                    self.validate_extensions_recursive(v, errors, &child_path)
+                        .await;
+                }
+            }
+            JsonValue::Array(arr) => {
+                for (i, item) in arr.iter().enumerate() {
+                    let item_path = format!("{}[{}]", path, i);
+                    self.validate_extensions_recursive(item, errors, &item_path)
+                        .await;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Validate a single Extension object against its profile's `value[x]`
+    /// choice constraint. Pulls the profile via the configured SchemaProvider.
+    async fn validate_one_extension(
+        &self,
+        ext: &JsonValue,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        let JsonValue::Object(obj) = ext else { return };
+        let Some(url) = obj.get("url").and_then(|v| v.as_str()) else {
+            return;
+        };
+
+        // Profile not loadable (unknown URL, registry incomplete, transport
+        // failure) — bail silently rather than emit noise. Catalog coverage is
+        // owned by the SchemaProvider implementation.
+        let Ok(compiled) = self.compiler.compile(url).await else {
+            return;
+        };
+
+        // Find the value[x] element in the profile. The element is keyed as
+        // `"value"` (FHIR choice stem) and carries `choices: Some([...])` with
+        // the allowed `valueXxx` variants.
+        let Some(value_element) = compiled.elements.get("value") else {
+            return;
+        };
+        if value_element.choices.is_none() {
+            return;
+        }
+        let allowed: &[std::string::String] = value_element.choices.as_deref().unwrap_or(&[]);
+
+        // Identify which valueXxx key the extension uses, if any.
+        let mut used: Option<&str> = None;
+        for k in obj.keys() {
+            if k.starts_with("value") && k.len() > "value".len() {
+                used = Some(k.as_str());
+                break;
+            }
+        }
+        let Some(used_key) = used else { return };
+
+        if !allowed.iter().any(|a| a == used_key) {
+            let allowed_list = allowed.join(", ");
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::WrongType.to_string(),
+                path: self.path_to_vec(&format!("{}.{}", path, used_key)),
+                message: Some(format!(
+                    "Extension {} does not allow {}; allowed value[x]: [{}]",
+                    url, used_key, allowed_list
+                )),
+                value: None,
+                expected: Some(JsonValue::String(allowed_list)),
+                got: Some(JsonValue::String(used_key.to_string())),
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: Some("error".to_string()),
+            });
+        }
+    }
+
+    /// Validate a code value against its bound ValueSet via the configured
+    /// `TerminologyService`. Only `required` bindings trigger a hard error
+    /// here; weaker strengths (extensible/preferred/example) are advisory and
+    /// left to other checks. If no terminology service is configured, this
+    /// silently no-ops — callers wire one via `with_terminology_service`.
+    async fn validate_binding(
+        &self,
+        value: &JsonValue,
+        element: &compiled::CompiledElement,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        let Some(binding) = &element.binding else {
+            return;
+        };
+        if !matches!(binding.strength, compiled::BindingStrength::Required) {
+            return;
+        }
+        let Some(terminology) = self.terminology_service.as_ref() else {
+            return;
+        };
+
+        // Resolve (code, system) pairs from the element's actual shape.
+        // - primitive `code`: value is a JSON string, no system
+        // - `Coding`: { system?, code? }
+        // - `CodeableConcept`: { coding: [{ system?, code? }, ...] }
+        let mut codes: Vec<(
+            std::string::String,
+            Option<std::string::String>,
+            std::string::String,
+        )> = Vec::new();
+        match value {
+            JsonValue::String(s) => codes.push((s.clone(), None, path.to_string())),
+            JsonValue::Object(obj) => {
+                if let Some(JsonValue::Array(arr)) = obj.get("coding") {
+                    for (i, c) in arr.iter().enumerate() {
+                        if let JsonValue::Object(cobj) = c {
+                            let code = cobj
+                                .get("code")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string);
+                            let system = cobj
+                                .get("system")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string);
+                            if let Some(code) = code {
+                                let p = format!("{}.coding[{}]", path, i);
+                                codes.push((code, system, p));
+                            }
+                        }
+                    }
+                } else if let Some(code) = obj.get("code").and_then(|v| v.as_str()) {
+                    let system = obj
+                        .get("system")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    codes.push((code.to_string(), system, path.to_string()));
+                }
+            }
+            _ => return,
+        }
+
+        for (code, system, code_path) in codes {
+            match terminology
+                .validate_code(&binding.value_set, &code, system.as_deref())
+                .await
+            {
+                Ok(result) if !result.valid => {
+                    let msg = format!(
+                        "Code '{}' is not valid in required ValueSet {}",
+                        code, binding.value_set
+                    );
+                    errors.push(ValidationError {
+                        error_type: FhirSchemaErrorCode::BindingViolation.to_string(),
+                        path: self.path_to_vec(&code_path),
+                        message: Some(msg),
+                        value: Some(JsonValue::String(code.clone())),
+                        expected: Some(JsonValue::String(binding.value_set.clone())),
+                        got: Some(JsonValue::String(code.clone())),
+                        schema_path: None,
+                        constraint_key: None,
+                        constraint_expression: None,
+                        constraint_severity: Some("error".to_string()),
+                    });
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    // Lookup failure (unknown ValueSet, transport error, etc.): leave
+                    // as advisory rather than hard error to avoid false negatives when
+                    // the terminology backend is incomplete.
                 }
             }
         }

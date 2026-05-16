@@ -256,6 +256,20 @@ impl SchemaCompiler {
             result.refers = overlay.refers.clone();
         }
 
+        // Overlay choice restrictions — profiles use this to narrow value[x] to
+        // a single concrete type (e.g. humanname-own-prefix → ["valueString"]).
+        // Without this, the base Extension.value choices list survives and any
+        // valueXxx variant is accepted.
+        if overlay.choices.is_some() {
+            result.choices = overlay.choices.clone();
+        }
+
+        // Overlay type narrowing (similar idea: profile may declare an explicit
+        // type on what was a generic Element).
+        if overlay.type_name.is_some() {
+            result.type_name = overlay.type_name.clone();
+        }
+
         // Merge nested elements
         if let Some(overlay_nested) = &overlay.elements {
             let mut nested = result.elements.unwrap_or_default();
