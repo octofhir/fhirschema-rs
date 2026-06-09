@@ -204,6 +204,7 @@ pub enum FhirSchemaErrorCode {
     BindingViolation = 1012,
     ReferenceTypeViolation = 1013,
     InvalidValue = 1014,
+    ReferenceNotFound = 1015,
 }
 
 impl std::fmt::Display for FhirSchemaErrorCode {
@@ -223,6 +224,7 @@ impl std::fmt::Display for FhirSchemaErrorCode {
             FhirSchemaErrorCode::BindingViolation => write!(f, "FS1012"),
             FhirSchemaErrorCode::ReferenceTypeViolation => write!(f, "FS1013"),
             FhirSchemaErrorCode::InvalidValue => write!(f, "FS1014"),
+            FhirSchemaErrorCode::ReferenceNotFound => write!(f, "FS1015"),
         }
     }
 }
@@ -411,10 +413,75 @@ impl FhirValidator {
             }
         }
 
+        // Phase 4: Reference existence validation (async, optional).
+        // Runs only when a reference resolver is configured. Every Reference that
+        // carries a literal `reference` string is checked for target existence;
+        // contained (`#id`), `urn:`, and external references resolve as skipped
+        // (treated as existing) by the resolver, so only genuinely-missing local
+        // references are reported. Referential integrity is required by the FHIR
+        // spec for servers that enforce it.
+        if let Some(resolver) = &self.reference_resolver {
+            let mut references: Vec<(String, String)> = Vec::new();
+            Self::collect_references(resource, &root_path, &mut references);
+            for (ref_path, reference) in references {
+                match resolver.resolve_reference(&reference).await {
+                    Ok(result) if !result.exists => {
+                        errors.push(ValidationError {
+                            error_type: FhirSchemaErrorCode::ReferenceNotFound.to_string(),
+                            path: self.path_to_vec(&ref_path),
+                            message: Some(format!(
+                                "Referenced resource '{reference}' does not exist"
+                            )),
+                            value: Some(JsonValue::String(reference.clone())),
+                            expected: None,
+                            got: Some(JsonValue::String(reference)),
+                            schema_path: None,
+                            constraint_key: None,
+                            constraint_expression: None,
+                            constraint_severity: Some("error".to_string()),
+                        });
+                    }
+                    // Found, skipped (external/contained), or a transient resolver
+                    // error: do not hard-fail on lookup failures to avoid false
+                    // negatives when the backend is unavailable.
+                    _ => {}
+                }
+            }
+        }
+
         ValidationResult {
             valid: errors.is_empty(),
             errors,
             warnings: vec![],
+        }
+    }
+
+    /// Recursively collect every literal Reference (`{ "reference": "Type/id" }`)
+    /// in a resource as `(json_path, reference_string)` pairs. Logical references
+    /// (identifier-only) are skipped because they cannot be existence-checked.
+    fn collect_references(
+        value: &JsonValue,
+        path: &str,
+        out: &mut Vec<(std::string::String, std::string::String)>,
+    ) {
+        match value {
+            JsonValue::Object(obj) => {
+                if let Some(JsonValue::String(reference)) = obj.get("reference") {
+                    out.push((format!("{path}.reference"), reference.clone()));
+                }
+                for (key, child) in obj {
+                    if key == "reference" {
+                        continue;
+                    }
+                    Self::collect_references(child, &format!("{path}.{key}"), out);
+                }
+            }
+            JsonValue::Array(arr) => {
+                for (idx, child) in arr.iter().enumerate() {
+                    Self::collect_references(child, &format!("{path}[{idx}]"), out);
+                }
+            }
+            _ => {}
         }
     }
 
