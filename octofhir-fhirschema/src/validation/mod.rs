@@ -359,6 +359,25 @@ impl FhirValidator {
         resource: &JsonValue,
         schema_names: Vec<String>,
     ) -> ValidationResult {
+        self.validate_with_known_references(resource, schema_names, None)
+            .await
+    }
+
+    /// Validate a resource, treating a set of references as already existing.
+    ///
+    /// `known_references` is a set of literal `Type/id` reference strings that
+    /// should be considered to exist even if the storage-backed resolver cannot
+    /// find them yet. This is required for FHIR `transaction` Bundles: a resource
+    /// may reference a sibling that is created in the same Bundle and is therefore
+    /// not yet committed to storage when this resource is validated. Without it,
+    /// reference existence validation (Phase 4) would reject every intra-Bundle
+    /// reference. Passing `None` is equivalent to `validate`.
+    pub async fn validate_with_known_references(
+        &self,
+        resource: &JsonValue,
+        schema_names: Vec<String>,
+        known_references: Option<&std::collections::HashSet<String>>,
+    ) -> ValidationResult {
         let mut errors = Vec::new();
 
         // Prepare constraint variables once (includes %rootResource)
@@ -423,8 +442,26 @@ impl FhirValidator {
         if let Some(resolver) = &self.reference_resolver {
             let mut references: Vec<(String, String)> = Vec::new();
             Self::collect_references(resource, &root_path, &mut references);
-            for (ref_path, reference) in references {
-                match resolver.resolve_reference(&reference).await {
+            // Drop references that point to resources created/updated elsewhere in
+            // the same transaction Bundle. They are not in storage yet but will be
+            // after commit, so treat them as existing instead of false-rejecting.
+            if let Some(known) = known_references {
+                references.retain(|(_, reference)| !known.contains(reference));
+            }
+            // Resolve all references concurrently. Each resolution is an
+            // independent backend round-trip (e.g. a storage existence check);
+            // running them sequentially serialized N round-trips (and N pool
+            // checkouts) per resource, which dominated write latency for
+            // reference-heavy resources like ExplanationOfBenefit. join_all
+            // overlaps them so the cost is ~one round-trip instead of N.
+            let resolutions = futures::future::join_all(
+                references
+                    .iter()
+                    .map(|(_, reference)| resolver.resolve_reference(reference)),
+            )
+            .await;
+            for ((ref_path, reference), result) in references.into_iter().zip(resolutions) {
+                match result {
                     Ok(result) if !result.exists => {
                         errors.push(ValidationError {
                             error_type: FhirSchemaErrorCode::ReferenceNotFound.to_string(),
@@ -1504,6 +1541,10 @@ impl FhirValidator {
         variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
         path: &str,
+        // When the caller already holds an `Arc<JsonValue>` for `data` (the
+        // resource root reuses the `%rootResource` Arc), pass it to avoid a
+        // redundant deep clone of the whole resource. `None` => clone.
+        data_arc_hint: Option<Arc<JsonValue>>,
     ) {
         let Some(evaluator) = &self.fhirpath_evaluator else {
             return;
@@ -1514,7 +1555,7 @@ impl FhirValidator {
         }
 
         // Wrap data in Arc once — shared across all constraint evaluations at this level
-        let data_arc = Arc::new(data.clone());
+        let data_arc = data_arc_hint.unwrap_or_else(|| Arc::new(data.clone()));
 
         for constraint in constraints {
             // Skip warning constraints
@@ -1584,8 +1625,11 @@ impl FhirValidator {
         errors: &mut Vec<ValidationError>,
         path: &str,
     ) {
-        // Validate schema-level constraints
-        self.validate_constraints(data, &schema.constraints, variables, errors, path)
+        // Validate schema-level constraints. `data` is the resource root, which
+        // is also stored as the `%rootResource` variable — reuse that Arc to
+        // skip a full deep clone of the resource.
+        let root_arc = variables.get("rootResource").cloned();
+        self.validate_constraints(data, &schema.constraints, variables, errors, path, root_arc)
             .await;
 
         // Validate element-level constraints
@@ -1647,7 +1691,7 @@ impl FhirValidator {
         path: &str,
     ) {
         // Validate element-level constraints
-        self.validate_constraints(value, &element.constraints, variables, errors, path)
+        self.validate_constraints(value, &element.constraints, variables, errors, path, None)
             .await;
 
         // Validate required ValueSet bindings via the terminology service.
