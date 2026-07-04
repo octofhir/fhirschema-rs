@@ -32,14 +32,12 @@ async fn fetch_with_cache(url: &str, cache_name: &str) -> Result<String, String>
     let cache_path = cache_dir.join(cache_name);
 
     // Check if cache exists and is recent (within 7 days)
-    if let Ok(metadata) = fs::metadata(&cache_path) {
-        if let Ok(modified) = metadata.modified() {
-            if modified.elapsed().unwrap_or(Duration::MAX) < Duration::from_secs(7 * 24 * 60 * 60) {
-                if let Ok(content) = fs::read_to_string(&cache_path) {
-                    return Ok(content);
-                }
-            }
-        }
+    if let Ok(metadata) = fs::metadata(&cache_path)
+        && let Ok(modified) = metadata.modified()
+        && modified.elapsed().unwrap_or(Duration::MAX) < Duration::from_secs(7 * 24 * 60 * 60)
+        && let Ok(content) = fs::read_to_string(&cache_path)
+    {
+        return Ok(content);
     }
 
     // Fetch from URL
@@ -119,7 +117,7 @@ impl OfficialTestSummary {
         if !self.failures.is_empty() && self.failures.len() <= 10 {
             println!("\nFirst failures:");
             for (name, errors) in self.failures.iter().take(5) {
-                println!("  - {}: {:?}", name, errors.get(0));
+                println!("  - {}: {:?}", name, errors.first());
             }
         }
     }
@@ -388,7 +386,7 @@ async fn test_embedded_official_examples() {
                 "  [FAIL] {} - {} errors: {:?}",
                 name,
                 errors.len(),
-                errors.get(0)
+                errors.first()
             );
             summary.add_fail(name, errors);
         }

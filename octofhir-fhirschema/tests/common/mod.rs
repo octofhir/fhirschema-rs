@@ -36,17 +36,16 @@ pub fn load_all_fixtures(dir: &str) -> Vec<(String, Value)> {
     if let Ok(entries) = fs::read_dir(&full_path) {
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "json") {
-                if let Ok(content) = fs::read_to_string(&path) {
-                    if let Ok(value) = serde_json::from_str::<Value>(&content) {
-                        let name = path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        fixtures.push((name, value));
-                    }
-                }
+            if path.extension().is_some_and(|ext| ext == "json")
+                && let Ok(content) = fs::read_to_string(&path)
+                && let Ok(value) = serde_json::from_str::<Value>(&content)
+            {
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                fixtures.push((name, value));
             }
         }
     }

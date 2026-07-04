@@ -69,6 +69,11 @@ pub struct CompiledElement {
     pub max: Option<i32>,
     /// Nested elements (for complex types, inlined from type schema)
     pub children: HashMap<String, CompiledElement>,
+    /// `contentReference` target path, if this element reuses another element's
+    /// definition (e.g. `QuestionnaireResponse.item.item` -> the root `item`).
+    /// Stored as the transformer's segment path `[url, "elements", name, ...]`;
+    /// resolved against the root schema during validation.
+    pub element_reference: Option<Vec<String>>,
     /// Binding info for coded elements
     pub binding: Option<CompiledBinding>,
     /// Reference target types (for Reference elements)
@@ -98,6 +103,7 @@ impl Default for CompiledElement {
             min: 0,
             max: None,
             children: HashMap::new(),
+            element_reference: None,
             binding: None,
             reference_targets: None,
             constraints: Vec::new(),

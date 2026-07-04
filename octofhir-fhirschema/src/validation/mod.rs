@@ -13,9 +13,11 @@
 
 pub mod compiled;
 pub mod compiler;
+pub mod questionnaire;
 
 pub use compiled::*;
 pub use compiler::*;
+pub use questionnaire::{QrStrictness, QuestionnaireProvider};
 
 use crate::reference::ReferenceResolver;
 use crate::terminology::TerminologyService;
@@ -205,6 +207,7 @@ pub enum FhirSchemaErrorCode {
     ReferenceTypeViolation = 1013,
     InvalidValue = 1014,
     ReferenceNotFound = 1015,
+    QuestionnaireViolation = 1016,
 }
 
 impl std::fmt::Display for FhirSchemaErrorCode {
@@ -225,6 +228,7 @@ impl std::fmt::Display for FhirSchemaErrorCode {
             FhirSchemaErrorCode::ReferenceTypeViolation => write!(f, "FS1013"),
             FhirSchemaErrorCode::InvalidValue => write!(f, "FS1014"),
             FhirSchemaErrorCode::ReferenceNotFound => write!(f, "FS1015"),
+            FhirSchemaErrorCode::QuestionnaireViolation => write!(f, "FS1016"),
         }
     }
 }
@@ -267,6 +271,11 @@ pub struct FhirValidator {
     terminology_service: Option<Arc<dyn TerminologyService>>,
     /// Optional reference resolver for existence validation
     reference_resolver: Option<Arc<dyn ReferenceResolver>>,
+    /// Optional provider that resolves `Questionnaire` canonicals so a
+    /// `QuestionnaireResponse` can be validated against its form definition.
+    questionnaire_provider: Option<Arc<dyn questionnaire::QuestionnaireProvider>>,
+    /// Which QuestionnaireResponse convention checks to enforce.
+    questionnaire_strictness: questionnaire::QrStrictness,
 }
 
 impl FhirValidator {
@@ -277,6 +286,8 @@ impl FhirValidator {
             fhirpath_evaluator: None,
             terminology_service: None,
             reference_resolver: None,
+            questionnaire_provider: None,
+            questionnaire_strictness: questionnaire::QrStrictness::default(),
         }
     }
 
@@ -290,6 +301,8 @@ impl FhirValidator {
             fhirpath_evaluator: Some(fhirpath_evaluator),
             terminology_service: None,
             reference_resolver: None,
+            questionnaire_provider: None,
+            questionnaire_strictness: questionnaire::QrStrictness::default(),
         }
     }
 
@@ -350,6 +363,26 @@ impl FhirValidator {
         self
     }
 
+    /// Add a Questionnaire provider so a `QuestionnaireResponse` is validated
+    /// against its referenced `Questionnaire`.
+    pub fn with_questionnaire_provider(
+        mut self,
+        provider: Arc<dyn questionnaire::QuestionnaireProvider>,
+    ) -> Self {
+        self.questionnaire_provider = Some(provider);
+        self
+    }
+
+    /// Set which QuestionnaireResponse convention checks to enforce (unknown
+    /// linkId, required-missing, disabled-answered). Defaults to normative-only.
+    pub fn with_questionnaire_strictness(
+        mut self,
+        strictness: questionnaire::QrStrictness,
+    ) -> Self {
+        self.questionnaire_strictness = strictness;
+        self
+    }
+
     /// Validate a resource against its resourceType schema.
     ///
     /// Performs both structural validation and FHIRPath constraint validation.
@@ -379,9 +412,17 @@ impl FhirValidator {
         known_references: Option<&std::collections::HashSet<String>>,
     ) -> ValidationResult {
         let mut errors = Vec::new();
+        let mut warnings = Vec::new();
 
         // Prepare constraint variables once (includes %rootResource)
         let variables = Self::prepare_constraint_variables(resource);
+
+        // Memo of FHIRPath constraint results for this resource, shared across
+        // every schema in `schema_names`. Overlapping profiles (base type +
+        // meta.profile snapshot) repeat the same invariants at the same paths;
+        // this evaluates each `(path, expression)` once. Errors are still
+        // emitted per schema, so output is unchanged.
+        let mut constraint_cache: HashMap<String, bool> = HashMap::new();
 
         // Start FHIRPath expressions at the resource's resourceType (e.g. "Patient",
         // "Parameters") so issue.expression matches the FHIRPath spec.
@@ -391,10 +432,12 @@ impl FhirValidator {
             .map(|s| s.to_string())
             .unwrap_or_default();
 
+        let mut any_schema_compiled = false;
         for schema_name in &schema_names {
             // Get or compile schema (single cache lookup)
             match self.compiler.compile(schema_name).await {
                 Ok(compiled) => {
+                    any_schema_compiled = true;
                     // Phase 1: Structural validation (sync)
                     self.validate_resource(resource, &compiled, &mut errors, &root_path);
 
@@ -405,18 +448,20 @@ impl FhirValidator {
                         &variables,
                         &mut errors,
                         &root_path,
+                        &mut constraint_cache,
                     )
                     .await;
-
-                    // Phase 3: Walk the JSON tree and validate every Extension
-                    // against the StructureDefinition referenced by its `url`.
-                    // Covers nested extensions inside `_field` primitive
-                    // extensions too, which the constraint walker skips.
-                    self.validate_extensions_recursive(resource, &mut errors, &root_path)
-                        .await;
                 }
                 Err(e) => {
-                    errors.push(ValidationError {
+                    // An unresolvable profile canonical (e.g. a `meta.profile`
+                    // pointing at a StructureDefinition from a package that is
+                    // not loaded) is non-fatal per the FHIR spec: the resource is
+                    // still validated against every schema that did resolve, and
+                    // the unresolved profile is reported as a warning rather than
+                    // failing validity. Only an unresolvable base type (a plain
+                    // resourceType name, never a URL) is a hard error.
+                    let is_profile_canonical = schema_name.contains("://");
+                    let issue = ValidationError {
                         error_type: FhirSchemaErrorCode::UnknownSchema.to_string(),
                         path: vec![],
                         message: Some(e.message),
@@ -426,10 +471,47 @@ impl FhirValidator {
                         schema_path: None,
                         constraint_key: None,
                         constraint_expression: None,
-                        constraint_severity: None,
-                    });
+                        constraint_severity: Some(if is_profile_canonical {
+                            "warning".to_string()
+                        } else {
+                            "error".to_string()
+                        }),
+                    };
+                    if is_profile_canonical {
+                        warnings.push(issue);
+                    } else {
+                        errors.push(issue);
+                    }
                 }
             }
+        }
+
+        // Phase 3: Walk the JSON tree and validate every Extension against the
+        // StructureDefinition referenced by its `url`. Covers nested extensions
+        // inside `_field` primitive extensions too, which the constraint walker
+        // skips. Extension validation is schema-independent (it resolves each
+        // extension's own profile by URL), so run it once regardless of how many
+        // schemas were validated — but only when at least one schema compiled,
+        // matching the previous behavior of running inside the schema loop.
+        if any_schema_compiled {
+            self.validate_extensions_recursive(resource, &mut errors, &root_path)
+                .await;
+        }
+
+        // Phase 3b: QuestionnaireResponse-against-Questionnaire validation.
+        // When the resource is a QuestionnaireResponse and its Questionnaire can
+        // be resolved (contained `#id` or via the configured provider), the
+        // answers are checked against the form definition (answer types,
+        // group/display/repeats, answerOption membership).
+        if resource.get("resourceType").and_then(|v| v.as_str()) == Some("QuestionnaireResponse")
+            && let Some(questionnaire) = self.resolve_questionnaire(resource).await
+        {
+            questionnaire::validate_questionnaire_response(
+                resource,
+                &questionnaire,
+                self.questionnaire_strictness,
+                &mut errors,
+            );
         }
 
         // Phase 4: Reference existence validation (async, optional).
@@ -489,8 +571,33 @@ impl FhirValidator {
         ValidationResult {
             valid: errors.is_empty(),
             errors,
-            warnings: vec![],
+            warnings,
         }
+    }
+
+    /// Resolve the `Questionnaire` a `QuestionnaireResponse` answers, either
+    /// from a contained resource (`questionnaire: "#id"`) or via the configured
+    /// `QuestionnaireProvider` (a canonical URL, optionally `|version`). Returns
+    /// `None` when it cannot be resolved, so form-based checks are skipped
+    /// rather than reported as failures.
+    async fn resolve_questionnaire(&self, qr: &JsonValue) -> Option<Arc<JsonValue>> {
+        let canonical = qr.get("questionnaire").and_then(|v| v.as_str())?;
+
+        if let Some(id) = canonical.strip_prefix('#') {
+            let contained = qr.get("contained").and_then(|v| v.as_array())?;
+            return contained
+                .iter()
+                .find(|c| {
+                    c.get("resourceType").and_then(|v| v.as_str()) == Some("Questionnaire")
+                        && c.get("id").and_then(|v| v.as_str()) == Some(id)
+                })
+                .map(|c| Arc::new(c.clone()));
+        }
+
+        self.questionnaire_provider
+            .as_ref()?
+            .resolve(canonical)
+            .await
     }
 
     /// Recursively collect every literal Reference (`{ "reference": "Type/id" }`)
@@ -637,6 +744,7 @@ impl FhirValidator {
                     underscore_arr,
                     errors,
                     &element_path,
+                    &schema.elements,
                 );
             } else {
                 // Check if this is a choice type variant (e.g., valueString for value[x])
@@ -658,6 +766,7 @@ impl FhirValidator {
                             underscore_arr,
                             errors,
                             &element_path,
+                            &schema.elements,
                         );
                     }
                 } else {
@@ -689,6 +798,9 @@ impl FhirValidator {
         underscore_array: Option<&[JsonValue]>,
         errors: &mut Vec<ValidationError>,
         path: &str,
+        // Root schema elements, used to resolve `contentReference` targets when
+        // descending into elements that reuse another element's definition.
+        root: &HashMap<String, CompiledElement>,
     ) {
         // Array check
         let is_array = value.is_array();
@@ -781,7 +893,7 @@ impl FhirValidator {
                         });
                         continue;
                     }
-                    self.validate_element_value(item, element, errors, &item_path);
+                    self.validate_element_value(item, element, errors, &item_path, root);
                 }
             }
         } else {
@@ -801,7 +913,7 @@ impl FhirValidator {
                 });
                 return;
             }
-            self.validate_element_value(value, element, errors, path);
+            self.validate_element_value(value, element, errors, path, root);
         }
     }
 
@@ -812,14 +924,26 @@ impl FhirValidator {
         element: &CompiledElement,
         errors: &mut Vec<ValidationError>,
         path: &str,
+        root: &HashMap<String, CompiledElement>,
     ) {
         match &element.type_info {
             CompiledTypeInfo::Primitive(ptype) => {
                 self.validate_primitive(value, *ptype, errors, path);
             }
             CompiledTypeInfo::Complex | CompiledTypeInfo::BackboneElement => {
-                // Recursively validate using inlined children
-                self.validate_complex(value, &element.children, errors, path);
+                // Recursively validate using inlined children. When the element
+                // reuses another element's definition via `contentReference`
+                // (its own children are empty), resolve the target element from
+                // the root schema and validate against its children instead.
+                let children = if element.children.is_empty()
+                    && let Some(target) =
+                        Self::resolve_element_reference(root, element.element_reference.as_deref())
+                {
+                    &target.children
+                } else {
+                    &element.children
+                };
+                self.validate_complex(value, children, errors, path, root);
             }
             CompiledTypeInfo::Reference => {
                 self.validate_reference(value, &element.reference_targets, errors, path);
@@ -1023,6 +1147,7 @@ impl FhirValidator {
         children: &HashMap<String, CompiledElement>,
         errors: &mut Vec<ValidationError>,
         path: &str,
+        root: &HashMap<String, CompiledElement>,
     ) {
         let JsonValue::Object(obj) = value else {
             errors.push(ValidationError {
@@ -1086,6 +1211,7 @@ impl FhirValidator {
                     underscore_arr,
                     errors,
                     &element_path,
+                    root,
                 );
             } else {
                 // Check for choice type variants
@@ -1104,6 +1230,7 @@ impl FhirValidator {
                             underscore_arr,
                             errors,
                             &element_path,
+                            root,
                         );
                     }
                     continue;
@@ -1284,6 +1411,35 @@ impl FhirValidator {
             return choices.iter().any(|choice| obj.contains_key(choice));
         }
         false
+    }
+
+    /// Resolve a `contentReference` target to the element it reuses.
+    ///
+    /// `reference` is the transformer's segment path, `[url, "elements", name,
+    /// "elements", name, ...]`. The names after each `"elements"` marker form a
+    /// path from the root schema elements, descending through `children`. Used
+    /// for self-referential structures such as `QuestionnaireResponse.item.item`.
+    fn resolve_element_reference<'a>(
+        root: &'a HashMap<String, CompiledElement>,
+        reference: Option<&[String]>,
+    ) -> Option<&'a CompiledElement> {
+        let reference = reference?;
+        let mut names = Vec::new();
+        let mut it = reference.iter();
+        it.next(); // skip the leading resource/type url
+        while let Some(seg) = it.next() {
+            if seg == "elements"
+                && let Some(name) = it.next()
+            {
+                names.push(name.as_str());
+            }
+        }
+        let (first, rest) = names.split_first()?;
+        let mut current = root.get(*first)?;
+        for name in rest {
+            current = current.children.get(*name)?;
+        }
+        Some(current)
     }
 
     /// Convert path string to vector for ValidationError
@@ -1534,6 +1690,7 @@ impl FhirValidator {
     /// Evaluates all error-severity constraints using the configured FHIRPath evaluator.
     /// Warning-severity constraints are skipped. If no evaluator is configured,
     /// constraint validation is skipped entirely.
+    #[allow(clippy::too_many_arguments)]
     async fn validate_constraints(
         &self,
         data: &JsonValue,
@@ -1545,6 +1702,15 @@ impl FhirValidator {
         // resource root reuses the `%rootResource` Arc), pass it to avoid a
         // redundant deep clone of the whole resource. `None` => clone.
         data_arc_hint: Option<Arc<JsonValue>>,
+        // Per-validate memo of `(path, expression) -> satisfied`. The same
+        // FHIRPath invariant is evaluated once per resource walk and reused
+        // across overlapping schemas (e.g. base `Patient` and a
+        // `us-core-patient` profile whose snapshot repeats the base
+        // constraints). Same path == same data node and variables are constant
+        // within a `validate` call, so the result is deterministic. Error
+        // output is unchanged — every schema still emits its own error on a
+        // cached failure; only the recompute is skipped.
+        cache: &mut HashMap<String, bool>,
     ) {
         let Some(evaluator) = &self.fhirpath_evaluator else {
             return;
@@ -1554,49 +1720,92 @@ impl FhirValidator {
             return;
         }
 
-        // Wrap data in Arc once — shared across all constraint evaluations at this level
-        let data_arc = data_arc_hint.unwrap_or_else(|| Arc::new(data.clone()));
+        let make_key = |expr: &str| {
+            let mut key = String::with_capacity(path.len() + 1 + expr.len());
+            key.push_str(path);
+            key.push('\u{1f}');
+            key.push_str(expr);
+            key
+        };
 
+        // Pass 1: gather the distinct, not-yet-cached constraint expressions at
+        // this level. Warnings are skipped (never evaluated or reported).
+        // Deduplicating by `(path, expression)` collapses the identical
+        // invariants that overlapping schema snapshots repeat, and lets the
+        // whole level be evaluated against a single shared FHIRPath context.
+        let mut data_arc: Option<Arc<JsonValue>> = data_arc_hint;
+        let mut pending_keys: HashMap<String, ()> = HashMap::new();
+        let mut pending: Vec<(String, &str)> = Vec::new();
         for constraint in constraints {
-            // Skip warning constraints
             if constraint.severity == compiled::ConstraintSeverity::Warning {
                 continue;
             }
+            let key = make_key(&constraint.expression);
+            if cache.contains_key(&key) {
+                continue;
+            }
+            if pending_keys.insert(key.clone(), ()).is_none() {
+                pending.push((key, constraint.expression.as_str()));
+            }
+        }
 
+        // Evaluate the pending expressions once against a shared context: the
+        // FHIRPath data model for `data` and the `%rootResource` variable are
+        // built a single time and reused for every expression at this level,
+        // instead of rebuilt per constraint. Per-expression semantics are
+        // unchanged (empty / non-boolean / true => satisfied). Evaluation
+        // errors stay isolated to the offending expression.
+        let mut eval_errors: HashMap<String, String> = HashMap::new();
+        if !pending.is_empty() {
+            let arc = data_arc
+                .get_or_insert_with(|| Arc::new(data.clone()))
+                .clone();
+            let exprs: Vec<&str> = pending.iter().map(|(_, e)| *e).collect();
             match evaluator
-                .evaluate_constraint_with_variables(
-                    &constraint.expression,
-                    data_arc.clone(),
-                    variables,
-                )
+                .evaluate_constraints_shared_context(arc, variables, &exprs)
                 .await
             {
-                Ok(satisfied) => {
-                    if !satisfied {
-                        errors.push(ValidationError {
-                            error_type: FhirSchemaErrorCode::ConstraintViolation.to_string(),
-                            path: self.path_to_vec(path),
-                            message: Some(format!(
-                                "Constraint '{}' failed: {}",
-                                constraint.key, constraint.human
-                            )),
-                            value: None,
-                            expected: None,
-                            got: None,
-                            schema_path: None,
-                            constraint_key: Some(constraint.key.clone()),
-                            constraint_expression: Some(constraint.expression.clone()),
-                            constraint_severity: Some("error".to_string()),
-                        });
+                Ok(results) => {
+                    for ((key, _), res) in pending.iter().zip(results) {
+                        match res {
+                            Ok(satisfied) => {
+                                cache.insert(key.clone(), satisfied);
+                            }
+                            Err(e) => {
+                                eval_errors.insert(key.clone(), e.to_string());
+                            }
+                        }
                     }
                 }
                 Err(e) => {
+                    // The shared context could not be built. Mark every pending
+                    // expression as an evaluation failure, matching the previous
+                    // per-constraint behavior where the same build ran (and
+                    // would have failed) for each constraint.
+                    let msg = e.to_string();
+                    for (key, _) in &pending {
+                        eval_errors.insert(key.clone(), msg.clone());
+                    }
+                }
+            }
+        }
+
+        // Pass 2: emit errors in original constraint order, so output is
+        // identical to per-constraint evaluation. Each constraint reports with
+        // its own key/human text even when it shares an expression with another.
+        for constraint in constraints {
+            if constraint.severity == compiled::ConstraintSeverity::Warning {
+                continue;
+            }
+            let key = make_key(&constraint.expression);
+            if let Some(&satisfied) = cache.get(&key) {
+                if !satisfied {
                     errors.push(ValidationError {
                         error_type: FhirSchemaErrorCode::ConstraintViolation.to_string(),
                         path: self.path_to_vec(path),
                         message: Some(format!(
-                            "Constraint '{}' evaluation failed: {}",
-                            constraint.key, e
+                            "Constraint '{}' failed: {}",
+                            constraint.key, constraint.human
                         )),
                         value: None,
                         expected: None,
@@ -1607,6 +1816,22 @@ impl FhirValidator {
                         constraint_severity: Some("error".to_string()),
                     });
                 }
+            } else if let Some(err_msg) = eval_errors.get(&key) {
+                errors.push(ValidationError {
+                    error_type: FhirSchemaErrorCode::ConstraintViolation.to_string(),
+                    path: self.path_to_vec(path),
+                    message: Some(format!(
+                        "Constraint '{}' evaluation failed: {}",
+                        constraint.key, err_msg
+                    )),
+                    value: None,
+                    expected: None,
+                    got: None,
+                    schema_path: None,
+                    constraint_key: Some(constraint.key.clone()),
+                    constraint_expression: Some(constraint.expression.clone()),
+                    constraint_severity: Some("error".to_string()),
+                });
             }
         }
     }
@@ -1624,13 +1849,22 @@ impl FhirValidator {
         variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
         path: &str,
+        cache: &mut HashMap<String, bool>,
     ) {
         // Validate schema-level constraints. `data` is the resource root, which
         // is also stored as the `%rootResource` variable — reuse that Arc to
         // skip a full deep clone of the resource.
         let root_arc = variables.get("rootResource").cloned();
-        self.validate_constraints(data, &schema.constraints, variables, errors, path, root_arc)
-            .await;
+        self.validate_constraints(
+            data,
+            &schema.constraints,
+            variables,
+            errors,
+            path,
+            root_arc,
+            cache,
+        )
+        .await;
 
         // Validate element-level constraints
         let JsonValue::Object(obj) = data else {
@@ -1649,8 +1883,15 @@ impl FhirValidator {
                     format!("{}.{}", path, key)
                 };
 
-                self.validate_element_constraints(value, element, variables, errors, &element_path)
-                    .await;
+                self.validate_element_constraints(
+                    value,
+                    element,
+                    variables,
+                    errors,
+                    &element_path,
+                    cache,
+                )
+                .await;
             }
         }
     }
@@ -1664,19 +1905,22 @@ impl FhirValidator {
         variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
         path: &str,
+        cache: &mut HashMap<String, bool>,
     ) {
         // Handle arrays
         if let JsonValue::Array(arr) = value {
             for (i, item) in arr.iter().enumerate() {
                 let item_path = format!("{}[{}]", path, i);
                 self.validate_single_element_constraints(
-                    item, element, variables, errors, &item_path,
+                    item, element, variables, errors, &item_path, cache,
                 )
                 .await;
             }
         } else {
-            self.validate_single_element_constraints(value, element, variables, errors, path)
-                .await;
+            self.validate_single_element_constraints(
+                value, element, variables, errors, path, cache,
+            )
+            .await;
         }
     }
 
@@ -1689,10 +1933,19 @@ impl FhirValidator {
         variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
         path: &str,
+        cache: &mut HashMap<String, bool>,
     ) {
         // Validate element-level constraints
-        self.validate_constraints(value, &element.constraints, variables, errors, path, None)
-            .await;
+        self.validate_constraints(
+            value,
+            &element.constraints,
+            variables,
+            errors,
+            path,
+            None,
+            cache,
+        )
+        .await;
 
         // Validate required ValueSet bindings via the terminology service.
         self.validate_binding(value, element, errors, path).await;
@@ -1712,6 +1965,7 @@ impl FhirValidator {
                         variables,
                         errors,
                         &child_path,
+                        cache,
                     )
                     .await;
                 }

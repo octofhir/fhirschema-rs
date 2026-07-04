@@ -257,6 +257,80 @@ impl ValidationProvider for FhirSchemaValidationProvider {
     }
 }
 
+/// Create a ValidationProvider from an existing EmbeddedModelProvider
+/// This reuses the already initialized provider and its schemas
+pub async fn create_validation_provider_from_embedded(
+    embedded_provider: Arc<dyn ModelProvider>,
+) -> ModelResult<Arc<dyn ValidationProvider>> {
+    let model_fhir_version = embedded_provider.get_fhir_version().await?;
+    let fhir_version = match model_fhir_version {
+        ModelFhirVersion::R4 => FhirVersion::R4,
+        ModelFhirVersion::R4B => FhirVersion::R4B,
+        ModelFhirVersion::R5 => FhirVersion::R5,
+        ModelFhirVersion::R6 => FhirVersion::R6,
+        ModelFhirVersion::Custom { .. } => FhirVersion::R4,
+    };
+    let validation_context = create_validation_context(fhir_version);
+
+    // The EmbeddedModelProvider internally uses FhirSchemaModelProvider with embedded schemas
+    // We extract those same schemas to create our ValidationProvider
+    let validation_provider =
+        FhirSchemaValidationProvider::from_embedded_provider(embedded_provider, validation_context)
+            .await?;
+
+    Ok(Arc::new(validation_provider))
+}
+
+/// Create a ValidationProvider from an existing DynamicModelProvider
+/// This reuses the already initialized provider and its schemas
+pub async fn create_validation_provider_from_dynamic(
+    dynamic_provider: Arc<dyn ModelProvider>,
+) -> ModelResult<Arc<dyn ValidationProvider>> {
+    let model_fhir_version = dynamic_provider.get_fhir_version().await?;
+    let fhir_version = match model_fhir_version {
+        ModelFhirVersion::R4 => FhirVersion::R4,
+        ModelFhirVersion::R4B => FhirVersion::R4B,
+        ModelFhirVersion::R5 => FhirVersion::R5,
+        ModelFhirVersion::R6 => FhirVersion::R6,
+        ModelFhirVersion::Custom { .. } => FhirVersion::R4,
+    };
+    let validation_context = create_validation_context(fhir_version);
+
+    // The DynamicModelProvider internally uses FhirSchemaModelProvider with dynamic schemas
+    // We extract those same schemas to create our ValidationProvider
+    let validation_provider =
+        FhirSchemaValidationProvider::from_dynamic_provider(dynamic_provider, validation_context)
+            .await?;
+
+    Ok(Arc::new(validation_provider))
+}
+
+/// Create a ValidationProvider with FHIRPath constraint support
+///
+/// This creates a validation provider that can evaluate FHIRPath constraints
+/// in addition to structural schema validation.
+pub async fn create_validation_provider_with_fhirpath(
+    model_provider: Arc<dyn ModelProvider>,
+    fhirpath_evaluator: Arc<dyn FhirPathEvaluator>,
+) -> ModelResult<Arc<dyn ValidationProvider>> {
+    let model_fhir_version = model_provider.get_fhir_version().await?;
+    let fhir_version = match model_fhir_version {
+        ModelFhirVersion::R4 => FhirVersion::R4,
+        ModelFhirVersion::R4B => FhirVersion::R4B,
+        ModelFhirVersion::R5 => FhirVersion::R5,
+        ModelFhirVersion::R6 => FhirVersion::R6,
+        ModelFhirVersion::Custom { .. } => FhirVersion::R4,
+    };
+    let validation_context = create_validation_context(fhir_version);
+
+    let validation_provider =
+        FhirSchemaValidationProvider::from_embedded_provider(model_provider, validation_context)
+            .await?
+            .with_fhirpath_evaluator(fhirpath_evaluator);
+
+    Ok(Arc::new(validation_provider))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,78 +410,4 @@ mod tests {
             "ValidationProvider should handle requests gracefully"
         );
     }
-}
-
-/// Create a ValidationProvider from an existing EmbeddedModelProvider
-/// This reuses the already initialized provider and its schemas
-pub async fn create_validation_provider_from_embedded(
-    embedded_provider: Arc<dyn ModelProvider>,
-) -> ModelResult<Arc<dyn ValidationProvider>> {
-    let model_fhir_version = embedded_provider.get_fhir_version().await?;
-    let fhir_version = match model_fhir_version {
-        ModelFhirVersion::R4 => FhirVersion::R4,
-        ModelFhirVersion::R4B => FhirVersion::R4B,
-        ModelFhirVersion::R5 => FhirVersion::R5,
-        ModelFhirVersion::R6 => FhirVersion::R6,
-        ModelFhirVersion::Custom { .. } => FhirVersion::R4,
-    };
-    let validation_context = create_validation_context(fhir_version);
-
-    // The EmbeddedModelProvider internally uses FhirSchemaModelProvider with embedded schemas
-    // We extract those same schemas to create our ValidationProvider
-    let validation_provider =
-        FhirSchemaValidationProvider::from_embedded_provider(embedded_provider, validation_context)
-            .await?;
-
-    Ok(Arc::new(validation_provider))
-}
-
-/// Create a ValidationProvider from an existing DynamicModelProvider
-/// This reuses the already initialized provider and its schemas
-pub async fn create_validation_provider_from_dynamic(
-    dynamic_provider: Arc<dyn ModelProvider>,
-) -> ModelResult<Arc<dyn ValidationProvider>> {
-    let model_fhir_version = dynamic_provider.get_fhir_version().await?;
-    let fhir_version = match model_fhir_version {
-        ModelFhirVersion::R4 => FhirVersion::R4,
-        ModelFhirVersion::R4B => FhirVersion::R4B,
-        ModelFhirVersion::R5 => FhirVersion::R5,
-        ModelFhirVersion::R6 => FhirVersion::R6,
-        ModelFhirVersion::Custom { .. } => FhirVersion::R4,
-    };
-    let validation_context = create_validation_context(fhir_version);
-
-    // The DynamicModelProvider internally uses FhirSchemaModelProvider with dynamic schemas
-    // We extract those same schemas to create our ValidationProvider
-    let validation_provider =
-        FhirSchemaValidationProvider::from_dynamic_provider(dynamic_provider, validation_context)
-            .await?;
-
-    Ok(Arc::new(validation_provider))
-}
-
-/// Create a ValidationProvider with FHIRPath constraint support
-///
-/// This creates a validation provider that can evaluate FHIRPath constraints
-/// in addition to structural schema validation.
-pub async fn create_validation_provider_with_fhirpath(
-    model_provider: Arc<dyn ModelProvider>,
-    fhirpath_evaluator: Arc<dyn FhirPathEvaluator>,
-) -> ModelResult<Arc<dyn ValidationProvider>> {
-    let model_fhir_version = model_provider.get_fhir_version().await?;
-    let fhir_version = match model_fhir_version {
-        ModelFhirVersion::R4 => FhirVersion::R4,
-        ModelFhirVersion::R4B => FhirVersion::R4B,
-        ModelFhirVersion::R5 => FhirVersion::R5,
-        ModelFhirVersion::R6 => FhirVersion::R6,
-        ModelFhirVersion::Custom { .. } => FhirVersion::R4,
-    };
-    let validation_context = create_validation_context(fhir_version);
-
-    let validation_provider =
-        FhirSchemaValidationProvider::from_embedded_provider(model_provider, validation_context)
-            .await?
-            .with_fhirpath_evaluator(fhirpath_evaluator);
-
-    Ok(Arc::new(validation_provider))
 }

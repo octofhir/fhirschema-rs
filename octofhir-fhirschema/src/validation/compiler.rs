@@ -384,6 +384,7 @@ impl SchemaCompiler {
             min: element.min.unwrap_or(0),
             max: element.max,
             children,
+            element_reference: element.element_reference.clone(),
             binding,
             reference_targets: element.refers.clone(),
             constraints,

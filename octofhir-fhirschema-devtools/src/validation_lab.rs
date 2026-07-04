@@ -648,16 +648,15 @@ async fn download_java_validator(url: &str, cache_path: &Path) -> Result<()> {
 
 fn load_cases(root: &Path, octofhir_profile_mode: OctofhirProfileMode) -> Result<Vec<FixtureCase>> {
     let mut files = Vec::new();
-    let name_root;
-    if root.is_file() {
+    let name_root = if root.is_file() {
         if root.extension() == Some(OsStr::new("json")) {
             files.push(root.to_path_buf());
         }
-        name_root = root.parent().unwrap_or_else(|| Path::new(""));
+        root.parent().unwrap_or_else(|| Path::new(""))
     } else {
         collect_json_files(root, &mut files)?;
-        name_root = root;
-    }
+        root
+    };
     files.sort();
 
     files
@@ -1064,6 +1063,7 @@ fn ignored_java_message_ids(args: &Args) -> Vec<String> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_java_validator(
     jar: &Path,
     java_user_home: &Path,
@@ -1185,10 +1185,10 @@ fn run_rh_validator(rh_bin: &Path, input: &Path) -> Result<RhRunResult> {
 
 fn extract_json_value(stdout: &str) -> Option<Value> {
     for (idx, ch) in stdout.char_indices() {
-        if ch == '{' {
-            if let Ok(value) = serde_json::from_str::<Value>(&stdout[idx..]) {
-                return Some(value);
-            }
+        if ch == '{'
+            && let Ok(value) = serde_json::from_str::<Value>(&stdout[idx..])
+        {
+            return Some(value);
         }
     }
     None

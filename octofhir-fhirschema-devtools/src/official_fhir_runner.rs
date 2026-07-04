@@ -2,7 +2,10 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use octofhir_fhir_model::provider::FhirVersion as ModelFhirVersion;
 use octofhir_fhirpath::FhirPathEngine;
-use octofhir_fhirschema::{DynamicSchemaProvider, FhirValidator, FhirVersion, get_schemas};
+use octofhir_fhirschema::{
+    DynamicSchemaProvider, FhirSchema, FhirValidator, FhirVersion, StructureDefinition,
+    get_schemas, translate,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -67,6 +70,19 @@ struct Args {
 
     #[arg(long, help = "Exit non-zero if any Java-comparable case disagrees")]
     fail_on_mismatch: bool,
+
+    #[arg(
+        long,
+        help = "Enable required-binding validation via a terminology server (default tx.fhir.org/r4). Off by default (offline)."
+    )]
+    terminology: bool,
+
+    #[arg(
+        long,
+        default_value = "https://tx.fhir.org/r4",
+        help = "Terminology server base URL used when --terminology is set."
+    )]
+    terminology_server: String,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Serialize)]
@@ -239,9 +255,16 @@ async fn main() -> Result<()> {
         OctofhirRunner::Library => None,
         OctofhirRunner::Cli => Some(resolve_octofhir_cli(args.octofhir_cli.as_ref())?),
     };
+    let questionnaire_provider = Arc::new(build_questionnaire_provider(&validator_dir, &manifest));
+    let supporting_schemas = load_supporting_structure_definitions(&validator_dir, &manifest);
     let context = RunContext {
         validator_dir: validator_dir.clone(),
-        validator: create_r4_validator_with_fhirpath().await?,
+        validator: create_r4_validator_with_fhirpath(
+            args.terminology.then(|| args.terminology_server.clone()),
+            Some(questionnaire_provider),
+            supporting_schemas,
+        )
+        .await?,
         current_cli: cli,
         profile_mode: args.octofhir_profile_mode,
         runner: args.runner,
@@ -276,9 +299,9 @@ async fn main() -> Result<()> {
 
     let started = Instant::now();
     let mut cases = Vec::with_capacity(selected.len());
-    for (index, test) in selected.iter().enumerate() {
+    for (index, case) in selected.iter().enumerate() {
         if args.verbose {
-            println!("running {} ({}/{})", test.name, index + 1, selected.len());
+            println!("running {} ({}/{})", case.name, index + 1, selected.len());
         } else if index > 0 && index % 25 == 0 {
             print!(".");
             if index % 250 == 0 {
@@ -286,7 +309,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        let report = run_case(test, &context).await;
+        let report = run_case(case, &context).await;
         if args.verbose {
             print_case_result(&report);
         }
@@ -440,13 +463,13 @@ fn load_manifest(validator_dir: &Path) -> Result<Manifest> {
     serde_json::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))
 }
 
-async fn run_case(test: &TestCase, context: &RunContext) -> CaseReport {
+async fn run_case(case: &TestCase, context: &RunContext) -> CaseReport {
     let started = Instant::now();
-    let expected_valid = test.java_expected_valid(&context.validator_dir);
-    let path = context.validator_dir.join(&test.file);
+    let expected_valid = case.java_expected_valid(&context.validator_dir);
+    let path = context.validator_dir.join(&case.file);
 
     let result = match fs::read_to_string(&path) {
-        Ok(source) => parse_test_resource_json(&source, test)
+        Ok(source) => parse_test_resource_json(&source, case)
             .map_err(|error| format!("JSON parse error: {error}"))
             .and_then(|resource| Ok((resource_type(&resource)?, resource))),
         Err(error) => Err(format!("read error: {error}")),
@@ -458,9 +481,9 @@ async fn run_case(test: &TestCase, context: &RunContext) -> CaseReport {
             let actual_valid = Some(false);
             let mismatch = expected_valid.is_some_and(|expected| expected);
             return CaseReport {
-                name: test.name.clone(),
-                module: test.module.clone(),
-                file: test.file.clone(),
+                name: case.name.clone(),
+                module: case.module.clone(),
+                file: case.file.clone(),
                 expected_valid,
                 actual_valid,
                 passed: !mismatch,
@@ -476,7 +499,7 @@ async fn run_case(test: &TestCase, context: &RunContext) -> CaseReport {
         }
     };
 
-    let schema_names = test.schema_names(&resource, &resource_type, context.profile_mode);
+    let schema_names = case.schema_names(&resource, &resource_type, context.profile_mode);
     let octofhir = match context.runner {
         OctofhirRunner::Library => validate_library(&context.validator, &resource, &schema_names)
             .await
@@ -502,9 +525,9 @@ async fn run_case(test: &TestCase, context: &RunContext) -> CaseReport {
         Ok(actual) => {
             let mismatch = expected_valid.is_some_and(|expected| expected != actual.valid);
             CaseReport {
-                name: test.name.clone(),
-                module: test.module.clone(),
-                file: test.file.clone(),
+                name: case.name.clone(),
+                module: case.module.clone(),
+                file: case.file.clone(),
                 expected_valid,
                 actual_valid: Some(actual.valid),
                 passed: !mismatch,
@@ -519,9 +542,9 @@ async fn run_case(test: &TestCase, context: &RunContext) -> CaseReport {
             }
         }
         Err(error) => CaseReport {
-            name: test.name.clone(),
-            module: test.module.clone(),
-            file: test.file.clone(),
+            name: case.name.clone(),
+            module: case.module.clone(),
+            file: case.file.clone(),
             expected_valid,
             actual_valid: None,
             passed: false,
@@ -559,8 +582,99 @@ async fn validate_library(
     })
 }
 
-async fn create_r4_validator_with_fhirpath() -> Result<FhirValidator> {
-    let schemas = get_schemas(FhirVersion::R4).clone();
+/// In-memory `Questionnaire` resolver built from the manifest `supporting`
+/// files, so a `QuestionnaireResponse` can be validated against its form.
+#[derive(Default)]
+struct MapQuestionnaireProvider {
+    by_url: HashMap<String, Arc<Value>>,
+}
+
+#[async_trait::async_trait]
+impl octofhir_fhirschema::QuestionnaireProvider for MapQuestionnaireProvider {
+    async fn resolve(&self, canonical: &str) -> Option<Arc<Value>> {
+        // Match on the full canonical first, then on the version-stripped URL.
+        if let Some(q) = self.by_url.get(canonical) {
+            return Some(q.clone());
+        }
+        let base = canonical.split('|').next().unwrap_or(canonical);
+        self.by_url.get(base).cloned()
+    }
+}
+
+/// Scan every test case's `supporting` files and index the ones that are
+/// Questionnaires by their canonical `url` (and `url|version`).
+fn build_questionnaire_provider(
+    validator_dir: &Path,
+    manifest: &Manifest,
+) -> MapQuestionnaireProvider {
+    let mut by_url = HashMap::new();
+    for case in &manifest.test_cases {
+        for rel in &case.supporting {
+            let path = validator_dir.join(rel);
+            let Ok(bytes) = fs::read(&path) else { continue };
+            let Ok(json) = serde_json::from_slice::<Value>(&bytes) else {
+                continue;
+            };
+            if json.get("resourceType").and_then(|v| v.as_str()) != Some("Questionnaire") {
+                continue;
+            }
+            if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
+                let url = url.to_string();
+                if let Some(version) = json.get("version").and_then(|v| v.as_str()) {
+                    by_url.insert(format!("{url}|{version}"), Arc::new(json.clone()));
+                }
+                by_url.entry(url).or_insert_with(|| Arc::new(json));
+            }
+        }
+    }
+    MapQuestionnaireProvider { by_url }
+}
+
+/// Translate every `StructureDefinition` referenced as a manifest `supporting`
+/// file into a `FhirSchema` and index it by name + url, so a resource's
+/// `meta.profile` (or a base definition a profile derives from) resolves during
+/// validation instead of failing as an unknown schema.
+fn load_supporting_structure_definitions(
+    validator_dir: &Path,
+    manifest: &Manifest,
+) -> HashMap<String, FhirSchema> {
+    let mut out = HashMap::new();
+    for case in &manifest.test_cases {
+        for rel in &case.supporting {
+            let path = validator_dir.join(rel);
+            let Ok(bytes) = fs::read(&path) else { continue };
+            let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+                continue;
+            };
+            if value.get("resourceType").and_then(Value::as_str) != Some("StructureDefinition") {
+                continue;
+            }
+            let Ok(sd) = serde_json::from_value::<StructureDefinition>(value) else {
+                continue;
+            };
+            let Ok(schema) = translate(sd, None) else {
+                continue;
+            };
+            if !schema.name.is_empty() {
+                out.insert(schema.name.clone(), schema.clone());
+            }
+            if !schema.url.is_empty() {
+                out.insert(schema.url.clone(), schema);
+            }
+        }
+    }
+    out
+}
+
+async fn create_r4_validator_with_fhirpath(
+    terminology_server: Option<String>,
+    questionnaire_provider: Option<Arc<MapQuestionnaireProvider>>,
+    supporting_schemas: HashMap<String, FhirSchema>,
+) -> Result<FhirValidator> {
+    let mut schemas = get_schemas(FhirVersion::R4).clone();
+    // Supporting StructureDefinitions win over embedded ones so a test's own
+    // profile/base definition is used when both are present.
+    schemas.extend(supporting_schemas);
     let model_provider = Arc::new(DynamicSchemaProvider::new(
         schemas.clone(),
         ModelFhirVersion::R4,
@@ -572,7 +686,33 @@ async fn create_r4_validator_with_fhirpath() -> Result<FhirValidator> {
             .context("failed to initialize FHIRPath engine")?,
     );
 
-    Ok(FhirValidator::from_schemas(schemas, Some(fhirpath_engine)))
+    let mut validator = FhirValidator::from_schemas(schemas, Some(fhirpath_engine));
+
+    // Optionally validate required bindings against a terminology server.
+    // Uses the default HTTP terminology provider from octofhir-fhir-model
+    // (tx.fhir.org/r4 by default), wrapped into the fhirschema TerminologyService
+    // via TerminologyProviderAdapter. Lookup failures are advisory in the
+    // validator, so an unreachable server cannot cause false rejections.
+    if let Some(base_url) = terminology_server {
+        let provider =
+            octofhir_fhir_model::terminology::DefaultTerminologyProvider::with_server(&base_url)
+                .with_context(|| format!("failed to init terminology provider for {base_url}"))?;
+        let adapter = octofhir_fhirschema::TerminologyProviderAdapter::new(Arc::new(provider));
+        validator = validator.with_terminology_service(Arc::new(adapter));
+    }
+
+    // Validate QuestionnaireResponses against their Questionnaire when a
+    // provider (built from manifest `supporting` files) is available.
+    if let Some(provider) = questionnaire_provider {
+        // Enforce the Java-validator-style checks too (unknown linkId,
+        // required-missing gated by enableWhen, answered-while-disabled) now that
+        // enableWhen evaluation is implemented.
+        validator = validator
+            .with_questionnaire_provider(provider)
+            .with_questionnaire_strictness(octofhir_fhirschema::QrStrictness::java_like());
+    }
+
+    Ok(validator)
 }
 
 fn validate_cli(
@@ -624,10 +764,10 @@ fn resolve_octofhir_cli(explicit: Option<&PathBuf>) -> Result<PathBuf> {
 
 fn extract_json_value(stdout: &str) -> Option<Value> {
     for (idx, ch) in stdout.char_indices() {
-        if ch == '{' {
-            if let Ok(value) = serde_json::from_str::<Value>(&stdout[idx..]) {
-                return Some(value);
-            }
+        if ch == '{'
+            && let Ok(value) = serde_json::from_str::<Value>(&stdout[idx..])
+        {
+            return Some(value);
         }
     }
     None
@@ -643,13 +783,13 @@ fn resource_type(resource: &Value) -> std::result::Result<String, String> {
 
 fn parse_test_resource_json(
     source: &str,
-    test: &TestCase,
+    case: &TestCase,
 ) -> std::result::Result<Value, serde_json::Error> {
     let source = source.strip_prefix('\u{feff}').unwrap_or(source);
     if let Ok(resource) = serde_json::from_str(source) {
         return Ok(resource);
     }
-    if test.allow_comments {
+    if case.allow_comments {
         let without_comments = strip_json_line_comments(source);
         if let Ok(resource) = serde_json::from_str(&without_comments) {
             return Ok(resource);

@@ -214,7 +214,7 @@ async fn test_patient_unknown_element_detected() {
 
         // Check that we got an unknown element error
         let has_unknown_element_error = result.errors.iter().any(|e| {
-            e.error_type == "FS1001" || e.message.as_ref().map_or(false, |m| m.contains("unknown"))
+            e.error_type == "FS1001" || e.message.as_ref().is_some_and(|m| m.contains("unknown"))
         });
 
         assert!(
@@ -266,7 +266,7 @@ async fn test_observation_missing_required_detected() {
         let has_required_error = result.errors.iter().any(|e| {
             e.error_type == "FS1011"
                 || e.error_type == "FS1003"
-                || e.message.as_ref().map_or(false, |m| {
+                || e.message.as_ref().is_some_and(|m| {
                     m.contains("required") || m.contains("missing") || m.contains("Missing")
                 })
         });
