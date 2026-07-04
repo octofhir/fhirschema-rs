@@ -1,0 +1,94 @@
+{
+  "resourceType": "Patient",
+  "meta": {
+    "profile": [
+      "http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient"
+    ]
+  },
+  "extension": [
+    {
+      "url": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-race",
+      "extension": [
+        {
+          "url": "ombCategory",
+          "valueCoding": {
+            "system": "urn:oid:2.16.840.1.113883.6.238",
+            "code": "2106-3",
+            "display": "White"
+          }
+        },
+        {
+          "url": "text",
+          "valueString": "White"
+        }
+      ]
+    },
+    {
+      "url": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-ethnicity",
+      "extension": [
+        {
+          "url": "ombCategory",
+          "valueCoding": {
+            "system": "urn:oid:2.16.840.1.113883.6.238",
+            "code": "2186-5",
+            "display": "Not Hispanic or Latino"
+          }
+        },
+        {
+          "url": "text",
+          "valueString": "Not Hispanic or Latino"
+        }
+      ]
+    },
+    {
+      "url": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-birthsex",
+      "valueCode": "M"
+    }
+  ],
+  "identifier": [
+    {
+      "system": "http://hospital.example.org/mrn",
+      "value": "12345"
+    },
+    {
+      "system": "http://hl7.org/fhir/sid/us-ssn",
+      "value": "123-45-6789"
+    }
+  ],
+  "name": [
+    {
+      "use": "official",
+      "family": "Doe",
+      "given": [
+        "John",
+        "William"
+      ]
+    }
+  ],
+  "telecom": [
+    {
+      "system": "phone",
+      "value": "555-1234",
+      "use": "home"
+    },
+    {
+      "system": "email",
+      "value": "john.doe@example.com"
+    }
+  ],
+  "gender": "male",
+  "birthDate": "1970-01-01",
+  "address": [
+    {
+      "use": "home",
+      "line": [
+        "123 Main St",
+        "Apt 4B"
+      ],
+      "city": "Boston",
+      "state": "MA",
+      "postalCode": "02101",
+      "country": "US"
+    }
+  ]
+}

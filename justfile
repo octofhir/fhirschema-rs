@@ -152,3 +152,36 @@ test-embedded:
     cargo test --lib embedded::tests -- --nocapture
     @echo "✅ Embedded schema tests completed"
 
+# Run local octofhir validation throughput over repository fixtures.
+validation-lab:
+    cargo run -p octofhir-fhirschema-devtools --bin validation-lab -- --mode octofhir-only --octofhir-profile-mode resource-type
+
+# Run RH-style in-process US Core Patient benchmark with package setup outside the measured loop.
+validation-rh-us-core:
+    cargo run --release -p octofhir-fhirschema-devtools --bin validation-lab -- --mode octofhir-only --fixtures octofhir-fhirschema-devtools/fixtures/rh_us_core --octofhir-runner library --octofhir-profile-mode resource-type-and-meta-profile --schema-package hl7.fhir.us.core#6.1.0 --iterations 5000
+
+# Run US Core parity against the HL7 Java validator using the same package setup.
+validation-us-core-java-parity:
+    cargo run --release -p octofhir-fhirschema-devtools --bin validation-lab -- --mode java-parity --fixtures octofhir-fhirschema-devtools/fixtures/rh_us_core --octofhir-runner library --octofhir-profile-mode resource-type-and-meta-profile --schema-package hl7.fhir.us.core#6.1.0 --java-ig target/validation-lab/fcm/cache/hl7.fhir.us.core-6.1.0.tgz --iterations 100 --java-timeout-secs 120 --fail-on-mismatch
+
+# Run a smoke subset of official FHIR validator test cases against OctoFHIR.
+official-fhir-smoke:
+    cargo run -p octofhir-fhirschema-devtools --bin official-fhir-runner -- --max-tests 25
+
+# Run all Java-comparable official FHIR validator test cases against OctoFHIR.
+official-fhir-runner:
+    cargo run -p octofhir-fhirschema-devtools --bin official-fhir-runner
+
+# Run parity against the HL7 Java validator jar.
+validation-java-parity jar="":
+    #!/bin/bash
+    set -euo pipefail
+    if [ -n "{{jar}}" ]; then
+      cargo run -p octofhir-fhirschema-devtools --bin validation-lab -- --java-validator-jar "{{jar}}" --fail-on-mismatch
+    else
+      cargo run -p octofhir-fhirschema-devtools --bin validation-lab -- --fail-on-mismatch
+    fi
+
+# Download/cache the HL7 Java validator jar used for parity.
+fetch-java-validator:
+    cargo run -p octofhir-fhirschema-devtools --bin validation-lab -- --mode fetch-java-validator

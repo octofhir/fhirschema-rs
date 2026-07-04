@@ -328,20 +328,35 @@ impl SchemaCompiler {
         // Expand nested elements based on type
         match &type_info {
             CompiledTypeInfo::BackboneElement | CompiledTypeInfo::Complex => {
-                // If element has inline nested elements (BackboneElement)
-                if let Some(nested) = &element.elements {
-                    children = Box::pin(self.expand_elements(Some(nested))).await?;
-                }
-                // If element has a type, recursively compile that type's elements
-                else if let Some(type_name) = &element.type_name
-                    && !is_primitive_type(type_name)
-                    && type_name != "Resource"
-                    && type_name != "Reference"
+                if let Some(type_name) = &element.type_name
+                    && Self::should_expand_named_type(type_name)
                 {
-                    // Get compiled schema for this type
-                    if let Ok(type_schema) = self.compile(type_name).await {
+                    if let Some(nested) = &element.elements {
+                        if let Some(type_schema) =
+                            self.schema_provider.get_schema_by_url(type_name).await
+                        {
+                            let mut merged_children =
+                                type_schema.elements.as_ref().cloned().unwrap_or_default();
+                            for (key, overlay_child) in nested {
+                                if let Some(base_child) = merged_children.get(key) {
+                                    merged_children.insert(
+                                        key.clone(),
+                                        self.merge_elements(base_child, overlay_child),
+                                    );
+                                } else {
+                                    merged_children.insert(key.clone(), overlay_child.clone());
+                                }
+                            }
+                            children =
+                                Box::pin(self.expand_elements(Some(&merged_children))).await?;
+                        } else {
+                            children = Box::pin(self.expand_elements(Some(nested))).await?;
+                        }
+                    } else if let Ok(type_schema) = self.compile(type_name).await {
                         children = type_schema.elements.clone();
                     }
+                } else if let Some(nested) = &element.elements {
+                    children = Box::pin(self.expand_elements(Some(nested))).await?;
                 }
             }
             _ => {
@@ -379,6 +394,11 @@ impl SchemaCompiler {
             must_support: element.must_support.unwrap_or(false),
             is_modifier: element.is_modifier.unwrap_or(false),
         })
+    }
+
+    /// Whether an element's named type should be expanded into child elements.
+    fn should_expand_named_type(type_name: &str) -> bool {
+        !is_primitive_type(type_name) && type_name != "Resource" && type_name != "Reference"
     }
 
     /// Determine the type info for an element
