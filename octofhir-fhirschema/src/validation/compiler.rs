@@ -410,7 +410,10 @@ impl SchemaCompiler {
         }
 
         let Some(type_name) = &element.type_name else {
-            return CompiledTypeInfo::Complex;
+            // No type declared: a profile overlay refining only metadata. It is
+            // not a complex element — treating it as one would demand an object
+            // where the base schema says, for instance, `string`.
+            return CompiledTypeInfo::Unspecified;
         };
 
         // Check for primitive

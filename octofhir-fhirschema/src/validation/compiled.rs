@@ -94,6 +94,24 @@ pub struct CompiledElement {
     pub is_modifier: bool,
 }
 
+impl CompiledElement {
+    /// FHIR type name to hand a FHIRPath evaluator as the type of this element's
+    /// value, for invariants declared on it.
+    ///
+    /// Only primitives are named: their JSON is a bare scalar that the evaluator
+    /// cannot classify on its own, and invariants like
+    /// `$this is dateTime implies $this.toString().length() >= 10` depend on
+    /// getting it right. The other variants carry no type name here — `None`
+    /// leaves the evaluator to model the value from its JSON shape, which is
+    /// what it already did for every element.
+    pub fn context_type(&self) -> Option<&'static str> {
+        match &self.type_info {
+            CompiledTypeInfo::Primitive(primitive) => Some(primitive.as_str()),
+            _ => None,
+        }
+    }
+}
+
 impl Default for CompiledElement {
     fn default() -> Self {
         Self {
@@ -124,6 +142,15 @@ pub enum CompiledTypeInfo {
     Primitive(PrimitiveType),
     /// Complex type with nested children
     Complex,
+    /// The schema declares no type for this element.
+    ///
+    /// FHIRSchema profiles are differential overlays: an element that only
+    /// refines metadata (`mustSupport`, a binding, an invariant) carries no
+    /// type, because the base schema it overlays already gives it one. Such an
+    /// element constrains everything it does declare and nothing it does not —
+    /// in particular it imposes no shape on the value, which is left to the
+    /// base schema being validated alongside it.
+    Unspecified,
     /// Reference to another resource
     Reference,
     /// Resource type (for contained resources)

@@ -930,6 +930,9 @@ impl FhirValidator {
             CompiledTypeInfo::Primitive(ptype) => {
                 self.validate_primitive(value, *ptype, errors, path);
             }
+            // Nothing is declared about the value's shape here; whichever schema
+            // does declare it validates it.
+            CompiledTypeInfo::Unspecified => {}
             CompiledTypeInfo::Complex | CompiledTypeInfo::BackboneElement => {
                 // Recursively validate using inlined children. When the element
                 // reuses another element's definition via `contentReference`
@@ -1509,8 +1512,13 @@ impl FhirValidator {
             return;
         };
 
-        // _field is only valid on primitive elements.
-        if !matches!(element.type_info, CompiledTypeInfo::Primitive(_)) {
+        // _field is only valid on primitive elements. An element whose type this
+        // schema does not declare cannot say either way, so it defers rather
+        // than reporting an error the base schema would contradict.
+        if !matches!(
+            element.type_info,
+            CompiledTypeInfo::Primitive(_) | CompiledTypeInfo::Unspecified
+        ) {
             errors.push(ValidationError {
                 error_type: FhirSchemaErrorCode::WrongType.to_string(),
                 path: self.path_to_vec(&display_path),
@@ -1698,6 +1706,12 @@ impl FhirValidator {
         variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
         path: &str,
+        // FHIR type of `data`, when it is not self-describing. A resource
+        // carries its own `resourceType`, but an element does not: without this
+        // the evaluator only sees the raw JSON, so an invariant such as
+        // `$this is dateTime implies ...` cannot recognize its own focus.
+        // `None` => let the evaluator model `data` from its JSON shape.
+        context_type: Option<&str>,
         // When the caller already holds an `Arc<JsonValue>` for `data` (the
         // resource root reuses the `%rootResource` Arc), pass it to avoid a
         // redundant deep clone of the whole resource. `None` => clone.
@@ -1762,7 +1776,7 @@ impl FhirValidator {
                 .clone();
             let exprs: Vec<&str> = pending.iter().map(|(_, e)| *e).collect();
             match evaluator
-                .evaluate_constraints_shared_context(arc, variables, &exprs)
+                .evaluate_constraints_shared_context_typed(arc, context_type, variables, &exprs)
                 .await
             {
                 Ok(results) => {
@@ -1861,6 +1875,8 @@ impl FhirValidator {
             variables,
             errors,
             path,
+            // The resource root describes itself through `resourceType`.
+            None,
             root_arc,
             cache,
         )
@@ -1942,6 +1958,7 @@ impl FhirValidator {
             variables,
             errors,
             path,
+            element.context_type(),
             None,
             cache,
         )
