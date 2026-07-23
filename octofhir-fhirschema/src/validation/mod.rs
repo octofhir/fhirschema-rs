@@ -19,7 +19,7 @@ pub use compiled::*;
 pub use compiler::*;
 pub use questionnaire::{QrStrictness, QuestionnaireProvider};
 
-use crate::reference::ReferenceResolver;
+use crate::reference::{ReferenceResolver, reference_resource_type};
 use crate::terminology::TerminologyService;
 use crate::types::{FhirSchema, FhirSchemaSlicing, ValidationError, ValidationResult};
 use async_trait::async_trait;
@@ -27,8 +27,27 @@ use octofhir_fhir_model::FhirPathEvaluator;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+/// Default maximum recursion depth for `targetProfile` conformance validation.
+/// A referenced resource may itself carry references with their own
+/// `targetProfile`; this bounds how deep the transitive check descends.
+const DEFAULT_MAX_REFERENCE_DEPTH: usize = 5;
+
+/// A Reference site discovered during structural validation, paired with the
+/// `targetProfile` canonical URLs declared for it. Consumed by the async
+/// `targetProfile` conformance phase.
+#[derive(Debug, Clone)]
+struct RefCheck {
+    /// JSON path of the `reference` string (for error location).
+    path: String,
+    /// The literal reference string (e.g. `Patient/123`).
+    reference: String,
+    /// Declared targetProfile canonical URLs (OR-semantics: the referenced
+    /// resource must conform to at least one).
+    targets: Vec<String>,
+}
 
 // FHIR R4 primitive type regexes (anchored full-match)
 // Source: https://www.hl7.org/fhir/R4/datatypes.html
@@ -208,6 +227,7 @@ pub enum FhirSchemaErrorCode {
     InvalidValue = 1014,
     ReferenceNotFound = 1015,
     QuestionnaireViolation = 1016,
+    ReferenceTargetProfileMismatch = 1017,
 }
 
 impl std::fmt::Display for FhirSchemaErrorCode {
@@ -229,6 +249,7 @@ impl std::fmt::Display for FhirSchemaErrorCode {
             FhirSchemaErrorCode::InvalidValue => write!(f, "FS1014"),
             FhirSchemaErrorCode::ReferenceNotFound => write!(f, "FS1015"),
             FhirSchemaErrorCode::QuestionnaireViolation => write!(f, "FS1016"),
+            FhirSchemaErrorCode::ReferenceTargetProfileMismatch => write!(f, "FS1017"),
         }
     }
 }
@@ -276,6 +297,13 @@ pub struct FhirValidator {
     questionnaire_provider: Option<Arc<dyn questionnaire::QuestionnaireProvider>>,
     /// Which QuestionnaireResponse convention checks to enforce.
     questionnaire_strictness: questionnaire::QrStrictness,
+    /// When true, references carrying a `targetProfile` are dereferenced (via
+    /// the reference resolver) and the referenced resource is validated for
+    /// conformance to at least one declared targetProfile. Off by default: it
+    /// adds a fetch + full re-validation per typed reference.
+    check_target_profile: bool,
+    /// Maximum recursion depth for transitive `targetProfile` conformance.
+    max_reference_depth: usize,
 }
 
 impl FhirValidator {
@@ -288,6 +316,8 @@ impl FhirValidator {
             reference_resolver: None,
             questionnaire_provider: None,
             questionnaire_strictness: questionnaire::QrStrictness::default(),
+            check_target_profile: false,
+            max_reference_depth: DEFAULT_MAX_REFERENCE_DEPTH,
         }
     }
 
@@ -303,6 +333,8 @@ impl FhirValidator {
             reference_resolver: None,
             questionnaire_provider: None,
             questionnaire_strictness: questionnaire::QrStrictness::default(),
+            check_target_profile: false,
+            max_reference_depth: DEFAULT_MAX_REFERENCE_DEPTH,
         }
     }
 
@@ -363,6 +395,23 @@ impl FhirValidator {
         self
     }
 
+    /// Enable `targetProfile` conformance validation.
+    ///
+    /// When enabled (and a reference resolver is configured), each Reference
+    /// that declares one or more `targetProfile`s is dereferenced and the
+    /// referenced resource is validated against those profiles (OR-semantics).
+    /// Requires the target profiles to be loadable by the schema provider.
+    pub fn with_target_profile_validation(mut self, enabled: bool) -> Self {
+        self.check_target_profile = enabled;
+        self
+    }
+
+    /// Set the maximum recursion depth for transitive `targetProfile` checks.
+    pub fn with_max_reference_depth(mut self, depth: usize) -> Self {
+        self.max_reference_depth = depth;
+        self
+    }
+
     /// Add a Questionnaire provider so a `QuestionnaireResponse` is validated
     /// against its referenced `Questionnaire`.
     pub fn with_questionnaire_provider(
@@ -411,8 +460,32 @@ impl FhirValidator {
         schema_names: Vec<String>,
         known_references: Option<&std::collections::HashSet<String>>,
     ) -> ValidationResult {
+        let mut visited = HashSet::new();
+        self.validate_impl(resource, schema_names, known_references, 0, &mut visited)
+            .await
+    }
+
+    /// Core validation, parameterized by recursion `depth` and the set of
+    /// references already being dereferenced on the current path (`visited`).
+    /// Both support `targetProfile` conformance: `depth` bounds how far the
+    /// transitive check descends, `visited` breaks reference cycles.
+    async fn validate_impl(
+        &self,
+        resource: &JsonValue,
+        schema_names: Vec<String>,
+        known_references: Option<&std::collections::HashSet<String>>,
+        depth: usize,
+        visited: &mut HashSet<String>,
+    ) -> ValidationResult {
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
+        // Reference sites (path, reference, targetProfiles) discovered during
+        // structural validation, checked for conformance in Phase 4b. Only
+        // populated when targetProfile validation is active.
+        let mut ref_checks: Vec<RefCheck> = Vec::new();
+        let collect_target_profiles = self.check_target_profile
+            && self.reference_resolver.is_some()
+            && depth < self.max_reference_depth;
 
         // Prepare constraint variables once (includes %rootResource)
         let variables = Self::prepare_constraint_variables(resource);
@@ -440,6 +513,21 @@ impl FhirValidator {
                     any_schema_compiled = true;
                     // Phase 1: Structural validation (sync)
                     self.validate_resource(resource, &compiled, &mut errors, &root_path);
+
+                    // Collect Reference sites carrying a targetProfile for the
+                    // async conformance phase. Done per compiled schema because
+                    // targetProfile constraints live on the profile's elements;
+                    // a reference must satisfy each profile's targets (AND across
+                    // profiles, OR within a profile's target list).
+                    if collect_target_profiles {
+                        self.collect_reference_checks(
+                            resource,
+                            &compiled.elements,
+                            &compiled.elements,
+                            &root_path,
+                            &mut ref_checks,
+                        );
+                    }
 
                     // Phase 2: Constraint validation (async)
                     self.validate_constraints_recursive(
@@ -568,10 +656,185 @@ impl FhirValidator {
             }
         }
 
+        // Phase 4b: targetProfile conformance (async, opt-in).
+        //
+        // For each typed Reference that declares one or more targetProfiles, the
+        // referenced resource is dereferenced and validated against those
+        // profiles with OR-semantics: conforming to any one target passes the
+        // reference. An unresolvable reference is a warning (FHIR only requires
+        // conformance when the reference is resolvable); a resolvable resource
+        // that matches no target is an error. Processed sequentially so the
+        // shared `visited` cycle-guard and recursion depth stay consistent.
+        if collect_target_profiles && !ref_checks.is_empty() {
+            // NB: unlike existence (Phase 4), `known_references` is NOT used to
+            // filter here. That set lists references already known to exist in
+            // storage — which are exactly the ones we can (and must) dereference
+            // to check conformance. A same-transaction reference not yet in
+            // storage simply fails to fetch and is reported as an (unresolvable)
+            // warning, never a hard error.
+            // Collapse duplicates produced by overlapping profiles.
+            ref_checks.sort_by(|a, b| {
+                a.reference
+                    .cmp(&b.reference)
+                    .then_with(|| a.path.cmp(&b.path))
+            });
+            ref_checks.dedup_by(|a, b| {
+                a.reference == b.reference && a.path == b.path && a.targets == b.targets
+            });
+
+            if let Some(resolver) = self.reference_resolver.clone() {
+                for check in &ref_checks {
+                    // Cycle guard: a reference already being dereferenced higher
+                    // in the stack is assumed to conform (its own frame checks it).
+                    if visited.contains(&check.reference) {
+                        continue;
+                    }
+                    let body = match resolver.fetch_resource(&check.reference).await {
+                        Ok(Some(body)) => body,
+                        // Unresolvable: warn but do not fail.
+                        Ok(None) => {
+                            warnings.push(ValidationError {
+                                error_type: FhirSchemaErrorCode::ReferenceTargetProfileMismatch
+                                    .to_string(),
+                                path: self.path_to_vec(&check.path),
+                                message: Some(format!(
+                                    "Could not resolve reference '{}' to verify conformance to targetProfile(s): {}",
+                                    check.reference,
+                                    check.targets.join(", ")
+                                )),
+                                value: Some(JsonValue::String(check.reference.clone())),
+                                expected: Some(JsonValue::Array(
+                                    check
+                                        .targets
+                                        .iter()
+                                        .map(|t| JsonValue::String(t.clone()))
+                                        .collect(),
+                                )),
+                                got: None,
+                                schema_path: None,
+                                constraint_key: None,
+                                constraint_expression: None,
+                                constraint_severity: Some("warning".to_string()),
+                            });
+                            continue;
+                        }
+                        // Transient backend/network error: skip to avoid false
+                        // negatives when a resolver is temporarily unavailable.
+                        Err(_) => continue,
+                    };
+
+                    visited.insert(check.reference.clone());
+                    let conforms = self
+                        .reference_conforms_to_target(&body, &check.targets, depth, visited)
+                        .await;
+                    visited.remove(&check.reference);
+
+                    if !conforms {
+                        errors.push(ValidationError {
+                            error_type: FhirSchemaErrorCode::ReferenceTargetProfileMismatch
+                                .to_string(),
+                            path: self.path_to_vec(&check.path),
+                            message: Some(format!(
+                                "Referenced resource '{}' does not conform to any declared targetProfile: {}",
+                                check.reference,
+                                check.targets.join(", ")
+                            )),
+                            value: Some(JsonValue::String(check.reference.clone())),
+                            expected: Some(JsonValue::Array(
+                                check
+                                    .targets
+                                    .iter()
+                                    .map(|t| JsonValue::String(t.clone()))
+                                    .collect(),
+                            )),
+                            got: None,
+                            schema_path: None,
+                            constraint_key: None,
+                            constraint_expression: None,
+                            constraint_severity: Some("error".to_string()),
+                        });
+                    }
+                }
+            }
+        }
+
         ValidationResult {
             valid: errors.is_empty(),
             errors,
             warnings,
+        }
+    }
+
+    /// Whether a dereferenced resource conforms to at least one of the declared
+    /// `targetProfile` canonical URLs (FHIR OR-semantics).
+    ///
+    /// A cheap base-resource-type pre-filter skips targets whose base type does
+    /// not match the resource's `resourceType`, avoiding a doomed full
+    /// re-validation (e.g. checking a `Practitioner` against `us-core-patient`).
+    /// A target with no loadable schema is treated as satisfiable — an unloaded
+    /// profile is reported as a warning by the recursive validation, not a hard
+    /// mismatch here.
+    async fn reference_conforms_to_target(
+        &self,
+        body: &JsonValue,
+        targets: &[String],
+        depth: usize,
+        visited: &mut HashSet<String>,
+    ) -> bool {
+        let body_type = body.get("resourceType").and_then(|v| v.as_str());
+        // Whether we managed to conclusively check the resource against at least
+        // one *loadable* target. If no target's profile could be loaded, the
+        // check is inconclusive and must not be reported as a mismatch.
+        let mut checked_any_loadable = false;
+
+        for target in targets {
+            let base = self.profile_base_type(target).await;
+            // A target whose profile cannot be loaded is skipped (inconclusive);
+            // an unloaded targetProfile is not grounds to fail conformance.
+            let Some(base) = base else { continue };
+
+            // Cheap pre-filter: base FHIR type must match. A mismatch is a
+            // conclusive non-match for this target — no need to re-validate.
+            if let Some(bt) = body_type
+                && bt != base
+            {
+                checked_any_loadable = true;
+                continue;
+            }
+
+            // Full re-validation against this profile. Recurses one level deeper
+            // so the target's own targetProfiles are checked too (bounded by
+            // max_reference_depth via `collect_target_profiles`).
+            checked_any_loadable = true;
+            let result =
+                Box::pin(self.validate_impl(body, vec![target.clone()], None, depth + 1, visited))
+                    .await;
+
+            if result.errors.is_empty() {
+                return true;
+            }
+            // Errors: genuine non-match for this target — try the next one.
+        }
+
+        // Conforms to no loadable target. Only a real mismatch if we actually
+        // checked one; otherwise inconclusive (treated as pass).
+        !checked_any_loadable
+    }
+
+    /// Base FHIR resource type a profile constrains (e.g. `Patient` for
+    /// `us-core-patient`), read from the raw schema without a full compile.
+    /// Returns `None` when the profile cannot be loaded.
+    async fn profile_base_type(&self, profile_url: &str) -> Option<String> {
+        let schema = self
+            .compiler
+            .schema_provider()
+            .get_schema_by_url(profile_url)
+            .await?;
+        let t = schema.type_name.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
         }
     }
 
@@ -623,6 +886,110 @@ impl FhirValidator {
             JsonValue::Array(arr) => {
                 for (idx, child) in arr.iter().enumerate() {
                     Self::collect_references(child, &format!("{path}[{idx}]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Schema-aware walk collecting every Reference site that declares a
+    /// `targetProfile`, paired with its declared target canonical URLs. Mirrors
+    /// the structural walk (`validate_complex`) but only descends into complex
+    /// children and records typed Reference values — it performs no validation
+    /// and reports no errors. Only literal, type-bearing references
+    /// (`Type/id`, absolute URLs) are recorded; contained (`#id`) and `urn:`
+    /// references carry no resolvable type and are skipped.
+    fn collect_reference_checks(
+        &self,
+        value: &JsonValue,
+        elements: &HashMap<String, CompiledElement>,
+        root: &HashMap<String, CompiledElement>,
+        path: &str,
+        out: &mut Vec<RefCheck>,
+    ) {
+        let JsonValue::Object(obj) = value else {
+            return;
+        };
+
+        for (key, child) in obj {
+            if key == "resourceType" || key == "fhir_comments" || key.starts_with('_') {
+                continue;
+            }
+
+            let display_key = self.choice_display_key(key, elements);
+            let element_path = if path.is_empty() {
+                display_key.clone()
+            } else {
+                format!("{}.{}", path, display_key)
+            };
+
+            // Resolve the element: direct match, else a choice-type variant.
+            let element = elements.get(key).or_else(|| {
+                elements
+                    .values()
+                    .find(|el| el.choices.as_ref().is_some_and(|c| c.contains(key)))
+            });
+            let Some(element) = element else {
+                continue;
+            };
+
+            self.collect_element_reference_checks(child, element, root, &element_path, out);
+        }
+    }
+
+    /// Collect Reference sites for a single (possibly repeating) element value.
+    fn collect_element_reference_checks(
+        &self,
+        value: &JsonValue,
+        element: &CompiledElement,
+        root: &HashMap<String, CompiledElement>,
+        path: &str,
+        out: &mut Vec<RefCheck>,
+    ) {
+        if let JsonValue::Array(arr) = value {
+            for (i, item) in arr.iter().enumerate() {
+                if item.is_null() {
+                    continue;
+                }
+                self.collect_element_reference_checks(
+                    item,
+                    element,
+                    root,
+                    &format!("{}[{}]", path, i),
+                    out,
+                );
+            }
+            return;
+        }
+
+        match &element.type_info {
+            CompiledTypeInfo::Reference => {
+                let targets = match &element.reference_targets {
+                    Some(t) if !t.is_empty() => t,
+                    _ => return,
+                };
+                if let Some(reference) = value.get("reference").and_then(|v| v.as_str())
+                    && reference_resource_type(reference).is_some()
+                {
+                    out.push(RefCheck {
+                        path: format!("{}.reference", path),
+                        reference: reference.to_string(),
+                        targets: targets.clone(),
+                    });
+                }
+            }
+            CompiledTypeInfo::Complex | CompiledTypeInfo::BackboneElement => {
+                // Descend into children, resolving contentReference reuse.
+                let children = if element.children.is_empty()
+                    && let Some(target) =
+                        Self::resolve_element_reference(root, element.element_reference.as_deref())
+                {
+                    &target.children
+                } else {
+                    &element.children
+                };
+                if !children.is_empty() {
+                    self.collect_reference_checks(value, children, root, path, out);
                 }
             }
             _ => {}

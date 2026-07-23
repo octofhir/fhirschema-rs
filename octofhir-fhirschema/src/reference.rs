@@ -26,6 +26,7 @@
 //! ```
 
 use async_trait::async_trait;
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Error codes for reference validation
@@ -205,6 +206,68 @@ pub trait ReferenceResolver: Send + Sync {
         &self,
         reference: &str,
     ) -> ReferenceResult<ReferenceResolutionResult>;
+
+    /// Fetch the full body of a referenced resource, for `targetProfile`
+    /// conformance validation.
+    ///
+    /// Unlike [`resolve_reference`](Self::resolve_reference), which only reports existence, this returns
+    /// the referenced resource's JSON so the caller can validate it against a
+    /// declared `targetProfile`. Implementations decide how a reference is
+    /// dereferenced: relative references (`Patient/123`) against local storage,
+    /// absolute URLs over the network, etc.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(resource))` - Resource resolved; body returned.
+    /// * `Ok(None)` - Reference cannot or should not be dereferenced (external,
+    ///   contained, `urn:`, network disabled, or simply not found). The caller
+    ///   treats this as *unresolvable* and emits a warning rather than an error,
+    ///   per the FHIR rule that `targetProfile` conformance is only required
+    ///   when the reference is resolvable.
+    /// * `Err(_)` - A transient failure (e.g. backend/network error). The caller
+    ///   does not hard-fail validation on these.
+    ///
+    /// The default implementation returns `Ok(None)`, so existing resolvers that
+    /// only implement existence checking keep compiling and simply opt out of
+    /// `targetProfile` conformance.
+    async fn fetch_resource(
+        &self,
+        _reference: &str,
+    ) -> ReferenceResult<Option<Arc<serde_json::Value>>> {
+        Ok(None)
+    }
+}
+
+/// Extract the FHIR resource type from the tail of a literal reference string.
+///
+/// Handles relative (`Patient/123`), versioned (`Patient/123/_history/4`), and
+/// absolute (`http://host/base/Patient/123`) references by locating the segment
+/// immediately preceding the id. Returns `None` for contained (`#id`), `urn:`,
+/// and otherwise unparseable references, where no resource type is embedded.
+pub fn reference_resource_type(reference: &str) -> Option<String> {
+    if reference.starts_with('#') || reference.starts_with("urn:") {
+        return None;
+    }
+    // Drop a trailing `/_history/{vid}` so the id is the last segment.
+    let base = match reference.find("/_history/") {
+        Some(idx) => &reference[..idx],
+        None => reference,
+    };
+    let mut segments = base.rsplit('/');
+    let _id = segments.next()?;
+    let resource_type = segments.next()?;
+    // A FHIR resource type is an upper-camel-case token; reject scheme/host
+    // fragments like "https:" that can appear when a reference lacks an id.
+    if resource_type.is_empty()
+        || !resource_type
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase())
+        || resource_type.contains(':')
+    {
+        return None;
+    }
+    Some(resource_type.to_string())
 }
 
 /// A no-op reference resolver that always returns true (resource exists).
@@ -399,6 +462,26 @@ mod tests {
 
         let result = resolver.resolve_reference("Patient/123").await.unwrap();
         assert!(result.exists);
+    }
+
+    #[test]
+    fn test_reference_resource_type() {
+        assert_eq!(
+            reference_resource_type("Patient/123"),
+            Some("Patient".to_string())
+        );
+        assert_eq!(
+            reference_resource_type("Patient/123/_history/4"),
+            Some("Patient".to_string())
+        );
+        assert_eq!(
+            reference_resource_type("http://ex.org/fhir/Observation/9"),
+            Some("Observation".to_string())
+        );
+        assert_eq!(reference_resource_type("#contained-1"), None);
+        assert_eq!(reference_resource_type("urn:uuid:abc"), None);
+        // No id segment / bare host: not a resolvable typed reference.
+        assert_eq!(reference_resource_type("Patient"), None);
     }
 
     #[test]

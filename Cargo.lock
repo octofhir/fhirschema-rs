@@ -2105,7 +2105,7 @@ dependencies = [
 
 [[package]]
 name = "octofhir-fhirschema"
-version = "0.3.24"
+version = "0.3.25"
 dependencies = [
  "async-recursion",
  "async-trait",

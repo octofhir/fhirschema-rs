@@ -55,6 +55,12 @@ impl SchemaCompiler {
         }
     }
 
+    /// Access the underlying schema provider (e.g. to read a profile's base
+    /// FHIR type without a full compile).
+    pub fn schema_provider(&self) -> &Arc<dyn SchemaProvider> {
+        &self.schema_provider
+    }
+
     /// Get or compile a schema by name/URL
     #[async_recursion]
     pub async fn compile(&self, schema_name: &str) -> Result<SharedCompiledSchema, CompileError> {
