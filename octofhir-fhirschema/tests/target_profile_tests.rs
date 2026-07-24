@@ -14,6 +14,7 @@ use octofhir_fhirschema::validation::FhirValidator;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const PATIENT_URL: &str = "http://hl7.org/fhir/StructureDefinition/Patient";
 const OBSERVATION_URL: &str = "http://hl7.org/fhir/StructureDefinition/Observation";
@@ -24,6 +25,8 @@ const OTHER_PATIENT: &str = "http://example.org/OtherPatient";
 /// reference string, `None` otherwise (unresolvable).
 struct MapResolver {
     bodies: HashMap<String, Arc<Value>>,
+    /// Count of `fetch_resource` calls, to assert de-duplication.
+    fetches: AtomicUsize,
 }
 
 impl MapResolver {
@@ -33,7 +36,12 @@ impl MapResolver {
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), Arc::new(v)))
                 .collect(),
+            fetches: AtomicUsize::new(0),
         })
+    }
+
+    fn fetches(&self) -> usize {
+        self.fetches.load(Ordering::Relaxed)
     }
 }
 
@@ -54,6 +62,7 @@ impl ReferenceResolver for MapResolver {
     }
 
     async fn fetch_resource(&self, reference: &str) -> ReferenceResult<Option<Arc<Value>>> {
+        self.fetches.fetch_add(1, Ordering::Relaxed);
         Ok(self.bodies.get(reference).cloned())
     }
 }
@@ -253,4 +262,36 @@ async fn disabled_by_default_no_fetch() {
         "targetProfile off: must not check conformance"
     );
     assert!(result.errors.iter().all(|e| e.error_type != MISMATCH));
+}
+
+#[tokio::test]
+async fn duplicate_reference_dereferenced_once() {
+    // The same target referenced from several sites (here two `Patient.link`
+    // array entries) must be dereferenced and re-validated a single time, not
+    // once per site. Guards the batch/dedup/memoize path: per-site fetching
+    // dominated write latency for reference-heavy resources like EoB.
+    let resolver = MapResolver::new(vec![(
+        "Patient/1",
+        json!({"resourceType": "Patient", "id": "1", "active": true}),
+    )]);
+    let counter = resolver.clone();
+    // `link` declares targetProfile SPECIAL_PATIENT (requires `active`).
+    let v = FhirValidator::from_schemas(schemas(&[SPECIAL_PATIENT]), None)
+        .with_reference_resolver(resolver)
+        .with_target_profile_validation(true);
+    let patient = json!({
+        "resourceType": "Patient",
+        "id": "src",
+        "link": [
+            {"reference": "Patient/1"},
+            {"reference": "Patient/1"}
+        ]
+    });
+    let result = v.validate(&patient, vec!["Patient".into()]).await;
+    assert!(result.valid, "expected valid, errors: {:?}", result.errors);
+    assert_eq!(
+        counter.fetches(),
+        1,
+        "same reference must be dereferenced once, not per site"
+    );
 }

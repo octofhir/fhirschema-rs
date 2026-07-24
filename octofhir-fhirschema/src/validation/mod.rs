@@ -19,7 +19,9 @@ pub use compiled::*;
 pub use compiler::*;
 pub use questionnaire::{QrStrictness, QuestionnaireProvider};
 
-use crate::reference::{ReferenceResolver, reference_resource_type};
+use crate::reference::{
+    ReferenceResolutionResult, ReferenceResolver, ReferenceResult, reference_resource_type,
+};
 use crate::terminology::TerminologyService;
 use crate::types::{FhirSchema, FhirSchemaSlicing, ValidationError, ValidationResult};
 use async_trait::async_trait;
@@ -618,40 +620,42 @@ impl FhirValidator {
             if let Some(known) = known_references {
                 references.retain(|(_, reference)| !known.contains(reference));
             }
-            // Resolve all references concurrently. Each resolution is an
-            // independent backend round-trip (e.g. a storage existence check);
-            // running them sequentially serialized N round-trips (and N pool
-            // checkouts) per resource, which dominated write latency for
-            // reference-heavy resources like ExplanationOfBenefit. join_all
-            // overlaps them so the cost is ~one round-trip instead of N.
-            let resolutions = futures::future::join_all(
-                references
-                    .iter()
-                    .map(|(_, reference)| resolver.resolve_reference(reference)),
-            )
-            .await;
-            for ((ref_path, reference), result) in references.into_iter().zip(resolutions) {
-                match result {
-                    Ok(result) if !result.exists => {
-                        errors.push(ValidationError {
-                            error_type: FhirSchemaErrorCode::ReferenceNotFound.to_string(),
-                            path: self.path_to_vec(&ref_path),
-                            message: Some(format!(
-                                "Referenced resource '{reference}' does not exist"
-                            )),
-                            value: Some(JsonValue::String(reference.clone())),
-                            expected: None,
-                            got: Some(JsonValue::String(reference)),
-                            schema_path: None,
-                            constraint_key: None,
-                            constraint_expression: None,
-                            constraint_severity: Some("error".to_string()),
-                        });
-                    }
-                    // Found, skipped (external/contained), or a transient resolver
-                    // error: do not hard-fail on lookup failures to avoid false
-                    // negatives when the backend is unavailable.
-                    _ => {}
+            // Resolve distinct references in one batched call. The same target
+            // routinely appears at many paths (an ExplanationOfBenefit points at
+            // one Patient from subject, provider, beneficiary, …); deduplicating
+            // first, then handing the whole set to the resolver, lets a
+            // storage-backed resolver group by type and issue O(distinct types)
+            // existence queries instead of one concurrent checkout per reference —
+            // which dominated write latency (and pool pressure) for
+            // reference-heavy resources.
+            let mut distinct: Vec<String> = references.iter().map(|(_, r)| r.clone()).collect();
+            distinct.sort();
+            distinct.dedup();
+            let resolutions = resolver.resolve_references_batch(&distinct).await;
+            // Map each distinct reference to its resolution. A missing entry (the
+            // resolver returned Err — transient) or a skipped result is treated as
+            // existing, so we never hard-fail on lookup failures.
+            let by_ref: HashMap<&str, &ReferenceResolutionResult> = distinct
+                .iter()
+                .zip(resolutions.iter())
+                .filter_map(|(r, res)| res.as_ref().ok().map(|ok| (r.as_str(), ok)))
+                .collect();
+            for (ref_path, reference) in &references {
+                if let Some(result) = by_ref.get(reference.as_str())
+                    && !result.exists
+                {
+                    errors.push(ValidationError {
+                        error_type: FhirSchemaErrorCode::ReferenceNotFound.to_string(),
+                        path: self.path_to_vec(ref_path),
+                        message: Some(format!("Referenced resource '{reference}' does not exist")),
+                        value: Some(JsonValue::String(reference.clone())),
+                        expected: None,
+                        got: Some(JsonValue::String(reference.clone())),
+                        schema_path: None,
+                        constraint_key: None,
+                        constraint_expression: None,
+                        constraint_severity: Some("error".to_string()),
+                    });
                 }
             }
         }
@@ -683,16 +687,36 @@ impl FhirValidator {
             });
 
             if let Some(resolver) = self.reference_resolver.clone() {
+                // Dereference each distinct referenced body once — batched by the
+                // resolver — instead of once per (reference, path) site. An EoB
+                // that points at one Patient from several paths reads and
+                // re-validates that Patient a single time, not once per path.
+                let mut distinct: Vec<String> =
+                    ref_checks.iter().map(|c| c.reference.clone()).collect();
+                distinct.sort();
+                distinct.dedup();
+                let bodies_vec = resolver.fetch_resources_batch(&distinct).await;
+                let bodies: HashMap<&str, &ReferenceResult<Option<Arc<JsonValue>>>> = distinct
+                    .iter()
+                    .map(|s| s.as_str())
+                    .zip(bodies_vec.iter())
+                    .collect();
+
+                // Memoize conformance per (reference, targets): the same target
+                // checked against the same profile set is validated once, however
+                // many paths reference it.
+                let mut conforms_cache: HashMap<(String, Vec<String>), bool> = HashMap::new();
+
                 for check in &ref_checks {
                     // Cycle guard: a reference already being dereferenced higher
                     // in the stack is assumed to conform (its own frame checks it).
                     if visited.contains(&check.reference) {
                         continue;
                     }
-                    let body = match resolver.fetch_resource(&check.reference).await {
-                        Ok(Some(body)) => body,
+                    let body = match bodies.get(check.reference.as_str()).copied() {
+                        Some(Ok(Some(body))) => body.clone(),
                         // Unresolvable: warn but do not fail.
-                        Ok(None) => {
+                        Some(Ok(None)) => {
                             warnings.push(ValidationError {
                                 error_type: FhirSchemaErrorCode::ReferenceTargetProfileMismatch
                                     .to_string(),
@@ -718,16 +742,23 @@ impl FhirValidator {
                             });
                             continue;
                         }
-                        // Transient backend/network error: skip to avoid false
-                        // negatives when a resolver is temporarily unavailable.
-                        Err(_) => continue,
+                        // Transient backend/network error or missing entry: skip to
+                        // avoid false negatives when a resolver is unavailable.
+                        _ => continue,
                     };
 
-                    visited.insert(check.reference.clone());
-                    let conforms = self
-                        .reference_conforms_to_target(&body, &check.targets, depth, visited)
-                        .await;
-                    visited.remove(&check.reference);
+                    let cache_key = (check.reference.clone(), check.targets.clone());
+                    let conforms = if let Some(&cached) = conforms_cache.get(&cache_key) {
+                        cached
+                    } else {
+                        visited.insert(check.reference.clone());
+                        let c = self
+                            .reference_conforms_to_target(&body, &check.targets, depth, visited)
+                            .await;
+                        visited.remove(&check.reference);
+                        conforms_cache.insert(cache_key, c);
+                        c
+                    };
 
                     if !conforms {
                         errors.push(ValidationError {

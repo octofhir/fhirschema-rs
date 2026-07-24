@@ -236,6 +236,35 @@ pub trait ReferenceResolver: Send + Sync {
     ) -> ReferenceResult<Option<Arc<serde_json::Value>>> {
         Ok(None)
     }
+
+    /// Batch-resolve existence for multiple references at once.
+    ///
+    /// Results align 1:1 with `references`. The default fans out to
+    /// [`resolve_reference`](Self::resolve_reference) concurrently, preserving
+    /// behaviour for resolvers that don't override it. Storage-backed resolvers
+    /// should override this to group references by resource type and issue one
+    /// batched existence query per type, so validating a reference-heavy
+    /// resource costs O(distinct types) backend round-trips (and pool checkouts)
+    /// instead of O(references).
+    async fn resolve_references_batch(
+        &self,
+        references: &[String],
+    ) -> Vec<ReferenceResult<ReferenceResolutionResult>> {
+        futures::future::join_all(references.iter().map(|r| self.resolve_reference(r))).await
+    }
+
+    /// Batch-fetch bodies for multiple references at once.
+    ///
+    /// Results align 1:1 with `references`. The default fans out to
+    /// [`fetch_resource`](Self::fetch_resource) concurrently. Storage-backed
+    /// resolvers should override this to group references by type and issue one
+    /// batched read per type.
+    async fn fetch_resources_batch(
+        &self,
+        references: &[String],
+    ) -> Vec<ReferenceResult<Option<Arc<serde_json::Value>>>> {
+        futures::future::join_all(references.iter().map(|r| self.fetch_resource(r))).await
+    }
 }
 
 /// Extract the FHIR resource type from the tail of a literal reference string.
