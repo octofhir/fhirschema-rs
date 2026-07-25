@@ -295,3 +295,111 @@ async fn duplicate_reference_dereferenced_once() {
         "same reference must be dereferenced once, not per site"
     );
 }
+
+/// Resolver that answers only from declared `meta.profile` and treats any body
+/// fetch as a failure, so a test using it proves the fast path was taken.
+struct DeclaredOnlyResolver {
+    declared: HashMap<String, Vec<String>>,
+    fetches: AtomicUsize,
+}
+
+impl DeclaredOnlyResolver {
+    fn new(declared: Vec<(&str, Vec<&str>)>) -> Arc<Self> {
+        Arc::new(Self {
+            declared: declared
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.into_iter().map(String::from).collect()))
+                .collect(),
+            fetches: AtomicUsize::new(0),
+        })
+    }
+
+    fn fetches(&self) -> usize {
+        self.fetches.load(Ordering::Relaxed)
+    }
+}
+
+#[async_trait]
+impl ReferenceResolver for DeclaredOnlyResolver {
+    async fn resource_exists(&self, _rt: &str, _id: &str) -> ReferenceResult<bool> {
+        Ok(true)
+    }
+
+    async fn resolve_reference(
+        &self,
+        _reference: &str,
+    ) -> ReferenceResult<ReferenceResolutionResult> {
+        Ok(ReferenceResolutionResult::skipped())
+    }
+
+    async fn fetch_resource(&self, _reference: &str) -> ReferenceResult<Option<Arc<Value>>> {
+        self.fetches.fetch_add(1, Ordering::Relaxed);
+        Ok(None)
+    }
+
+    async fn fetch_profiles_batch(&self, references: &[String]) -> HashMap<String, Vec<String>> {
+        references
+            .iter()
+            .filter_map(|r| self.declared.get(r).map(|p| (r.clone(), p.clone())))
+            .collect()
+    }
+}
+
+fn declared_validator(
+    subject_targets: &[&str],
+    resolver: Arc<DeclaredOnlyResolver>,
+) -> FhirValidator {
+    FhirValidator::from_schemas(schemas(subject_targets), None)
+        .with_reference_resolver(resolver)
+        .with_target_profile_validation(true)
+}
+
+#[tokio::test]
+async fn declared_profile_settles_without_fetching_body() {
+    // The target declares SpecialPatient. That claim was verified when the
+    // resource was written, so conformance follows without dereferencing it —
+    // note the body would NOT satisfy SpecialPatient if it were fetched, since
+    // this resolver returns nothing.
+    let resolver = DeclaredOnlyResolver::new(vec![("Patient/1", vec![SPECIAL_PATIENT])]);
+    let v = declared_validator(&[SPECIAL_PATIENT], resolver.clone());
+    let result = v
+        .validate(&observation("Patient/1"), vec!["Observation".into()])
+        .await;
+    assert!(result.valid, "expected valid, errors: {:?}", result.errors);
+    assert_eq!(
+        resolver.fetches(),
+        0,
+        "declared profile must settle without a body fetch"
+    );
+}
+
+#[tokio::test]
+async fn declared_profile_matches_across_version_suffix() {
+    // meta.profile pins a version, targetProfile does not: still a match.
+    let resolver = DeclaredOnlyResolver::new(vec![(
+        "Patient/1",
+        vec![&format!("{SPECIAL_PATIENT}|1.2.0")],
+    )]);
+    let v = declared_validator(&[SPECIAL_PATIENT], resolver.clone());
+    let result = v
+        .validate(&observation("Patient/1"), vec!["Observation".into()])
+        .await;
+    assert!(result.valid, "expected valid, errors: {:?}", result.errors);
+    assert_eq!(resolver.fetches(), 0);
+}
+
+#[tokio::test]
+async fn unrelated_declared_profile_falls_back_to_fetch() {
+    // Declaring some *other* profile settles nothing, so the body is still
+    // dereferenced — the fast path only ever removes work it can answer.
+    let resolver = DeclaredOnlyResolver::new(vec![("Patient/1", vec![OTHER_PATIENT])]);
+    let v = declared_validator(&[SPECIAL_PATIENT], resolver.clone());
+    let _ = v
+        .validate(&observation("Patient/1"), vec!["Observation".into()])
+        .await;
+    assert_eq!(
+        resolver.fetches(),
+        1,
+        "unsettled reference must still be fetched"
+    );
+}

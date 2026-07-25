@@ -265,6 +265,26 @@ pub trait ReferenceResolver: Send + Sync {
     ) -> Vec<ReferenceResult<Option<Arc<serde_json::Value>>>> {
         futures::future::join_all(references.iter().map(|r| self.fetch_resource(r))).await
     }
+
+    /// Batch-fetch the profiles each referenced resource declares in
+    /// `meta.profile`, keyed by the reference string.
+    ///
+    /// This is the fast path for `targetProfile` conformance: a resource that
+    /// declares a profile was validated against it when it was written, so a
+    /// declared canonical is a conclusive "conforms" answer without
+    /// dereferencing and re-validating the body. References absent from the map
+    /// (unknown, unresolvable, or simply declaring no profile) fall through to
+    /// the full fetch-and-validate path, so an empty map is always safe.
+    ///
+    /// The default returns nothing, keeping resolvers that don't override it on
+    /// the slow path. Storage-backed resolvers should override with a query that
+    /// reads only the profiles — reading bodies here defeats the purpose.
+    async fn fetch_profiles_batch(
+        &self,
+        _references: &[String],
+    ) -> std::collections::HashMap<String, Vec<String>> {
+        std::collections::HashMap::new()
+    }
 }
 
 /// Extract the FHIR resource type from the tail of a literal reference string.

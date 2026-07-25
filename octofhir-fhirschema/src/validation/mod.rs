@@ -51,6 +51,32 @@ struct RefCheck {
     targets: Vec<String>,
 }
 
+/// Whether a resource declaring `declared` in `meta.profile` claims conformance
+/// to the `target` canonical.
+///
+/// Canonicals on either side may carry a `|version` suffix. An unversioned
+/// canonical matches any version of the same URL — that is the FHIR canonical
+/// reference rule, and the common shape in practice, where `meta.profile` pins a
+/// version and the `targetProfile` does not (or the reverse). Two *different*
+/// explicit versions do not match.
+fn declares_profile(declared: &[String], target: &str) -> bool {
+    let split = |canonical: &str| -> (String, Option<String>) {
+        match canonical.split_once('|') {
+            Some((url, version)) => (url.to_string(), Some(version.to_string())),
+            None => (canonical.to_string(), None),
+        }
+    };
+    let (target_url, target_version) = split(target);
+    declared.iter().any(|d| {
+        let (declared_url, declared_version) = split(d);
+        declared_url == target_url
+            && match (&declared_version, &target_version) {
+                (Some(a), Some(b)) => a == b,
+                _ => true,
+            }
+    })
+}
+
 // FHIR R4 primitive type regexes (anchored full-match)
 // Source: https://www.hl7.org/fhir/R4/datatypes.html
 const INT32_MIN: i64 = -2_147_483_648;
@@ -695,8 +721,82 @@ impl FhirValidator {
                     ref_checks.iter().map(|c| c.reference.clone()).collect();
                 distinct.sort();
                 distinct.dedup();
-                let bodies_vec = resolver.fetch_resources_batch(&distinct).await;
-                let bodies: HashMap<&str, &ReferenceResult<Option<Arc<JsonValue>>>> = distinct
+
+                // Two fast paths settle most checks without ever touching a body.
+                // Both rest on the same fact: a resource in storage was already
+                // validated against its base type and against every profile it
+                // declares. Re-deriving that by dereferencing and re-validating
+                // is redundant work, and on a reference-heavy resource it is the
+                // dominant cost of the whole check.
+                //
+                // 1. A `targetProfile` naming a *base* StructureDefinition
+                //    (`.../StructureDefinition/Patient`, derivation
+                //    `specialization`) demands nothing beyond being that type —
+                //    and the type is spelled in the reference itself. Plain R4
+                //    targetProfiles are almost entirely of this shape, so this
+                //    settles them with no storage access at all.
+                //
+                // 2. A `targetProfile` naming a real profile is satisfied when
+                //    the target declares that canonical in `meta.profile`. One
+                //    batched, index-only read of the declared canonicals answers
+                //    it — no body, no recursive validation.
+                //
+                // Anything neither settles keeps the original fetch-and-validate
+                // behaviour, so this only ever removes work.
+                // Memo: `targetProfile` canonical -> (base type, is a profile
+                // rather than a base type). `None` for a target whose schema
+                // cannot be loaded, which stays inconclusive as before.
+                let mut target_kinds: HashMap<String, Option<(String, bool)>> = HashMap::new();
+                for check in &ref_checks {
+                    for target in &check.targets {
+                        if !target_kinds.contains_key(target) {
+                            let kind = self.target_profile_kind(target).await;
+                            target_kinds.insert(target.clone(), kind);
+                        }
+                    }
+                }
+
+                // Declared profiles are only consulted for targets that are
+                // actual profiles, so plain R4 — where every targetProfile names
+                // a base StructureDefinition — issues no query for them at all.
+                let any_profile_target =
+                    target_kinds.values().any(|k| matches!(k, Some((_, true))));
+                let declared = if any_profile_target {
+                    resolver.fetch_profiles_batch(&distinct).await
+                } else {
+                    HashMap::new()
+                };
+
+                let settled_without_body = |check: &RefCheck| -> bool {
+                    let referenced_type = reference_resource_type(&check.reference);
+                    check.targets.iter().any(|target| {
+                        match target_kinds.get(target).and_then(|k| k.as_ref()) {
+                            // Base type target: conformance is type identity.
+                            Some((base, false)) => {
+                                referenced_type.as_deref() == Some(base.as_str())
+                            }
+                            // Profile target: satisfied iff the target declares it.
+                            Some((_, true)) => declared
+                                .get(&check.reference)
+                                .is_some_and(|profiles| declares_profile(profiles, target)),
+                            None => false,
+                        }
+                    })
+                };
+
+                let unsettled: Vec<String> = distinct
+                    .iter()
+                    .filter(|reference| {
+                        ref_checks
+                            .iter()
+                            .filter(|c| &&c.reference == reference)
+                            .any(|c| !settled_without_body(c))
+                    })
+                    .cloned()
+                    .collect();
+
+                let bodies_vec = resolver.fetch_resources_batch(&unsettled).await;
+                let bodies: HashMap<&str, &ReferenceResult<Option<Arc<JsonValue>>>> = unsettled
                     .iter()
                     .map(|s| s.as_str())
                     .zip(bodies_vec.iter())
@@ -711,6 +811,11 @@ impl FhirValidator {
                     // Cycle guard: a reference already being dereferenced higher
                     // in the stack is assumed to conform (its own frame checks it).
                     if visited.contains(&check.reference) {
+                        continue;
+                    }
+                    // Settled by the referenced type or the target's own
+                    // `meta.profile` — no body was fetched for it, none needed.
+                    if settled_without_body(check) {
                         continue;
                     }
                     let body = match bodies.get(check.reference.as_str()).copied() {
@@ -850,6 +955,30 @@ impl FhirValidator {
         // Conforms to no loadable target. Only a real mismatch if we actually
         // checked one; otherwise inconclusive (treated as pass).
         !checked_any_loadable
+    }
+
+    /// What a `targetProfile` canonical actually demands: `(base type, is a
+    /// profile)`.
+    ///
+    /// `false` for the second field means the canonical names a base
+    /// StructureDefinition — `.../StructureDefinition/Patient` rather than a
+    /// constraint on it. Such a target imposes no constraint beyond the resource
+    /// type, so conformance follows from the referenced type alone.
+    ///
+    /// Returns `None` when the schema cannot be loaded, which keeps the target
+    /// inconclusive rather than treating it as a mismatch.
+    async fn target_profile_kind(&self, profile_url: &str) -> Option<(String, bool)> {
+        let schema = self
+            .compiler
+            .schema_provider()
+            .get_schema_by_url(profile_url)
+            .await?;
+        let type_name = schema.type_name.trim();
+        if type_name.is_empty() {
+            return None;
+        }
+        let is_profile = schema.derivation.as_deref() == Some("constraint");
+        Some((type_name.to_string(), is_profile))
     }
 
     /// Base FHIR resource type a profile constrains (e.g. `Patient` for
