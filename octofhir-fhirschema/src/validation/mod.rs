@@ -13,6 +13,7 @@
 
 pub mod compiled;
 pub mod compiler;
+mod prepared;
 pub mod questionnaire;
 
 pub use compiled::*;
@@ -314,6 +315,8 @@ pub enum SliceClassification {
 pub struct FhirValidator {
     /// Schema compiler with caching
     compiler: SchemaCompiler,
+    /// Retained evaluator-specific handles, coalesced and bounded per validator.
+    constraint_plans: prepared::PlanCache,
     /// Optional FHIRPath evaluator for constraint validation
     fhirpath_evaluator: Option<Arc<dyn FhirPathEvaluator>>,
     /// Optional terminology service for binding validation
@@ -335,11 +338,19 @@ pub struct FhirValidator {
 }
 
 impl FhirValidator {
+    /// Invalidate retained schema/expression plans after schema-set updates.
+    /// Evaluator registries are immutable for this validator's lifetime.
+    pub fn invalidate_caches(&self) {
+        self.compiler.invalidate();
+        self.constraint_plans.invalidate_all();
+    }
+
     /// Create a new compiled validator with a schema provider
     pub fn new(schema_provider: Arc<dyn SchemaProvider>) -> Self {
         Self {
             compiler: SchemaCompiler::new(schema_provider),
             fhirpath_evaluator: None,
+            constraint_plans: moka::future::Cache::new(4096),
             terminology_service: None,
             reference_resolver: None,
             questionnaire_provider: None,
@@ -357,6 +368,7 @@ impl FhirValidator {
         Self {
             compiler: SchemaCompiler::new(schema_provider),
             fhirpath_evaluator: Some(fhirpath_evaluator),
+            constraint_plans: moka::future::Cache::new(4096),
             terminology_service: None,
             reference_resolver: None,
             questionnaire_provider: None,
@@ -517,13 +529,22 @@ impl FhirValidator {
 
         // Prepare constraint variables once (includes %rootResource)
         let variables = Self::prepare_constraint_variables(resource);
+        // Walk the same immutable allocation indexed by the prepared evaluator.
+        let resource_arc = variables["rootResource"].clone();
+        let resource = resource_arc.as_ref();
 
         // Memo of FHIRPath constraint results for this resource, shared across
         // every schema in `schema_names`. Overlapping profiles (base type +
         // meta.profile snapshot) repeat the same invariants at the same paths;
-        // this evaluates each `(path, expression)` once. Errors are still
+        // this evaluates each `(node, constraint, declared type)` once. Errors are still
         // emitted per schema, so output is unchanged.
-        let mut constraint_cache: HashMap<String, bool> = HashMap::new();
+        let mut constraint_cache = match &self.fhirpath_evaluator {
+            Some(evaluator) => Some(
+                prepared::ConstraintRun::new(evaluator.as_ref(), resource_arc.clone(), &variables)
+                    .await,
+            ),
+            None => None,
+        };
 
         // Start FHIRPath expressions at the resource's resourceType (e.g. "Patient",
         // "Parameters") so issue.expression matches the FHIRPath spec.
@@ -2220,11 +2241,7 @@ impl FhirValidator {
     // Constraint Validation
     // =========================================================================
 
-    /// Validate FHIRPath constraints against a resource.
-    ///
-    /// Evaluates all error-severity constraints using the configured FHIRPath evaluator.
-    /// Warning-severity constraints are skipped. If no evaluator is configured,
-    /// constraint validation is skipped entirely.
+    /// Evaluate retained constraints while preserving diagnostic order and text.
     #[allow(clippy::too_many_arguments)]
     async fn validate_constraints(
         &self,
@@ -2233,147 +2250,51 @@ impl FhirValidator {
         variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
         path: &str,
-        // FHIR type of `data`, when it is not self-describing. A resource
-        // carries its own `resourceType`, but an element does not: without this
-        // the evaluator only sees the raw JSON, so an invariant such as
-        // `$this is dateTime implies ...` cannot recognize its own focus.
-        // `None` => let the evaluator model `data` from its JSON shape.
         context_type: Option<&str>,
-        // When the caller already holds an `Arc<JsonValue>` for `data` (the
-        // resource root reuses the `%rootResource` Arc), pass it to avoid a
-        // redundant deep clone of the whole resource. `None` => clone.
         data_arc_hint: Option<Arc<JsonValue>>,
-        // Per-validate memo of `(path, expression) -> satisfied`. The same
-        // FHIRPath invariant is evaluated once per resource walk and reused
-        // across overlapping schemas (e.g. base `Patient` and a
-        // `us-core-patient` profile whose snapshot repeats the base
-        // constraints). Same path == same data node and variables are constant
-        // within a `validate` call, so the result is deterministic. Error
-        // output is unchanged — every schema still emits its own error on a
-        // cached failure; only the recompute is skipped.
-        cache: &mut HashMap<String, bool>,
+        cache: &mut Option<prepared::ConstraintRun>,
     ) {
-        let Some(evaluator) = &self.fhirpath_evaluator else {
+        let (Some(evaluator), Some(run)) = (&self.fhirpath_evaluator, cache.as_mut()) else {
             return;
         };
-
         if constraints.is_empty() {
             return;
         }
-
-        let make_key = |expr: &str| {
-            let mut key = String::with_capacity(path.len() + 1 + expr.len());
-            key.push_str(path);
-            key.push('\u{1f}');
-            key.push_str(expr);
-            key
-        };
-
-        // Pass 1: gather the distinct, not-yet-cached constraint expressions at
-        // this level. Warnings are skipped (never evaluated or reported).
-        // Deduplicating by `(path, expression)` collapses the identical
-        // invariants that overlapping schema snapshots repeat, and lets the
-        // whole level be evaluated against a single shared FHIRPath context.
-        let mut data_arc: Option<Arc<JsonValue>> = data_arc_hint;
-        let mut pending_keys: HashMap<String, ()> = HashMap::new();
-        let mut pending: Vec<(String, &str)> = Vec::new();
-        for constraint in constraints {
-            if constraint.severity == compiled::ConstraintSeverity::Warning {
-                continue;
-            }
-            let key = make_key(&constraint.expression);
-            if cache.contains_key(&key) {
-                continue;
-            }
-            if pending_keys.insert(key.clone(), ()).is_none() {
-                pending.push((key, constraint.expression.as_str()));
-            }
-        }
-
-        // Evaluate the pending expressions once against a shared context: the
-        // FHIRPath data model for `data` and the `%rootResource` variable are
-        // built a single time and reused for every expression at this level,
-        // instead of rebuilt per constraint. Per-expression semantics are
-        // unchanged (empty / non-boolean / true => satisfied). Evaluation
-        // errors stay isolated to the offending expression.
-        let mut eval_errors: HashMap<String, String> = HashMap::new();
-        if !pending.is_empty() {
-            let arc = data_arc
-                .get_or_insert_with(|| Arc::new(data.clone()))
-                .clone();
-            let exprs: Vec<&str> = pending.iter().map(|(_, e)| *e).collect();
-            match evaluator
-                .evaluate_constraints_shared_context_typed(arc, context_type, variables, &exprs)
-                .await
-            {
-                Ok(results) => {
-                    for ((key, _), res) in pending.iter().zip(results) {
-                        match res {
-                            Ok(satisfied) => {
-                                cache.insert(key.clone(), satisfied);
-                            }
-                            Err(e) => {
-                                eval_errors.insert(key.clone(), e.to_string());
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    // The shared context could not be built. Mark every pending
-                    // expression as an evaluation failure, matching the previous
-                    // per-constraint behavior where the same build ran (and
-                    // would have failed) for each constraint.
-                    let msg = e.to_string();
-                    for (key, _) in &pending {
-                        eval_errors.insert(key.clone(), msg.clone());
-                    }
-                }
-            }
-        }
-
-        // Pass 2: emit errors in original constraint order, so output is
-        // identical to per-constraint evaluation. Each constraint reports with
-        // its own key/human text even when it shares an expression with another.
-        for constraint in constraints {
-            if constraint.severity == compiled::ConstraintSeverity::Warning {
-                continue;
-            }
-            let key = make_key(&constraint.expression);
-            if let Some(&satisfied) = cache.get(&key) {
-                if !satisfied {
-                    errors.push(ValidationError {
-                        error_type: FhirSchemaErrorCode::ConstraintViolation.to_string(),
-                        path: self.path_to_vec(path),
-                        message: Some(format!(
-                            "Constraint '{}' failed: {}",
-                            constraint.key, constraint.human
-                        )),
-                        value: None,
-                        expected: None,
-                        got: None,
-                        schema_path: None,
-                        constraint_key: Some(constraint.key.clone()),
-                        constraint_expression: Some(constraint.expression.clone()),
-                        constraint_severity: Some("error".to_string()),
-                    });
-                }
-            } else if let Some(err_msg) = eval_errors.get(&key) {
-                errors.push(ValidationError {
-                    error_type: FhirSchemaErrorCode::ConstraintViolation.to_string(),
-                    path: self.path_to_vec(path),
-                    message: Some(format!(
-                        "Constraint '{}' evaluation failed: {}",
-                        constraint.key, err_msg
-                    )),
-                    value: None,
-                    expected: None,
-                    got: None,
-                    schema_path: None,
-                    constraint_key: Some(constraint.key.clone()),
-                    constraint_expression: Some(constraint.expression.clone()),
-                    constraint_severity: Some("error".to_string()),
-                });
-            }
+        let results = run
+            .evaluate(
+                evaluator.as_ref(),
+                &self.constraint_plans,
+                data,
+                context_type,
+                variables,
+                constraints,
+                data_arc_hint,
+            )
+            .await;
+        for (constraint, result) in constraints.iter().zip(results) {
+            let message = match result {
+                None | Some(Ok(true)) => continue,
+                Some(Ok(false)) => format!(
+                    "Constraint '{}' failed: {}",
+                    constraint.key, constraint.human
+                ),
+                Some(Err(error)) => format!(
+                    "Constraint '{}' evaluation failed: {}",
+                    constraint.key, error
+                ),
+            };
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::ConstraintViolation.to_string(),
+                path: self.path_to_vec(path),
+                message: Some(message),
+                value: None,
+                expected: None,
+                got: None,
+                schema_path: None,
+                constraint_key: Some(constraint.key.clone()),
+                constraint_expression: Some(constraint.expression.clone()),
+                constraint_severity: Some("error".to_string()),
+            });
         }
     }
 
@@ -2390,7 +2311,7 @@ impl FhirValidator {
         variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
         path: &str,
-        cache: &mut HashMap<String, bool>,
+        cache: &mut Option<prepared::ConstraintRun>,
     ) {
         // Validate schema-level constraints. `data` is the resource root, which
         // is also stored as the `%rootResource` variable — reuse that Arc to
@@ -2448,7 +2369,7 @@ impl FhirValidator {
         variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
         path: &str,
-        cache: &mut HashMap<String, bool>,
+        cache: &mut Option<prepared::ConstraintRun>,
     ) {
         // Handle arrays
         if let JsonValue::Array(arr) = value {
@@ -2476,7 +2397,7 @@ impl FhirValidator {
         variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
         path: &str,
-        cache: &mut HashMap<String, bool>,
+        cache: &mut Option<prepared::ConstraintRun>,
     ) {
         // Validate element-level constraints
         self.validate_constraints(

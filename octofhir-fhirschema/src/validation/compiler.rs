@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_recursion::async_recursion;
 
@@ -42,7 +43,8 @@ pub struct SchemaCompiler {
     /// Schema provider for loading raw schemas
     schema_provider: Arc<dyn SchemaProvider>,
     /// Cache of compiled schemas
-    compiled_cache: moka::future::Cache<String, SharedCompiledSchema>,
+    compiled_cache: moka::future::Cache<String, (u64, SharedCompiledSchema)>,
+    generation: AtomicU64,
 }
 
 impl SchemaCompiler {
@@ -52,6 +54,7 @@ impl SchemaCompiler {
             schema_provider,
             // Cache ~500 compiled schemas (covers most FHIR types)
             compiled_cache: moka::future::Cache::new(500),
+            generation: AtomicU64::new(0),
         }
     }
 
@@ -62,25 +65,43 @@ impl SchemaCompiler {
     }
 
     /// Get or compile a schema by name/URL
-    #[async_recursion]
     pub async fn compile(&self, schema_name: &str) -> Result<SharedCompiledSchema, CompileError> {
-        // Check cache first
-        if let Some(cached) = self.compiled_cache.get(schema_name).await {
-            return Ok(cached);
+        loop {
+            let generation = self.generation.load(Ordering::Acquire);
+            let cached = self
+                .compiled_cache
+                .try_get_with_by_ref(schema_name, async {
+                    self.compile_internal(schema_name, &HashSet::new())
+                        .await
+                        .map(|schema| (generation, Arc::new(schema)))
+                        .map_err(|error| (generation, error))
+                })
+                .await;
+            let current = self.generation.load(Ordering::Acquire);
+            match cached {
+                Ok((cached_generation, schema)) if cached_generation == current => {
+                    return Ok(schema);
+                }
+                Err(error) if error.0 == current => return Err(error.1.clone()),
+                _ => {}
+            }
+            self.compiled_cache.invalidate(schema_name).await;
         }
+    }
 
-        // Compile and cache
-        let compiled = self.compile_internal(schema_name).await?;
-        let arc = Arc::new(compiled);
-        self.compiled_cache
-            .insert(schema_name.to_string(), arc.clone())
-            .await;
-        Ok(arc)
+    /// Call after replacing/updating the provider's schema set. In-flight old
+    /// compilations cannot repopulate the active generation with stale schemas.
+    pub fn invalidate(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.compiled_cache.invalidate_all();
     }
 
     /// Internal compilation logic
-    #[async_recursion]
-    async fn compile_internal(&self, schema_name: &str) -> Result<CompiledSchema, CompileError> {
+    async fn compile_internal(
+        &self,
+        schema_name: &str,
+        visiting: &HashSet<String>,
+    ) -> Result<CompiledSchema, CompileError> {
         // 1. Load base schema (use get_schema_by_url to support both names and URLs)
         let schema = self
             .schema_provider
@@ -91,12 +112,26 @@ impl SchemaCompiler {
                 schema_name: Some(schema_name.to_string()),
             })?;
 
+        self.compile_loaded(&schema, visiting, 0).await
+    }
+
+    #[async_recursion]
+    async fn compile_loaded(
+        &self,
+        schema: &FhirSchema,
+        visiting: &HashSet<String>,
+        depth: usize,
+    ) -> Result<CompiledSchema, CompileError> {
+        let visiting = Self::enter_schema(schema, visiting)?;
+
         // 2. Resolve inheritance chain and merge
-        let chain = self.resolve_chain(&schema).await?;
+        let chain = self.resolve_chain(schema).await?;
         let merged = self.merge_chain(&chain);
 
         // 3. Recursively expand all element types
-        let elements = self.expand_elements(merged.elements.as_ref()).await?;
+        let elements = self
+            .expand_elements(merged.elements.as_ref(), &visiting, depth)
+            .await?;
 
         // 4. Collect all constraints from the chain
         let constraints = self.collect_constraints(&chain);
@@ -124,6 +159,27 @@ impl SchemaCompiler {
             is_resource: schema.kind == "resource",
             kind: SchemaKind::parse(&schema.kind),
         })
+    }
+
+    fn enter_schema(
+        schema: &FhirSchema,
+        visiting: &HashSet<String>,
+    ) -> Result<HashSet<String>, CompileError> {
+        let identity = if schema.url.is_empty() {
+            &schema.name
+        } else {
+            &schema.url
+        };
+        if visiting.contains(identity) || visiting.len() >= 128 {
+            return Err(CompileError {
+                message: format!("Recursive or excessively deep inline type expansion: {identity}"),
+                schema_name: Some(schema.name.clone()),
+            });
+        }
+        let mut visiting = visiting.clone();
+        visiting.insert(identity.clone());
+
+        Ok(visiting)
     }
 
     /// Resolve inheritance chain from base to derived
@@ -306,6 +362,8 @@ impl SchemaCompiler {
     async fn expand_elements(
         &self,
         elements: Option<&HashMap<String, FhirSchemaElement>>,
+        visiting: &HashSet<String>,
+        depth: usize,
     ) -> Result<HashMap<String, CompiledElement>, CompileError> {
         let Some(elements) = elements else {
             return Ok(HashMap::new());
@@ -314,7 +372,7 @@ impl SchemaCompiler {
         let mut result = HashMap::new();
 
         for (name, element) in elements {
-            let compiled = self.expand_element(name, element).await?;
+            let compiled = self.expand_element(name, element, visiting, depth).await?;
             result.insert(name.clone(), compiled);
         }
 
@@ -327,7 +385,15 @@ impl SchemaCompiler {
         &self,
         name: &str,
         element: &FhirSchemaElement,
+        visiting: &HashSet<String>,
+        depth: usize,
     ) -> Result<CompiledElement, CompileError> {
+        if depth >= 128 {
+            return Err(CompileError {
+                message: format!("Recursive or excessively deep inline element expansion: {name}"),
+                schema_name: element.type_name.clone(),
+            });
+        }
         let type_info = self.determine_type_info(element);
         let mut children = HashMap::new();
 
@@ -341,6 +407,10 @@ impl SchemaCompiler {
                         if let Some(type_schema) =
                             self.schema_provider.get_schema_by_url(type_name).await
                         {
+                            // An explicit overlay can reuse a named base at multiple
+                            // finite nesting levels (e.g. BackboneElement). A repeated
+                            // base name alone is not a cycle here. Bound total expansion
+                            // depth, including children introduced by the base schema.
                             let mut merged_children =
                                 type_schema.elements.as_ref().cloned().unwrap_or_default();
                             for (key, overlay_child) in nested {
@@ -353,16 +423,30 @@ impl SchemaCompiler {
                                     merged_children.insert(key.clone(), overlay_child.clone());
                                 }
                             }
-                            children =
-                                Box::pin(self.expand_elements(Some(&merged_children))).await?;
+                            children = Box::pin(self.expand_elements(
+                                Some(&merged_children),
+                                visiting,
+                                depth + 1,
+                            ))
+                            .await?;
                         } else {
-                            children = Box::pin(self.expand_elements(Some(nested))).await?;
+                            children =
+                                Box::pin(self.expand_elements(Some(nested), visiting, depth + 1))
+                                    .await?;
                         }
-                    } else if let Ok(type_schema) = self.compile(type_name).await {
-                        children = type_schema.elements.clone();
+                    } else if let Some(type_schema) =
+                        self.schema_provider.get_schema_by_url(type_name).await
+                    {
+                        // Never await another root's in-flight cache entry:
+                        // concurrent A -> B and B -> A must not deadlock.
+                        children = self
+                            .compile_loaded(&type_schema, visiting, depth + 1)
+                            .await?
+                            .elements;
                     }
                 } else if let Some(nested) = &element.elements {
-                    children = Box::pin(self.expand_elements(Some(nested))).await?;
+                    children =
+                        Box::pin(self.expand_elements(Some(nested), visiting, depth + 1)).await?;
                 }
             }
             _ => {
