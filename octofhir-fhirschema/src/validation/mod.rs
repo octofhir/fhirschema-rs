@@ -52,6 +52,17 @@ struct RefCheck {
     targets: Vec<String>,
 }
 
+/// Whether a reference to `resource_type` satisfies a base-type target. The
+/// abstract bases cover their subtypes: every resource is a `Resource`, and all
+/// but `Bundle`, `Binary` and `Parameters` are `DomainResource`s.
+fn base_type_covers(base: &str, resource_type: &str) -> bool {
+    match base {
+        "Resource" => true,
+        "DomainResource" => !matches!(resource_type, "Bundle" | "Binary" | "Parameters"),
+        _ => base == resource_type,
+    }
+}
+
 /// Whether a resource declaring `declared` in `meta.profile` claims conformance
 /// to the `target` canonical.
 ///
@@ -793,9 +804,9 @@ impl FhirValidator {
                     check.targets.iter().any(|target| {
                         match target_kinds.get(target).and_then(|k| k.as_ref()) {
                             // Base type target: conformance is type identity.
-                            Some((base, false)) => {
-                                referenced_type.as_deref() == Some(base.as_str())
-                            }
+                            Some((base, false)) => referenced_type
+                                .as_deref()
+                                .is_some_and(|referenced| base_type_covers(base, referenced)),
                             // Profile target: satisfied iff the target declares it.
                             Some((_, true)) => declared
                                 .get(&check.reference)
@@ -945,18 +956,26 @@ impl FhirValidator {
         let mut checked_any_loadable = false;
 
         for target in targets {
-            let base = self.profile_base_type(target).await;
+            let kind = self.target_profile_kind(target).await;
             // A target whose profile cannot be loaded is skipped (inconclusive);
             // an unloaded targetProfile is not grounds to fail conformance.
-            let Some(base) = base else { continue };
+            let Some((base, is_profile)) = kind else {
+                continue;
+            };
 
             // Cheap pre-filter: base FHIR type must match. A mismatch is a
             // conclusive non-match for this target — no need to re-validate.
-            if let Some(bt) = body_type
-                && bt != base
-            {
-                checked_any_loadable = true;
-                continue;
+            if let Some(bt) = body_type {
+                if !base_type_covers(&base, bt) {
+                    checked_any_loadable = true;
+                    continue;
+                }
+                // An abstract base (`Resource`, `DomainResource`) demands
+                // nothing beyond the type; validating the body against the
+                // abstract schema would reject every element of the subtype.
+                if !is_profile && bt != base {
+                    return true;
+                }
             }
 
             // Full re-validation against this profile. Recurses one level deeper
@@ -1000,23 +1019,6 @@ impl FhirValidator {
         }
         let is_profile = schema.derivation.as_deref() == Some("constraint");
         Some((type_name.to_string(), is_profile))
-    }
-
-    /// Base FHIR resource type a profile constrains (e.g. `Patient` for
-    /// `us-core-patient`), read from the raw schema without a full compile.
-    /// Returns `None` when the profile cannot be loaded.
-    async fn profile_base_type(&self, profile_url: &str) -> Option<String> {
-        let schema = self
-            .compiler
-            .schema_provider()
-            .get_schema_by_url(profile_url)
-            .await?;
-        let t = schema.type_name.trim();
-        if t.is_empty() {
-            None
-        } else {
-            Some(t.to_string())
-        }
     }
 
     /// Resolve the `Questionnaire` a `QuestionnaireResponse` answers, either

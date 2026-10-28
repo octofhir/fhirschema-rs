@@ -403,3 +403,57 @@ async fn unrelated_declared_profile_falls_back_to_fetch() {
         "unsettled reference must still be fetched"
     );
 }
+
+const RESOURCE_URL: &str = "http://hl7.org/fhir/StructureDefinition/Resource";
+const DOMAIN_RESOURCE_URL: &str = "http://hl7.org/fhir/StructureDefinition/DomainResource";
+
+fn abstract_base_validator(target: &str, resolver: Arc<MapResolver>) -> FhirValidator {
+    let mut schemas = schemas(&[target]);
+    for (name, url) in [
+        ("Resource", RESOURCE_URL),
+        ("DomainResource", DOMAIN_RESOURCE_URL),
+    ] {
+        schemas.insert(
+            name.to_string(),
+            parse(json!({
+                "url": url, "name": name, "type": name,
+                "kind": "resource", "class": "resource",
+                "elements": {"id": {"type": "id"}}
+            })),
+        );
+    }
+    FhirValidator::from_schemas(schemas, None)
+        .with_reference_resolver(resolver)
+        .with_target_profile_validation(true)
+}
+
+#[tokio::test]
+async fn abstract_resource_target_covers_any_type() {
+    let resolver = MapResolver::new(vec![(
+        "Patient/1",
+        json!({"resourceType": "Patient", "id": "1", "active": true}),
+    )]);
+    let v = abstract_base_validator(RESOURCE_URL, resolver.clone());
+    let result = v
+        .validate(&observation("Patient/1"), vec!["Observation".into()])
+        .await;
+    assert!(result.valid, "expected valid, errors: {:?}", result.errors);
+    assert_eq!(resolver.fetches(), 0, "an abstract base settles by type");
+}
+
+#[tokio::test]
+async fn domain_resource_target_excludes_bundle() {
+    let resolver = MapResolver::new(vec![(
+        "Bundle/1",
+        json!({"resourceType": "Bundle", "id": "1"}),
+    )]);
+    let v = abstract_base_validator(DOMAIN_RESOURCE_URL, resolver);
+    let result = v
+        .validate(&observation("Bundle/1"), vec!["Observation".into()])
+        .await;
+    assert!(
+        result.errors.iter().any(|e| e.error_type == MISMATCH),
+        "expected {MISMATCH}, got {:?}",
+        result.errors
+    );
+}
