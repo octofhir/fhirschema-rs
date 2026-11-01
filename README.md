@@ -1,6 +1,13 @@
-# OctoFHIR FHIRSchema
+<p align="center"><img src=".github/banner.png" alt="octo/fhirschema — FHIR validation, driven by FHIRSchema" width="100%"></p>
 
-A fresh Rust implementation of FHIRSchema conversion and validation.
+<p align="center"><b>FHIRSchema for Rust: convert StructureDefinitions and validate FHIR resources for R4, R4B, R5 and R6.</b></p>
+
+<p align="center">
+  <a href="https://github.com/octofhir/fhirschema-rs/actions/workflows/ci.yml"><img src="https://github.com/octofhir/fhirschema-rs/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://crates.io/crates/octofhir-fhirschema"><img src="https://img.shields.io/crates/v/octofhir-fhirschema.svg" alt="crates.io"></a>
+  <a href="https://docs.rs/octofhir-fhirschema"><img src="https://docs.rs/octofhir-fhirschema/badge.svg" alt="docs.rs"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a>
+</p>
 
 ## Overview
 
@@ -20,7 +27,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-octofhir-fhirschema = "0.1.0"
+octofhir-fhirschema = "0.3"
 ```
 
 ## Usage
@@ -41,28 +48,30 @@ println!("Converted schema: {}", schema.name);
 
 ### Validating FHIR Resources
 
+`FhirValidator` validates a resource against one or more schemas by name. The
+precompiled core schemas for each FHIR version are embedded in the crate:
+
 ```rust
-use octofhir_fhirschema::{validate, ValidationContext, FhirSchema};
-use std::collections::HashMap;
+use octofhir_fhirschema::{FhirValidator, FhirVersion, get_schemas};
 
-// Create validation context with schemas
-let mut schemas = HashMap::new();
-schemas.insert("Patient".to_string(), patient_schema);
-let context = ValidationContext { schemas };
+// Validator over the embedded R4 core schemas. Without a FHIRPath evaluator
+// (the second argument), FHIRPath invariants are not checked.
+let validator = FhirValidator::from_schemas(get_schemas(FhirVersion::R4).clone(), None);
 
-// Validate resource
-let patient_data = serde_json::json!({
+let patient = serde_json::json!({
     "resourceType": "Patient",
     "id": "example",
     "active": true
 });
 
-let result = validate(&context, vec![], &patient_data);
+let result = validator.validate(&patient, vec!["Patient".to_string()]).await;
 
 if result.valid {
     println!("Resource is valid!");
 } else {
-    println!("Validation errors: {:?}", result.errors);
+    for error in &result.errors {
+        println!("{} {:?}: {:?}", error.error_type, error.path, error.message);
+    }
 }
 ```
 
@@ -104,7 +113,7 @@ Results of validation with errors and success flag.
 - **Type Safety**: Leverages Rust's type system for compile-time safety
 - **Performance**: Efficient algorithms and minimal allocations
 - **Multi-Version Support**: R4, R4B, R5, R6 FHIR versions
-- **Binary Serialization**: Fast loading of precompiled schemas
+- **Embedded Schemas**: precompiled core schemas (JSON) for each version are bundled in the crate
 
 ## Development
 
@@ -139,23 +148,27 @@ The implementation includes comprehensive tests:
 ### Main Functions
 
 - `translate(structure_definition, context)` - Convert StructureDefinition to FHIRSchema
-- `validate(context, path, data)` - Validate FHIR resource against schemas
+- `get_schemas(version)` / `get_schema(version, name)` - Embedded precompiled schemas
+- `FhirValidator::from_schemas(schemas, fhirpath_evaluator)` - Build a validator
+- `FhirValidator::validate(&resource, schema_names)` (async) - Validate a FHIR resource
 
 ### Core Types
 
 - `FhirSchema` - Target schema format
 - `StructureDefinition` - Input FHIR structure definition  
-- `ValidationContext` - Schema lookup context
-- `ValidationResult` - Validation results with errors
+- `FhirValidator` - Schema-driven validator
+- `ValidationResult` - Validation results with errors and warnings
 
 ## License
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
 at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this project by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
 
 ## Contributing
 
