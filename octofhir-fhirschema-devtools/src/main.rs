@@ -314,7 +314,7 @@ fn get_package_info(fhir_version: &str) -> Result<(String, String), Box<dyn std:
         "r4" => Ok(("hl7.fhir.r4.core".to_string(), "4.0.1".to_string())),
         "r4b" => Ok(("hl7.fhir.r4b.core".to_string(), "4.3.0".to_string())),
         "r5" => Ok(("hl7.fhir.r5.core".to_string(), "5.0.0".to_string())),
-        "r6" => Ok(("hl7.fhir.r6.core".to_string(), "6.0.0-ballot3".to_string())),
+        "r6" => Ok(("hl7.fhir.r6.core".to_string(), "6.0.0-ballot5".to_string())),
         _ => Err(format!("Unsupported FHIR version: {fhir_version}").into()),
     }
 }

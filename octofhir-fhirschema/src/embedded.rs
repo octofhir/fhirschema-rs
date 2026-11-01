@@ -61,7 +61,7 @@ impl FhirVersion {
             "r4" | "4.0" | "4.0.1" => Some(FhirVersion::R4),
             "r4b" | "4.3" | "4.3.0" => Some(FhirVersion::R4B),
             "r5" | "5.0" | "5.0.0" => Some(FhirVersion::R5),
-            "r6" | "6.0" | "6.0.0-ballot3" => Some(FhirVersion::R6),
+            "r6" | "6.0" | "6.0.0-ballot3" | "6.0.0-ballot5" => Some(FhirVersion::R6),
             _ => None,
         }
     }
