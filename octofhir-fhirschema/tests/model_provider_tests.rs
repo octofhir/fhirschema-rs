@@ -435,3 +435,40 @@ async fn test_fhirpath_workflow() {
     assert_eq!(given_child.singleton, Some(true)); // Individual element is singleton
     assert_eq!(given_child.type_name, "String");
 }
+
+#[tokio::test]
+async fn element_cardinality_comes_from_the_array_flag() {
+    for provider in [EmbeddedSchemaProvider::r4(), EmbeddedSchemaProvider::r5()] {
+        let patient = provider.get_type("Patient").await.unwrap().unwrap();
+        let name = provider
+            .get_element_type(&patient, "name")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(name.singleton, Some(false), "Patient.name repeats");
+        let gender = provider
+            .get_element_type(&patient, "gender")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(gender.singleton, Some(true), "Patient.gender is single");
+
+        let coding = provider.get_type("Coding").await.unwrap().unwrap();
+        let code = provider
+            .get_element_type(&coding, "code")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(code.singleton, Some(true), "Coding.code is single");
+    }
+}
+
+#[tokio::test]
+async fn type_hierarchy_follows_base_urls() {
+    let provider = EmbeddedSchemaProvider::r4();
+    assert!(provider.is_type_derived_from("Patient", "DomainResource"));
+    assert!(provider.is_type_derived_from("Patient", "Resource"));
+    assert!(provider.is_type_derived_from("HumanName", "Element"));
+    assert!(!provider.is_type_derived_from("HumanName", "Resource"));
+    assert!(!provider.is_type_derived_from("Coding", "Resource"));
+}

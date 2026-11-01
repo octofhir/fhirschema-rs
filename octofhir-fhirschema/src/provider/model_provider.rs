@@ -283,10 +283,16 @@ impl FhirSchemaModelProvider {
 
         // Check schema hierarchy - use ONLY schema data, no hardcoding!
         if let Some(schema) = self.get_schema(derived_type)
-            && let Some(base_type_name) = &schema.base
+            && let Some(base) = &schema.base
         {
+            // `base` is the base type's canonical URL
+            // (`http://hl7.org/fhir/StructureDefinition/DomainResource`) or its name.
+            let base_type_name = base.rsplit('/').next().unwrap_or(base);
             if base_type_name == base_type {
                 return true;
+            }
+            if base_type_name == derived_type {
+                return false;
             }
             // Recursive check up the hierarchy
             return self.is_type_derived_from(base_type_name, base_type);
@@ -378,7 +384,7 @@ impl ModelProvider for FhirSchemaModelProvider {
                     let backbone_path = format!("{}.{}", type_name, property_name);
                     return Ok(Some(TypeInfo {
                         type_name: "Any".to_string(),
-                        singleton: Some(element.max == Some(1)),
+                        singleton: Some(element_is_singleton(element)),
                         is_empty: Some(false),
                         namespace: Some("FHIR".to_string()),
                         name: Some(backbone_path),
@@ -390,7 +396,7 @@ impl ModelProvider for FhirSchemaModelProvider {
                     let mapped_type = self.map_fhir_type(element_type_name);
                     return Ok(Some(TypeInfo {
                         type_name: mapped_type,
-                        singleton: Some(element.max == Some(1)),
+                        singleton: Some(element_is_singleton(element)),
                         is_empty: Some(false),
                         namespace: Some("FHIR".to_string()),
                         name: Some(element_type_name.clone()),
@@ -419,7 +425,7 @@ impl ModelProvider for FhirSchemaModelProvider {
                                     let mapped_type = self.map_fhir_type(&schema_type);
                                     return Ok(Some(TypeInfo {
                                         type_name: mapped_type,
-                                        singleton: Some(element.max == Some(1)),
+                                        singleton: Some(element_is_singleton(element)),
                                         is_empty: Some(false),
                                         namespace: if schema_type
                                             .chars()
@@ -441,6 +447,11 @@ impl ModelProvider for FhirSchemaModelProvider {
             }
         }
         Ok(None)
+    }
+
+    /// Type hierarchy from the schemas' `base` chain (Patient → DomainResource → Resource).
+    fn is_type_derived_from(&self, derived_type: &str, base_type: &str) -> bool {
+        FhirSchemaModelProvider::is_type_derived_from(self, derived_type, base_type)
     }
 
     /// Schema-driven type compatibility check using FHIR schema hierarchy
@@ -868,6 +879,10 @@ impl ModelProvider for EmbeddedSchemaProvider {
         self.inner.of_type(type_info, target_type)
     }
 
+    fn is_type_derived_from(&self, derived_type: &str, base_type: &str) -> bool {
+        self.inner.is_type_derived_from(derived_type, base_type)
+    }
+
     fn get_element_names(&self, parent_type: &TypeInfo) -> Vec<String> {
         self.inner.get_element_names(parent_type)
     }
@@ -986,6 +1001,10 @@ impl ModelProvider for DynamicSchemaProvider {
         self.inner.of_type(type_info, target_type)
     }
 
+    fn is_type_derived_from(&self, derived_type: &str, base_type: &str) -> bool {
+        self.inner.is_type_derived_from(derived_type, base_type)
+    }
+
     fn get_element_names(&self, parent_type: &TypeInfo) -> Vec<String> {
         self.inner.get_element_names(parent_type)
     }
@@ -1009,4 +1028,10 @@ impl ModelProvider for DynamicSchemaProvider {
     async fn get_primitive_types(&self) -> ModelResult<Vec<String>> {
         self.inner.get_primitive_types().await
     }
+}
+
+/// Whether an element holds at most one value: FHIR Schema marks repeating elements with
+/// `array: true` and often leaves `max` unset, so `max` alone cannot tell.
+fn element_is_singleton(element: &crate::types::FhirSchemaElement) -> bool {
+    !element.array.unwrap_or(false) && element.max.is_none_or(|max| max <= 1)
 }
