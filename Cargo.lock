@@ -1977,7 +1977,7 @@ dependencies = [
 
 [[package]]
 name = "octofhir-fhirschema"
-version = "0.3.33"
+version = "0.3.34"
 dependencies = [
  "async-recursion",
  "async-trait",
@@ -1985,7 +1985,6 @@ dependencies = [
  "criterion",
  "futures",
  "moka",
- "octofhir-canonical-manager",
  "octofhir-fhir-model",
  "once_cell",
  "proptest",

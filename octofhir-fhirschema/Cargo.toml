@@ -1,6 +1,6 @@
 [package]
 name = "octofhir-fhirschema"
-version = "0.3.33"
+version = "0.3.34"
 edition = "2024"
 authors = ["OctoFHIR Team<funyloony@gmail.com>"]
 description = "FHIR schema conversion and validation library"
@@ -9,6 +9,11 @@ repository = "https://github.com/octofhir/fhirschema-rs"
 keywords = ["fhir", "healthcare", "schema", "validation"]
 include = ["src/**/*", "precompiled_schemas/**/*", "Cargo.toml", "README.md", "LICENSE*"]
 categories = ["science"]
+
+[features]
+# Preserve the existing HTTP provider exports for default consumers.
+default = ["http-client"]
+http-client = ["octofhir-fhir-model/http-client"]
 
 [dependencies]
 serde = { workspace = true }
@@ -24,8 +29,7 @@ moka = { version = "0.12", features = ["future"] }
 futures = "0.3"
 
 # FHIR dependencies
-octofhir-fhir-model = { version = "0.1.17", features = ["caching", "http-client"] }
-octofhir-canonical-manager = { version = "0.2.6", features = ["cli"] }
+octofhir-fhir-model = { version = "0.1.17", features = ["caching"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
@@ -33,7 +37,6 @@ async-trait = "0.1"
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "fs"] }
 futures = "0.3"
 tempfile = "3.0"
-octofhir-canonical-manager = { version = "0.2.6", features = ["cli"] }
 reqwest = { version = "0.13", features = ["json", "rustls"] }
 proptest = "1.4"
 rand = "0.10"

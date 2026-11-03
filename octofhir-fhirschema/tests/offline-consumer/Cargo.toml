@@ -1,0 +1,12 @@
+[package]
+name = "fhirschema-offline-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Resolve features independently from the parent workspace and its devtools.
+[workspace]
+
+[dependencies]
+octofhir-fhirschema = { path = "../..", default-features = false }
+futures = "0.3"

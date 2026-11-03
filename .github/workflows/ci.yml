@@ -10,6 +10,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  offline-model:
+    name: Standalone offline model
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/offline-consumer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test without default features
+        run: cargo test -p octofhir-fhirschema --no-default-features
+      - name: Run an independent consumer without HTTP or package loading
+        shell: bash
+        run: |
+          manifest=octofhir-fhirschema/tests/offline-consumer/Cargo.toml
+          cargo run --manifest-path "$manifest"
+          tree=$(cargo tree --manifest-path "$manifest" --edges normal --prefix none)
+          printf '%s\n' "$tree"
+          if printf '%s\n' "$tree" | grep -E '^(octofhir-canonical-manager|reqwest|clap) v'; then
+            echo 'Unexpected network or package-manager dependency in the offline model'
+            exit 1
+          fi
+
   test:
     name: Test Suite
     runs-on: ${{ matrix.os }}

@@ -30,6 +30,23 @@ Add this to your `Cargo.toml`:
 octofhir-fhirschema = "0.3"
 ```
 
+For embedded or caller-supplied schemas without HTTP clients:
+
+```toml
+[dependencies]
+octofhir-fhirschema = { version = "0.3.34", default-features = false }
+```
+
+`http-client` is enabled by default to preserve the `DefaultTerminologyProvider`
+export. Disable default features when you only need local model information,
+conversion or validation. Terminology traits, in-memory services and caching stay
+available without HTTP. Another dependency enabling `fhir-model/http-client` can
+still add the HTTP client to the final build through Cargo feature unification.
+
+The library does not depend on `canonical-manager`. Package downloads and schema
+generation belong to the separate `octofhir-fhirschema-devtools` crate. Embedded
+R4, R4B, R5 and R6 schemas are already generated and need no network access.
+
 ## Usage
 
 ### Converting StructureDefinition to FHIRSchema

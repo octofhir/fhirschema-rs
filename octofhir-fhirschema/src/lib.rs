@@ -96,7 +96,8 @@ pub use octofhir_fhir_model::provider::{
 };
 
 // Re-export terminology types from fhir-model-rs
+#[cfg(feature = "http-client")]
+pub use octofhir_fhir_model::DefaultTerminologyProvider;
 pub use octofhir_fhir_model::{
-    CachedTerminologyProvider, DefaultTerminologyProvider, TerminologyCacheConfig,
-    TerminologyCacheStats, TerminologyProvider,
+    CachedTerminologyProvider, TerminologyCacheConfig, TerminologyCacheStats, TerminologyProvider,
 };

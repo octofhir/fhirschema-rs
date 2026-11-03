@@ -22,3 +22,6 @@ Thumbs.db
 /schemas
 tests/fixtures/r4b_reference/
 tests/fixtures/comparison_reports/
+
+# The standalone dependency smoke test resolves its own graph.
+/octofhir-fhirschema/tests/offline-consumer/Cargo.lock
