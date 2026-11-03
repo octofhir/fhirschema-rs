@@ -250,7 +250,7 @@ pub trait ReferenceResolver: Send + Sync {
         &self,
         references: &[String],
     ) -> Vec<ReferenceResult<ReferenceResolutionResult>> {
-        futures::future::join_all(references.iter().map(|r| self.resolve_reference(r))).await
+        futures_util::future::join_all(references.iter().map(|r| self.resolve_reference(r))).await
     }
 
     /// Batch-fetch bodies for multiple references at once.
@@ -263,7 +263,7 @@ pub trait ReferenceResolver: Send + Sync {
         &self,
         references: &[String],
     ) -> Vec<ReferenceResult<Option<Arc<serde_json::Value>>>> {
-        futures::future::join_all(references.iter().map(|r| self.fetch_resource(r))).await
+        futures_util::future::join_all(references.iter().map(|r| self.fetch_resource(r))).await
     }
 
     /// Batch-fetch the profiles each referenced resource declares in

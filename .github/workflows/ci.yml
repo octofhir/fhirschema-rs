@@ -27,7 +27,7 @@ jobs:
           cargo run --manifest-path "$manifest"
           tree=$(cargo tree --manifest-path "$manifest" --edges normal --prefix none)
           printf '%s\n' "$tree"
-          if printf '%s\n' "$tree" | grep -E '^(octofhir-canonical-manager|reqwest|clap) v'; then
+          if printf '%s\n' "$tree" | grep -E '^(octofhir-canonical-manager|reqwest|clap|tokio|hyper|rustls|native-tls|openssl-sys|sqlx) v'; then
             echo 'Unexpected network or package-manager dependency in the offline model'
             exit 1
           fi

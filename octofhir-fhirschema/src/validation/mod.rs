@@ -27,11 +27,11 @@ use crate::terminology::TerminologyService;
 use crate::types::{FhirSchema, FhirSchemaSlicing, ValidationError, ValidationResult};
 use async_trait::async_trait;
 use octofhir_fhir_model::FhirPathEvaluator;
-use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 /// Default maximum recursion depth for `targetProfile` conformance validation.
 /// A referenced resource may itself carry references with their own
@@ -94,29 +94,30 @@ fn declares_profile(declared: &[String], target: &str) -> bool {
 const INT32_MIN: i64 = -2_147_483_648;
 const INT32_MAX: i64 = 2_147_483_647;
 
-static RE_DATE: Lazy<Regex> = Lazy::new(|| {
+static RE_DATE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)(-(0[1-9]|1[0-2])(-(0[1-9]|[1-2][0-9]|3[0-1]))?)?$").unwrap()
 });
-static RE_DATETIME: Lazy<Regex> = Lazy::new(|| {
+static RE_DATETIME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)(-(0[1-9]|1[0-2])(-(0[1-9]|[1-2][0-9]|3[0-1])(T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\.[0-9]{1,9})?(Z|[+\-]((0[0-9]|1[0-3]):[0-5][0-9]|14:00)))?)?)?$").unwrap()
 });
-static RE_INSTANT: Lazy<Regex> = Lazy::new(|| {
+static RE_INSTANT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\.[0-9]{1,9})?(Z|[+\-]((0[0-9]|1[0-3]):[0-5][0-9]|14:00))$").unwrap()
 });
-static RE_TIME: Lazy<Regex> = Lazy::new(|| {
+static RE_TIME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\.[0-9]{1,9})?$").unwrap()
 });
-static RE_CODE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[^\s]+(\s[^\s]+)*$").unwrap());
-static RE_ID: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9\-\.]{1,64}$").unwrap());
-static RE_OID: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^urn:oid:[0-2](\.(0|[1-9][0-9]*))+$").unwrap());
-static RE_UUID: Lazy<Regex> = Lazy::new(|| {
+static RE_CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[^\s]+(\s[^\s]+)*$").unwrap());
+static RE_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9\-\.]{1,64}$").unwrap());
+static RE_OID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^urn:oid:[0-2](\.(0|[1-9][0-9]*))+$").unwrap());
+static RE_UUID: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"^urn:uuid:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
     )
     .unwrap()
 });
-static RE_BASE64: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(\s*[0-9a-zA-Z+/=]\s*){4,}$").unwrap());
+static RE_BASE64: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(\s*[0-9a-zA-Z+/=]\s*){4,}$").unwrap());
 
 /// Calendar validity for a FHIR date/dateTime/instant date portion. Accepts
 /// partial dates (`YYYY`, `YYYY-MM`) — only `YYYY-MM-DD` triggers a day-level

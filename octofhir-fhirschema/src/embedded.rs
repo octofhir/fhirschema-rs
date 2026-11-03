@@ -1,6 +1,6 @@
 use crate::types::{FhirSchema, ValidationContext};
-use once_cell::sync::Lazy;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 // Precompiled schema constants - use precompiled JSON files
 pub static R4_SCHEMAS: &[u8] = include_bytes!("../precompiled_schemas/r4_schemas.json");
@@ -9,28 +9,28 @@ pub static R5_SCHEMAS: &[u8] = include_bytes!("../precompiled_schemas/r5_schemas
 pub static R6_SCHEMAS: &[u8] = include_bytes!("../precompiled_schemas/r6_schemas.json");
 
 // Lazy-loaded deserialized schemas
-static R4_SCHEMA_MAP: Lazy<HashMap<String, FhirSchema>> = Lazy::new(|| {
+static R4_SCHEMA_MAP: LazyLock<HashMap<String, FhirSchema>> = LazyLock::new(|| {
     serde_json::from_slice::<HashMap<String, FhirSchema>>(R4_SCHEMAS).unwrap_or_else(|e| {
         eprintln!("Failed to deserialize R4 schemas from JSON: {e}");
         HashMap::new()
     })
 });
 
-static R4B_SCHEMA_MAP: Lazy<HashMap<String, FhirSchema>> = Lazy::new(|| {
+static R4B_SCHEMA_MAP: LazyLock<HashMap<String, FhirSchema>> = LazyLock::new(|| {
     serde_json::from_slice::<HashMap<String, FhirSchema>>(R4B_SCHEMAS).unwrap_or_else(|e| {
         eprintln!("Failed to deserialize R4B schemas from JSON: {e}");
         HashMap::new()
     })
 });
 
-static R5_SCHEMA_MAP: Lazy<HashMap<String, FhirSchema>> = Lazy::new(|| {
+static R5_SCHEMA_MAP: LazyLock<HashMap<String, FhirSchema>> = LazyLock::new(|| {
     serde_json::from_slice::<HashMap<String, FhirSchema>>(R5_SCHEMAS).unwrap_or_else(|e| {
         eprintln!("Failed to deserialize R5 schemas from JSON: {e}");
         HashMap::new()
     })
 });
 
-static R6_SCHEMA_MAP: Lazy<HashMap<String, FhirSchema>> = Lazy::new(|| {
+static R6_SCHEMA_MAP: LazyLock<HashMap<String, FhirSchema>> = LazyLock::new(|| {
     serde_json::from_slice::<HashMap<String, FhirSchema>>(R6_SCHEMAS).unwrap_or_else(|e| {
         eprintln!("Failed to deserialize R6 schemas from JSON: {e}");
         HashMap::new()

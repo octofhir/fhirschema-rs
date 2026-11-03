@@ -9,9 +9,9 @@ publish = false
 
 [dependencies]
 octofhir-fhirschema = { path = "../octofhir-fhirschema" }
-octofhir-canonical-manager = { version = "0.2.6", features = ["cli"] }
-octofhir-fhir-model = { version = "0.1.17", features = ["caching", "http-client"] }
-octofhir-fhirpath = "0.4.54"
+octofhir-canonical-manager = { version = "0.2.6", default-features = false, features = ["sqlite"] }
+octofhir-fhir-model = { version = "0.1.19", features = ["caching", "http-client"] }
+octofhir-fhirpath = "0.5.3"
 anyhow = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -23,7 +23,7 @@ reqwest = { version = "0.13", features = ["json", "rustls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wait-timeout = "0.2"
-zip = "8.6"
+zip = "9.3"
 
 [[bin]]
 name = "schema-generator"
