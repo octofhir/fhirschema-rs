@@ -116,18 +116,23 @@ fn get_differential(structure_definition: &StructureDefinition) -> Vec<Structure
 /// it slices. It does for a single-valued element: a named slice there is the element itself
 /// (`Composition.date:IssueDate`, `FamilyMemberHistory.born[x]:BornAge`). It does not for a
 /// repeating one, whose slice describes some of its items only: `extension` and
-/// `modifierExtension`, and any element whose base cardinality in the snapshot repeats.
+/// `modifierExtension`, and any element whose base cardinality in the snapshot repeats. A
+/// choice's type slice (`value[x]:valueQuantity`) constrains its typed element, not the choice.
 fn slice_constrains_element(
     element: &StructureDefinitionElement,
     structure_definition: &StructureDefinition,
 ) -> bool {
-    if element.slice_name.is_none() {
+    let Some(slice_name) = element.slice_name.as_deref() else {
         return false;
-    }
-    if matches!(
-        element.path.rsplit('.').next(),
-        Some("extension" | "modifierExtension")
-    ) {
+    };
+    let name = element.path.rsplit('.').next().unwrap_or_default();
+    // `extension` is always repeating. A type slice of a choice (`value[x]:valueQuantity`) is
+    // expanded to the choice (`value`) and the typed element (`valueQuantity`): it constrains
+    // the typed element, and must not narrow the choice to its one type.
+    let narrows_choice = slice_name
+        .strip_prefix(name)
+        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_uppercase()));
+    if matches!(name, "extension" | "modifierExtension") || narrows_choice {
         return false;
     }
     let base_max = structure_definition

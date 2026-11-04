@@ -297,6 +297,47 @@ fn slicing_to_extensions(slicing_element: &Value) -> HashMap<String, Value> {
     extensions
 }
 
+/// Merge `child` into the `existing` definition of the same element: the child's properties win,
+/// and their slices and child elements are combined.
+fn merge_element(existing: &mut Value, child: Value) {
+    let (Some(target), Value::Object(source)) = (existing.as_object_mut(), child) else {
+        return;
+    };
+    for (key, value) in source {
+        match (key.as_str(), target.get_mut(&key)) {
+            ("elements", Some(current)) if current.is_object() && value.is_object() => {
+                let current = current.as_object_mut().expect("object");
+                for (name, element) in value.as_object().cloned().unwrap_or_default() {
+                    match current.get_mut(&name) {
+                        Some(known) if known.is_object() => merge_element(known, element),
+                        _ => {
+                            current.insert(name, element);
+                        }
+                    }
+                }
+            }
+            ("slicing", Some(current)) if current.is_object() && value.is_object() => {
+                let slices = value.get("slices").cloned();
+                let current = current.as_object_mut().expect("object");
+                for (name, field) in value.as_object().cloned().unwrap_or_default() {
+                    if name != "slices" {
+                        current.insert(name, field);
+                    }
+                }
+                if let Some(Value::Object(slices)) = slices {
+                    let known = current.entry("slices").or_insert_with(|| json!({}));
+                    if let Some(known) = known.as_object_mut() {
+                        known.extend(slices);
+                    }
+                }
+            }
+            _ => {
+                target.insert(key, value);
+            }
+        }
+    }
+}
+
 fn add_element(element_name: &str, parent: &mut Value, child: Value) -> crate::error::Result<()> {
     // Special handling for extension elements
     if element_name == "extension" {
@@ -326,7 +367,11 @@ fn add_element(element_name: &str, parent: &mut Value, child: Value) -> crate::e
         obj.remove("_required");
     }
 
-    parent["elements"][element_name] = clean_child;
+    // An element entered again (a choice, then one of its type slices) keeps what it already has.
+    match parent["elements"].get_mut(element_name) {
+        Some(existing) if existing.is_object() => merge_element(existing, clean_child),
+        _ => parent["elements"][element_name] = clean_child,
+    }
 
     // Add to required array if needed
     if required_flag {

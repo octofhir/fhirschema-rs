@@ -202,6 +202,82 @@ fn a_slice_of_a_single_valued_element_constrains_the_element() {
     );
 }
 
+/// Type slices of a choice (US Core 9 Smoking Status: `value[x]` 1..1 with
+/// `value[x]:valueQuantity` and `value[x]:valueCodeableConcept`) constrain their typed elements
+/// and do not narrow the choice to one type.
+#[test]
+fn type_slices_of_a_choice_constrain_the_typed_elements() {
+    let sd: octofhir_fhirschema::StructureDefinition = serde_json::from_value(json!({
+        "resourceType": "StructureDefinition", "status": "active",
+        "url": "http://example.org/StructureDefinition/smoking", "name": "Smoking",
+        "type": "Observation", "kind": "resource", "abstract": false,
+        "derivation": "constraint",
+        "baseDefinition": "http://hl7.org/fhir/StructureDefinition/Observation",
+        "differential": {"element": [
+            {"id": "Observation", "path": "Observation"},
+            {"id": "Observation.value[x]", "path": "Observation.value[x]", "min": 1},
+            {"id": "Observation.value[x]:valueQuantity", "path": "Observation.value[x]",
+             "sliceName": "valueQuantity", "min": 0, "max": "1", "mustSupport": true,
+             "type": [{"code": "Quantity"}]},
+            {"id": "Observation.value[x]:valueCodeableConcept", "path": "Observation.value[x]",
+             "sliceName": "valueCodeableConcept", "min": 0, "max": "1",
+             "type": [{"code": "CodeableConcept"}]}
+        ]}
+    }))
+    .expect("StructureDefinition");
+    let schema = octofhir_fhirschema::translate(sd, None).expect("translate");
+    let elements = schema.elements.as_ref().expect("elements");
+    let quantity = &elements["valueQuantity"];
+    assert_eq!(
+        quantity.type_name.as_deref(),
+        Some("Quantity"),
+        "{quantity:?}"
+    );
+    assert_eq!(quantity.must_support, Some(true), "{quantity:?}");
+    let value = &elements["value"];
+    assert!(
+        value
+            .choices
+            .as_ref()
+            .is_none_or(|choices| choices.len() != 1),
+        "the choice is not narrowed to one type: {value:?}"
+    );
+}
+
+/// A choice narrowed by its root and then type-sliced (FHIR R6 `bp`: `value[x]` Quantity, then
+/// `value[x]:valueQuantity`) keeps the root's narrowing: the element entered again is merged,
+/// not replaced.
+#[test]
+fn a_type_slice_keeps_the_choice_its_root_narrowed() {
+    let sd: octofhir_fhirschema::StructureDefinition = serde_json::from_value(json!({
+        "resourceType": "StructureDefinition", "status": "active",
+        "url": "http://example.org/StructureDefinition/bp", "name": "BP",
+        "type": "Observation", "kind": "resource", "abstract": false,
+        "derivation": "constraint",
+        "baseDefinition": "http://hl7.org/fhir/StructureDefinition/Observation",
+        "differential": {"element": [
+            {"id": "Observation", "path": "Observation"},
+            {"id": "Observation.value[x]", "path": "Observation.value[x]", "mustSupport": true,
+             "type": [{"code": "Quantity"}]},
+            {"id": "Observation.value[x]:valueQuantity", "path": "Observation.value[x]",
+             "sliceName": "valueQuantity", "short": "In mm[Hg]",
+             "type": [{"code": "Quantity"}]}
+        ]}
+    }))
+    .expect("StructureDefinition");
+    let schema = octofhir_fhirschema::translate(sd, None).expect("translate");
+    let elements = schema.elements.as_ref().expect("elements");
+    let value = &elements["value"];
+    assert_eq!(
+        value.choices.as_deref(),
+        Some(&["valueQuantity".to_string()][..]),
+        "{value:?}"
+    );
+    assert_eq!(value.must_support, Some(true), "{value:?}");
+    let quantity = &elements["valueQuantity"];
+    assert_eq!(quantity.short.as_deref(), Some("In mm[Hg]"), "{quantity:?}");
+}
+
 /// A required slice requires the element it slices (a complex extension with a 1..1 part, FHIR
 /// R4 core `codesystem-alternate`): with no `extension` at all there is nothing to count against
 /// the slice's minimum.
