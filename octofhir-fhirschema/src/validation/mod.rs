@@ -1404,6 +1404,34 @@ impl FhirValidator {
                     return;
                 }
 
+                // Repetitions: `max` (a profile narrowing 0..* to 0..1) and a `min` above
+                // one (presence itself is the parent's `required`).
+                let count = arr.len() as i32;
+                let outside = match element.max {
+                    Some(max) if count > max => Some(format!("at most {max}")),
+                    _ if element.min > 1 && count < element.min => {
+                        Some(format!("at least {}", element.min))
+                    }
+                    _ => None,
+                };
+                if let Some(bound) = outside {
+                    errors.push(ValidationError {
+                        error_type: FhirSchemaErrorCode::CardinalityViolation.to_string(),
+                        path: self.path_to_vec(path),
+                        message: Some(format!(
+                            "Element '{}' allows {bound} items, found {count}",
+                            element.name
+                        )),
+                        value: None,
+                        expected: None,
+                        got: None,
+                        schema_path: None,
+                        constraint_key: None,
+                        constraint_expression: None,
+                        constraint_severity: None,
+                    });
+                }
+
                 // Validate slicing if defined
                 if let Some(slicing) = &element.slicing {
                     self.validate_slicing(arr, slicing, errors, path);

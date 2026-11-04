@@ -40,8 +40,14 @@ pub fn expand_choice_element(
     let field_name = base_path.split('.').next_back().unwrap_or("").to_string();
 
     let type_info = match &element.type_info {
-        Some(types) => types,
-        None => return Ok(vec![]),
+        Some(types) if !types.is_empty() => types,
+        // A profile constraining the choice element itself (cardinality, mustSupport,
+        // invariants) without narrowing its types: the element stays, with the base's types.
+        _ => {
+            let mut parent_element = element.clone();
+            parent_element.path = base_path;
+            return Ok(vec![parent_element]);
+        }
     };
 
     let mut expanded = Vec::new();

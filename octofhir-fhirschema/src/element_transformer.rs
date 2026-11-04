@@ -271,9 +271,13 @@ fn build_element_extension(
     result
 }
 
+/// `constraint`: the element belongs to a profile, whose differential states only what it
+/// changes, so a `max` of 1 narrows a repeating base element and must be kept (the base
+/// supplies `array`).
 fn build_element_cardinality(
     element: &FhirSchemaElement,
     definition_element: &StructureDefinitionElement,
+    constraint: bool,
 ) -> FhirSchemaElement {
     let mut result = element.clone();
 
@@ -314,6 +318,17 @@ fn build_element_cardinality(
         {
             result.max = Some(max_val);
         }
+    }
+
+    if constraint
+        && !is_array
+        && let Some(max) = definition_element
+            .max
+            .as_ref()
+            .and_then(|m| m.parse::<i32>().ok())
+            .filter(|m| *m >= 0)
+    {
+        result.max = Some(max);
     }
 
     if is_required {
@@ -415,7 +430,8 @@ pub fn transform_element(
     transformed =
         build_element_content_reference(&transformed, &preprocessed, structure_definition);
     transformed = build_element_extension(&transformed, &preprocessed);
-    transformed = build_element_cardinality(&transformed, &preprocessed);
+    let constraint = structure_definition.derivation.as_deref() == Some("constraint");
+    transformed = build_element_cardinality(&transformed, &preprocessed, constraint);
     transformed = build_element_type(&transformed, &preprocessed, structure_definition);
     process_patterns(&mut transformed, &element.pattern_fields);
 

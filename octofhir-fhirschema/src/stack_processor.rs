@@ -26,7 +26,12 @@ where
 fn build_match_for_slice(slicing: &Value, slice_schema: &Value) -> Value {
     let discriminator = slicing.get("discriminator");
     if discriminator.is_none() {
-        return json!({});
+        // An extension slice needs no slicing definition: it is sliced by
+        // `url` (FHIR "Extension slicing"), the extension's canonical.
+        return match slice_schema.get("url").and_then(Value::as_str) {
+            Some(url) => json!({ "url": url }),
+            None => json!({}),
+        };
     }
 
     let mut match_obj = json!({});
@@ -343,8 +348,14 @@ pub fn apply_actions(
     for (i, action) in actions.iter().enumerate() {
         let next_action = actions.get(i + 1);
 
-        // If next action is enter, use empty object instead of value
-        let value_to_use = if matches!(next_action, Some(Action::Enter { .. })) {
+        // The value belongs to the innermost element entered: an element
+        // entered on the way to a child or to one of its slices is a container
+        // (a slice listed without its slicing root, e.g. `extension:sqlText`,
+        // must not lend its cardinality to `extension` itself).
+        let value_to_use = if matches!(
+            next_action,
+            Some(Action::Enter { .. } | Action::EnterSlice { .. })
+        ) {
             json!({})
         } else {
             value_json.clone()

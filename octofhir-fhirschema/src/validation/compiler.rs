@@ -326,6 +326,47 @@ impl SchemaCompiler {
             result.choices = overlay.choices.clone();
         }
 
+        // Overlay slicing: a profile slicing an element its base declares
+        // (e.g. `content.extension:sqlText`) must keep its slices, else they
+        // are never validated.
+        if overlay.slicing.is_some() {
+            result.slicing = overlay.slicing.clone();
+        }
+        if overlay.url.is_some() {
+            result.url = overlay.url.clone();
+        }
+
+        // Union required / excluded children and merge extension definitions.
+        if let Some(overlay_required) = &overlay.required {
+            let mut required = result.required.unwrap_or_default();
+            for name in overlay_required {
+                if !required.contains(name) {
+                    required.push(name.clone());
+                }
+            }
+            result.required = Some(required);
+        }
+        if let Some(overlay_excluded) = &overlay.excluded {
+            let mut excluded = result.excluded.unwrap_or_default();
+            for name in overlay_excluded {
+                if !excluded.contains(name) {
+                    excluded.push(name.clone());
+                }
+            }
+            result.excluded = Some(excluded);
+        }
+        if let Some(overlay_extensions) = &overlay.extensions {
+            result.extensions = Some(match (result.extensions.take(), overlay_extensions) {
+                (Some(serde_json::Value::Object(mut base)), serde_json::Value::Object(over)) => {
+                    for (key, extension) in over {
+                        base.insert(key.clone(), extension.clone());
+                    }
+                    serde_json::Value::Object(base)
+                }
+                _ => overlay_extensions.clone(),
+            });
+        }
+
         // Overlay type narrowing (similar idea: profile may declare an explicit
         // type on what was a generic Element).
         if overlay.type_name.is_some() {
@@ -411,8 +452,13 @@ impl SchemaCompiler {
                             // finite nesting levels (e.g. BackboneElement). A repeated
                             // base name alone is not a cycle here. Bound total expansion
                             // depth, including children introduced by the base schema.
+                            // The overlay constrains elements the type may
+                            // inherit (an Attachment's `extension` comes from
+                            // Element): merge it over the type's whole chain,
+                            // so an inherited element keeps its cardinality.
+                            let chain = self.resolve_chain(&type_schema).await?;
                             let mut merged_children =
-                                type_schema.elements.as_ref().cloned().unwrap_or_default();
+                                self.merge_chain(&chain).elements.unwrap_or_default();
                             for (key, overlay_child) in nested {
                                 if let Some(base_child) = merged_children.get(key) {
                                     merged_children.insert(

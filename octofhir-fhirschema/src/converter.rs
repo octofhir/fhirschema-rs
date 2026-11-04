@@ -46,13 +46,26 @@ fn build_resource_header(
         schema.base = Some(base_definition.clone());
     }
 
-    // Extract resource-level constraints from root element in snapshot
-    // The root element has path equal to the resource type (e.g., "Organization")
-    if let Some(snapshot) = &structure_definition.snapshot
-        && let Some(root_element) = snapshot
-            .element
+    // Extract resource-level constraints from the root element (path = the type, e.g.
+    // "Organization"): the snapshot's, else the differential's — a profile published without a
+    // snapshot still declares its own invariants there.
+    let root_of = |elements: &[StructureDefinitionElement]| {
+        elements
             .iter()
             .find(|e| e.path == structure_definition.type_name)
+            .cloned()
+    };
+    let root = structure_definition
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| root_of(&snapshot.element))
+        .or_else(|| {
+            structure_definition
+                .differential
+                .as_ref()
+                .and_then(|differential| root_of(&differential.element))
+        });
+    if let Some(root_element) = &root
         && let Some(constraints) = &root_element.constraint
         && !constraints.is_empty()
     {
@@ -103,24 +116,38 @@ fn get_differential(structure_definition: &StructureDefinition) -> Vec<Structure
 /// This fixes the bug where non-contiguous children (e.g., engine.type, matcher.*, engine.script)
 /// cause the first child to be lost during stack-based processing.
 fn sort_elements_by_path(
-    mut elements: Vec<StructureDefinitionElement>,
+    elements: Vec<StructureDefinitionElement>,
 ) -> Vec<StructureDefinitionElement> {
-    elements.sort_by(|a, b| {
-        let parts_a: Vec<&str> = a.path.split('.').collect();
-        let parts_b: Vec<&str> = b.path.split('.').collect();
-
-        // Compare each path component hierarchically
-        for (pa, pb) in parts_a.iter().zip(parts_b.iter()) {
-            match pa.cmp(pb) {
-                std::cmp::Ordering::Equal => continue,
-                other => return other,
-            }
-        }
-
-        // Shorter paths come first (parent before children)
-        parts_a.len().cmp(&parts_b.len())
-    });
-    elements
+    // Each element is keyed by the first appearance of every prefix of its id
+    // (`Provenance`, `Provenance.agent:ProvenanceAuthor`, `….type`), so a subtree becomes
+    // contiguous while siblings keep their order, and a slice's children stay with their
+    // slice rather than with the element sliced (ids carry slice names; paths do not).
+    let mut first: HashMap<String, usize> = HashMap::new();
+    let keys: Vec<Vec<usize>> = elements
+        .iter()
+        .enumerate()
+        .map(|(index, element)| {
+            let id = element.id.as_deref().unwrap_or(&element.path);
+            let mut prefix = String::new();
+            id.split('.')
+                .map(|segment| {
+                    if !prefix.is_empty() {
+                        prefix.push('.');
+                    }
+                    prefix.push_str(segment);
+                    *first.entry(prefix.clone()).or_insert(index)
+                })
+                .collect()
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..elements.len()).collect();
+    order.sort_by(|a, b| keys[*a].cmp(&keys[*b]));
+    let mut slots: Vec<Option<StructureDefinitionElement>> =
+        elements.into_iter().map(Some).collect();
+    order
+        .into_iter()
+        .filter_map(|index| slots[index].take())
+        .collect()
 }
 
 fn sort_elements_by_index(mut elements: HashMap<String, Value>) -> HashMap<String, Value> {
