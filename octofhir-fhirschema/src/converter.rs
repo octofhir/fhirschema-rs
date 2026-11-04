@@ -3,7 +3,7 @@ use crate::choice_handler::{expand_choice_element, is_choice_element};
 use crate::element_transformer::transform_element;
 use crate::error::{FhirSchemaError, Result};
 use crate::path_parser::{enrich_path, parse_path};
-use crate::stack_processor::apply_actions;
+use crate::stack_processor::{apply_actions, apply_actions_lending};
 use crate::types::{
     ConversionContext, FhirSchema, FhirSchemaConstraint, FhirSchemaElement, StructureDefinition,
     StructureDefinitionElement,
@@ -110,6 +110,42 @@ fn get_differential(structure_definition: &StructureDefinition) -> Vec<Structure
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Whether a slice, when its slicing root is not in the differential, also constrains the element
+/// it slices. It does for a single-valued element: a named slice there is the element itself
+/// (`Composition.date:IssueDate`, `FamilyMemberHistory.born[x]:BornAge`). It does not for a
+/// repeating one, whose slice describes some of its items only: `extension` and
+/// `modifierExtension`, and any element whose base cardinality in the snapshot repeats.
+fn slice_constrains_element(
+    element: &StructureDefinitionElement,
+    structure_definition: &StructureDefinition,
+) -> bool {
+    if element.slice_name.is_none() {
+        return false;
+    }
+    if matches!(
+        element.path.rsplit('.').next(),
+        Some("extension" | "modifierExtension")
+    ) {
+        return false;
+    }
+    let base_max = structure_definition
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| {
+            snapshot
+                .element
+                .iter()
+                .find(|e| e.path == element.path && e.slice_name.is_none())
+        })
+        .and_then(|e| {
+            e.base
+                .as_ref()
+                .map(|base| base.max.as_str())
+                .or(e.max.as_deref())
+        });
+    !matches!(base_max, Some(max) if max == "*" || max.parse::<u32>().is_ok_and(|n| n > 1))
 }
 
 /// Sort elements by path hierarchy to ensure BackboneElement children are contiguous.
@@ -284,7 +320,8 @@ pub fn translate(
         index += 1;
 
         // Apply actions
-        stack = apply_actions(stack, &actions, &transformed_element)?;
+        let lend = slice_constrains_element(&element, &structure_definition);
+        stack = apply_actions_lending(stack, &actions, &transformed_element, lend)?;
 
         prev_path = enriched_path;
     }

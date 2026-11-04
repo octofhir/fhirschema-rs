@@ -201,7 +201,16 @@ fn build_slice(
             parent["slicing"]["slices"] = json!({});
         }
 
+        // A required slice requires the element it slices: without the element there is no item
+        // to count against the slice's minimum.
+        let slice_required = slice_node
+            .get("min")
+            .and_then(Value::as_i64)
+            .is_some_and(|min| min > 0);
         parent["slicing"]["slices"][slice_name] = slice_node;
+        if slice_required {
+            parent["_required"] = json!(true);
+        }
     }
 
     Ok(())
@@ -341,24 +350,38 @@ pub fn apply_actions(
     actions: &[Action],
     value: &FhirSchemaElement,
 ) -> crate::error::Result<Vec<Value>> {
+    apply_actions_lending(stack, actions, value, false)
+}
+
+/// [`apply_actions`] for an element that may be a slice listed without its slicing root.
+///
+/// The value belongs to the innermost element entered: an element entered on the way to a child
+/// or to one of its slices is a container. With `lend_to_sliced`, an element entered only to
+/// reach the slice that is `value` also takes `value`: a named slice of a single-valued element
+/// (`Composition.date:IssueDate`, `born[x]:BornAge`) constrains the element itself. A repeating
+/// element (`extension:sqlText`) must not take its slice's cardinality or profile.
+pub fn apply_actions_lending(
+    stack: Vec<Value>,
+    actions: &[Action],
+    value: &FhirSchemaElement,
+    lend_to_sliced: bool,
+) -> crate::error::Result<Vec<Value>> {
     let mut current_stack = stack;
     let value_json =
         serde_json::to_value(value).map_err(crate::error::FhirSchemaError::SerializationError)?;
 
     for (i, action) in actions.iter().enumerate() {
         let next_action = actions.get(i + 1);
+        let enters_value_slice = matches!(action, Action::Enter { .. })
+            && matches!(next_action, Some(Action::EnterSlice { .. }))
+            && i + 2 == actions.len();
 
-        // The value belongs to the innermost element entered: an element
-        // entered on the way to a child or to one of its slices is a container
-        // (a slice listed without its slicing root, e.g. `extension:sqlText`,
-        // must not lend its cardinality to `extension` itself).
-        let value_to_use = if matches!(
-            next_action,
-            Some(Action::Enter { .. } | Action::EnterSlice { .. })
-        ) {
-            json!({})
-        } else {
-            value_json.clone()
+        let value_to_use = match next_action {
+            Some(Action::EnterSlice { .. }) if lend_to_sliced && enters_value_slice => {
+                value_json.clone()
+            }
+            Some(Action::Enter { .. } | Action::EnterSlice { .. }) => json!({}),
+            _ => value_json.clone(),
         };
 
         match action {

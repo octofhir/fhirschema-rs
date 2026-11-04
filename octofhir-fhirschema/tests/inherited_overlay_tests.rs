@@ -174,6 +174,108 @@ fn a_slice_listed_without_its_root_keeps_its_constraints() {
     assert!(nested.contains_key("data"));
 }
 
+/// A named slice of a single-valued element, listed without a slicing root (FHIR R4 core
+/// `catalog`: `Composition.date:IssueDate` 1..1), constrains the element itself: a single value
+/// is never classified into slices.
+#[test]
+fn a_slice_of_a_single_valued_element_constrains_the_element() {
+    let sd: octofhir_fhirschema::StructureDefinition = serde_json::from_value(json!({
+        "resourceType": "StructureDefinition", "status": "active",
+        "url": "http://example.org/StructureDefinition/catalog", "name": "Catalog",
+        "type": "Composition", "kind": "resource", "abstract": false,
+        "derivation": "constraint",
+        "baseDefinition": "http://hl7.org/fhir/StructureDefinition/Composition",
+        "differential": {"element": [
+            {"id": "Composition", "path": "Composition"},
+            {"id": "Composition.date:IssueDate", "path": "Composition.date",
+             "sliceName": "IssueDate", "min": 1, "max": "1", "mustSupport": true}
+        ]}
+    }))
+    .expect("StructureDefinition");
+    let schema = octofhir_fhirschema::translate(sd, None).expect("translate");
+    let date = &schema.elements.as_ref().expect("elements")["date"];
+    assert_eq!(date.must_support, Some(true), "{date:?}");
+    assert!(
+        schema.required.iter().flatten().any(|name| name == "date"),
+        "date is required: {:?}",
+        schema.required
+    );
+}
+
+/// A required slice requires the element it slices (a complex extension with a 1..1 part, FHIR
+/// R4 core `codesystem-alternate`): with no `extension` at all there is nothing to count against
+/// the slice's minimum.
+#[test]
+fn a_required_slice_requires_the_sliced_element() {
+    let sd: octofhir_fhirschema::StructureDefinition = serde_json::from_value(json!({
+        "resourceType": "StructureDefinition", "status": "active",
+        "url": "http://example.org/StructureDefinition/alternate", "name": "Alternate",
+        "type": "Extension", "kind": "complex-type", "abstract": false,
+        "derivation": "constraint",
+        "baseDefinition": "http://hl7.org/fhir/StructureDefinition/Extension",
+        "differential": {"element": [
+            {"id": "Extension", "path": "Extension"},
+            {"id": "Extension.extension:code", "path": "Extension.extension",
+             "sliceName": "code", "min": 1, "max": "1"},
+            {"id": "Extension.extension:use", "path": "Extension.extension",
+             "sliceName": "use", "min": 0, "max": "*"}
+        ]}
+    }))
+    .expect("StructureDefinition");
+    let schema = octofhir_fhirschema::translate(sd, None).expect("translate");
+    assert!(
+        schema
+            .required
+            .iter()
+            .flatten()
+            .any(|name| name == "extension"),
+        "extension is required: {:?}",
+        schema.required
+    );
+    let extension = &schema.elements.as_ref().expect("elements")["extension"];
+    assert_eq!(extension.max, None, "{extension:?}");
+}
+
+/// A slice of a repeating element listed without its root (`Patient.identifier:mrn` 1..1 in a
+/// profile whose base sliced `identifier`) describes some items only: `identifier` stays a
+/// repeating element without the slice's cardinality.
+#[test]
+fn a_slice_of_a_repeating_element_does_not_constrain_the_element() {
+    let sd: octofhir_fhirschema::StructureDefinition = serde_json::from_value(json!({
+        "resourceType": "StructureDefinition", "status": "active",
+        "url": "http://example.org/StructureDefinition/patient", "name": "P",
+        "type": "Patient", "kind": "resource", "abstract": false,
+        "derivation": "constraint",
+        "baseDefinition": "http://hl7.org/fhir/StructureDefinition/Patient",
+        "differential": {"element": [
+            {"id": "Patient", "path": "Patient"},
+            {"id": "Patient.identifier:mrn", "path": "Patient.identifier",
+             "sliceName": "mrn", "min": 1, "max": "1", "mustSupport": true}
+        ]},
+        "snapshot": {"element": [
+            {"id": "Patient", "path": "Patient", "min": 0, "max": "*",
+             "base": {"path": "Patient", "min": 0, "max": "*"}},
+            {"id": "Patient.identifier", "path": "Patient.identifier", "min": 0, "max": "*",
+             "base": {"path": "Patient.identifier", "min": 0, "max": "*"},
+             "slicing": {"discriminator": [{"type": "pattern", "path": "type"}], "rules": "open"}},
+            {"id": "Patient.identifier:mrn", "path": "Patient.identifier", "sliceName": "mrn",
+             "min": 1, "max": "1",
+             "base": {"path": "Patient.identifier", "min": 0, "max": "*"}}
+        ]}
+    }))
+    .expect("StructureDefinition");
+    let schema = octofhir_fhirschema::translate(sd, None).expect("translate");
+    let identifier = &schema.elements.as_ref().expect("elements")["identifier"];
+    assert_eq!(identifier.max, None, "{identifier:?}");
+    assert_eq!(identifier.must_support, None, "{identifier:?}");
+    let slices = identifier
+        .slicing
+        .as_ref()
+        .and_then(|slicing| slicing.slices.as_ref())
+        .expect("slices");
+    assert!(slices.contains_key("mrn"), "{slices:?}");
+}
+
 /// The converted SQLQuery profile accepts the sql-text extension next to any
 /// other extension: an extension slice without a discriminator is sliced by
 /// `url` (implied for extensions), so the other one is not counted against it.
