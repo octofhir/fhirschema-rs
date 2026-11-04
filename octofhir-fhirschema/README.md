@@ -12,13 +12,13 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-octofhir-fhirschema = "0.3.35"
+octofhir-fhirschema = "0.3.36"
 ```
 
 For validation with embedded or custom model providers and no HTTP stack:
 
 ```toml
-octofhir-fhirschema = { version = "0.3.35", default-features = false }
+octofhir-fhirschema = { version = "0.3.36", default-features = false }
 ```
 
 Embedded R4, R4B, R5 and R6 schemas remain available in this mode. The default
