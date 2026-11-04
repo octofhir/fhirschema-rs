@@ -1216,7 +1216,7 @@ impl FhirValidator {
 
         // Check required elements
         for required in &schema.required {
-            if !obj.contains_key(required)
+            if !Self::present(obj, required)
                 && !self.has_choice_variant(obj, required, &schema.elements)
             {
                 errors.push(ValidationError {
@@ -1990,9 +1990,16 @@ impl FhirValidator {
         if let Some(element) = elements.get(element_name)
             && let Some(choices) = &element.choices
         {
-            return choices.iter().any(|choice| obj.contains_key(choice));
+            return choices.iter().any(|choice| Self::present(obj, choice));
         }
         false
+    }
+
+    /// Whether an element is present: its value, or for a primitive its `_name` sibling alone
+    /// (an id or extensions without a value, such as a data-absent-reason; FHIR JSON
+    /// "Representations of primitive values").
+    fn present(obj: &serde_json::Map<String, JsonValue>, name: &str) -> bool {
+        obj.contains_key(name) || obj.contains_key(&format!("_{name}"))
     }
 
     /// Resolve a `contentReference` target to the element it reuses.
@@ -2690,6 +2697,14 @@ impl FhirValidator {
                     return true;
                 }
 
+                // An object pattern for a repeating element (`coding` in a CodeableConcept
+                // pattern): some element of the array matches it.
+                if let Some(items) = item.as_array() {
+                    return items
+                        .iter()
+                        .any(|element| Self::deep_partial_match(element, pattern));
+                }
+
                 let Some(item_map) = item.as_object() else {
                     return false;
                 };
@@ -2764,9 +2779,29 @@ impl FhirValidator {
             }
         }
 
+        // Slices told apart by a binding alone match everything here; with others that match by
+        // value, the value decides. Among themselves only terminology could.
+        let binding_only = |name: &String| {
+            slices.get(name).is_some_and(|slice| {
+                slice
+                    .match_value
+                    .as_ref()
+                    .is_none_or(|m| m.as_object().is_some_and(|o| o.is_empty()))
+                    && slice
+                        .schema
+                        .as_ref()
+                        .is_some_and(|schema| schema.binding.is_some())
+            })
+        };
+        if matched_slices.len() > 1 && matched_slices.iter().any(|n| !binding_only(n)) {
+            matched_slices.retain(|n| !binding_only(n));
+        }
         match matched_slices.len() {
             0 => compiled::SliceClassification::Unmatched,
             1 => compiled::SliceClassification::Matched(matched_slices.into_iter().next().unwrap()),
+            _ if matched_slices.iter().all(binding_only) => {
+                compiled::SliceClassification::Indeterminate(matched_slices)
+            }
             _ => compiled::SliceClassification::Ambiguous(matched_slices),
         }
     }
@@ -2787,6 +2822,8 @@ impl FhirValidator {
 
         // Track counts per slice and last matched index for openAtEnd
         let mut slice_counts: HashMap<String, usize> = HashMap::new();
+        // Items that may belong to a slice, when only terminology could tell.
+        let mut possible_counts: HashMap<String, usize> = HashMap::new();
         let mut last_matched_index: Option<usize> = None;
 
         // Initialize counts
@@ -2863,27 +2900,41 @@ impl FhirValidator {
                         constraint_severity: None,
                     });
                 }
+                // Terminology would tell; without it the item may count for any of them.
+                compiled::SliceClassification::Indeterminate(candidates) => {
+                    for name in candidates {
+                        *possible_counts.entry(name).or_insert(0) += 1;
+                    }
+                }
             }
         }
 
         // Validate cardinality
-        self.validate_slice_cardinality(&slice_counts, slicing, errors, element_path);
+        self.validate_slice_cardinality(
+            &slice_counts,
+            &possible_counts,
+            slicing,
+            errors,
+            element_path,
+        );
     }
 
     /// Validate cardinality constraints for all slices.
     fn validate_slice_cardinality(
         &self,
         slice_counts: &HashMap<String, usize>,
+        possible_counts: &HashMap<String, usize>,
         slicing: &compiled::CompiledSlicing,
         errors: &mut Vec<ValidationError>,
         element_path: &str,
     ) {
         for (slice_name, slice_def) in &slicing.slices {
             let count = slice_counts.get(slice_name).copied().unwrap_or(0);
+            let possible = possible_counts.get(slice_name).copied().unwrap_or(0);
 
-            // Check minimum
+            // Check minimum: items that may belong to the slice may make it up.
             if let Some(min) = slice_def.min
-                && (count as i32) < min
+                && ((count + possible) as i32) < min
             {
                 errors.push(ValidationError {
                     error_type: FhirSchemaErrorCode::SliceCardinality.to_string(),

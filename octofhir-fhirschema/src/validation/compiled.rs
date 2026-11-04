@@ -409,4 +409,7 @@ pub enum SliceClassification {
     Unmatched,
     /// Item matched multiple slices (ambiguous)
     Ambiguous(Vec<String>),
+    /// The item can belong to these slices, and only terminology could tell which: they differ
+    /// by a binding alone (US Core's `Condition.category`), and no terminology service decides.
+    Indeterminate(Vec<String>),
 }

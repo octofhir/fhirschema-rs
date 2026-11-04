@@ -23,6 +23,34 @@ where
     new_stack
 }
 
+/// Puts `value` at `path` (`["coding", "code"]`) in a match object, creating and merging the
+/// objects on the way.
+fn insert_at_path(object: &mut serde_json::Map<String, Value>, path: &[&str], value: Value) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let mut current = object;
+    for part in parents {
+        let entry = current
+            .entry((*part).to_string())
+            .or_insert_with(|| json!({}));
+        if !entry.is_object() {
+            *entry = json!({});
+        }
+        current = entry.as_object_mut().expect("just made an object");
+    }
+    match (current.get_mut(*last), value) {
+        (Some(Value::Object(existing)), Value::Object(incoming)) => {
+            for (k, v) in incoming {
+                existing.insert(k, v);
+            }
+        }
+        (_, value) => {
+            current.insert((*last).to_string(), value);
+        }
+    }
+}
+
 fn build_match_for_slice(slicing: &Value, slice_schema: &Value) -> Value {
     let discriminator = slicing.get("discriminator");
     if discriminator.is_none() {
@@ -99,25 +127,13 @@ fn build_match_for_slice(slicing: &Value, slice_schema: &Value) -> Value {
                         }
                     }
 
-                    if let Some(pattern_value) = value.get("value") {
-                        // For simple case, just set the last part directly
-                        if path_parts.len() == 1 {
-                            if let Some(obj) = match_obj.as_object_mut() {
-                                obj.insert(path_parts[0].to_string(), pattern_value.clone());
-                            }
-                        } else if path_parts.len() > 1 {
-                            // For nested paths, build a nested object
-                            let mut nested_value = pattern_value.clone();
-                            for _path_part in path_parts.iter().rev().skip(1) {
-                                let mut temp_obj = serde_json::Map::new();
-                                temp_obj
-                                    .insert(path_parts.last().unwrap().to_string(), nested_value);
-                                nested_value = json!(temp_obj);
-                            }
-                            if let Some(obj) = match_obj.as_object_mut() {
-                                obj.insert(path_parts[0].to_string(), nested_value);
-                            }
-                        }
+                    if let Some(pattern_value) = value.get("value")
+                        && let Some(obj) = match_obj.as_object_mut()
+                    {
+                        // `coding.code` and `coding.system` both go under `coding`: merge
+                        // along the path instead of replacing what an earlier
+                        // discriminator put there.
+                        insert_at_path(obj, &path_parts, pattern_value.clone());
                     }
                 }
             }
@@ -456,6 +472,40 @@ pub fn apply_actions_lending(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_discriminators_on_one_element_merge() {
+        // US Core vital signs (from the R4 vitalsigns profile): category sliced by
+        // coding.code and coding.system.
+        let slicing = json!({
+            "discriminator": [
+                { "type": "value", "path": "coding.code" },
+                { "type": "value", "path": "coding.system" }
+            ]
+        });
+        let slice_schema = json!({
+            "elements": { "coding": { "elements": {
+                "system": { "pattern": { "type": "uri", "value": "http://terminology.hl7.org/CodeSystem/observation-category" } },
+                "code": { "pattern": { "type": "code", "value": "vital-signs" } }
+            } } }
+        });
+        assert_eq!(
+            build_match_for_slice(&slicing, &slice_schema),
+            json!({ "coding": {
+                "code": "vital-signs",
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category"
+            } })
+        );
+        // Three levels keep their own names.
+        let slicing = json!({ "discriminator": [{ "type": "value", "path": "a.b.c" }] });
+        let slice_schema = json!({ "elements": { "a": { "elements": { "b": { "elements": {
+            "c": { "pattern": { "type": "code", "value": "x" } }
+        } } } } } });
+        assert_eq!(
+            build_match_for_slice(&slicing, &slice_schema),
+            json!({ "a": { "b": { "c": "x" } } })
+        );
+    }
 
     #[test]
     fn test_build_match_for_slice() {

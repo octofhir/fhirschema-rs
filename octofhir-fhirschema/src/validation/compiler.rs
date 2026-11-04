@@ -633,13 +633,29 @@ impl SchemaCompiler {
                 slice_map
                     .iter()
                     .map(|(name, slice_def)| {
+                        // The slice's binding: slices told apart by a binding alone (US
+                        // Core's Condition.category) are classified with it. The rest of
+                        // the slice's schema is not compiled here.
+                        let schema = slice_def
+                            .schema
+                            .as_ref()
+                            .and_then(|schema| schema.binding.as_ref())
+                            .map(|b| {
+                                Box::new(CompiledElement {
+                                    binding: Some(CompiledBinding {
+                                        value_set: b.value_set.clone().unwrap_or_default(),
+                                        strength: BindingStrength::parse(&b.strength),
+                                        description: b.binding_name.clone(),
+                                    }),
+                                    ..CompiledElement::default()
+                                })
+                            });
                         let compiled_slice = CompiledSlice {
                             name: name.clone(),
                             match_value: slice_def.match_value.clone(),
                             min: slice_def.min,
                             max: slice_def.max,
-                            // TODO: compile nested schema if needed
-                            schema: None,
+                            schema,
                         };
                         (name.clone(), compiled_slice)
                     })
