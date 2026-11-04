@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 octofhir-fhirschema = { path = "../octofhir-fhirschema" }
-octofhir-canonical-manager = { version = "0.2.6", default-features = false, features = ["sqlite"] }
+octofhir-canonical-manager = { version = "0.2.11", default-features = false, features = ["sqlite"] }
 octofhir-fhir-model = { version = "0.1.19", features = ["caching", "http-client"] }
 octofhir-fhirpath = "0.5.3"
 anyhow = "1"
