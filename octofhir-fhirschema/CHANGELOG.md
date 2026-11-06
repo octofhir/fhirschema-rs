@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.38 — 2026-11-06
+
+- A slice discriminator reaches into required nested slices: the R4 `bp` profile fixes
+  `code.coding.code` in `code.coding:SBPCode`, and its components no longer match both slices.
+- A Reference with only an extension (`data-absent-reason`) is valid.
+- `elementdefinition-type-must-support` carries into choice variants: with types marked,
+  mustSupport covers those alone. `StructureDefinitionExtension` gains `value_boolean`.
+- Precompiled R4, R4B and R5 schemas regenerated: `bp` and `vitalsigns`.
+
 ## 0.3.36 — 2026-11-04
 
 - Converter: slices are grouped with their own children by element id, so a sliced element's

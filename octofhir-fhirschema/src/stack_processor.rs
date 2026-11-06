@@ -51,6 +51,31 @@ fn insert_at_path(object: &mut serde_json::Map<String, Value>, path: &[&str], va
     }
 }
 
+/// The value a schema fixes at `path`, through nested elements and required slices.
+///
+/// A repeating element can hold the value in a slice of its own: the R4 `bp` profile fixes
+/// `code.coding.code` in `component:SystolicBP.code.coding:SBPCode`. Only a slice with a minimum
+/// of 1 guarantees the value, so an optional one tells nothing about the item.
+fn pattern_at_path<'a>(element: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let Some((head, rest)) = path.split_first() else {
+        return element.get("pattern")?.get("value");
+    };
+    if let Some(found) = element
+        .get("elements")
+        .and_then(|elements| elements.get(*head))
+        .and_then(|child| pattern_at_path(child, rest))
+    {
+        return Some(found);
+    }
+    element
+        .get("slicing")?
+        .get("slices")?
+        .as_object()?
+        .values()
+        .filter(|slice| slice.get("min").and_then(Value::as_u64).unwrap_or(0) >= 1)
+        .find_map(|slice| pattern_at_path(slice.get("schema")?, path))
+}
+
 fn build_match_for_slice(slicing: &Value, slice_schema: &Value) -> Value {
     let discriminator = slicing.get("discriminator");
     if discriminator.is_none() {
@@ -107,27 +132,7 @@ fn build_match_for_slice(slicing: &Value, slice_schema: &Value) -> Value {
                         }
                     }
 
-                    // Also check nested elements
-                    let mut current_path = vec!["elements"];
-                    for (i, part) in path_parts.iter().enumerate() {
-                        current_path.push(part);
-                        if i < path_parts.len() - 1 {
-                            current_path.push("elements");
-                        }
-                    }
-                    current_path.push("pattern");
-
-                    // Get value from slice schema
-                    let mut value = slice_schema;
-                    for segment in &current_path {
-                        if let Some(v) = value.get(segment) {
-                            value = v;
-                        } else {
-                            break;
-                        }
-                    }
-
-                    if let Some(pattern_value) = value.get("value")
+                    if let Some(pattern_value) = pattern_at_path(slice_schema, &path_parts)
                         && let Some(obj) = match_obj.as_object_mut()
                     {
                         // `coding.code` and `coding.system` both go under `coding`: merge
@@ -505,6 +510,32 @@ mod tests {
             build_match_for_slice(&slicing, &slice_schema),
             json!({ "a": { "b": { "c": "x" } } })
         );
+    }
+
+    #[test]
+    fn a_discriminator_reaches_into_a_required_nested_slice() {
+        // The R4 bp profile: component sliced by code.coding.code and code.coding.system, with
+        // the values fixed in the slice code.coding:SBPCode.
+        let slicing = json!({
+            "discriminator": [
+                { "type": "value", "path": "code.coding.code" },
+                { "type": "value", "path": "code.coding.system" }
+            ]
+        });
+        let coding = |min: u64| {
+            json!({ "elements": { "code": { "elements": { "coding": { "slicing": { "slices": {
+                "SBPCode": { "min": min, "schema": { "elements": {
+                    "code": { "pattern": { "type": "code", "value": "8480-6" } },
+                    "system": { "pattern": { "type": "uri", "value": "http://loinc.org" } }
+                } } }
+            } } } } } } })
+        };
+        assert_eq!(
+            build_match_for_slice(&slicing, &coding(1)),
+            json!({ "code": { "coding": { "code": "8480-6", "system": "http://loinc.org" } } })
+        );
+        // An optional slice guarantees nothing about the item.
+        assert_eq!(build_match_for_slice(&slicing, &coding(0)), json!({}));
     }
 
     #[test]

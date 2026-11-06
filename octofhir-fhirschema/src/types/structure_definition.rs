@@ -196,6 +196,9 @@ pub struct StructureDefinitionExtension {
     /// URL value
     #[serde(rename = "valueUrl", skip_serializing_if = "Option::is_none")]
     pub value_url: Option<String>,
+    /// Boolean value
+    #[serde(rename = "valueBoolean", skip_serializing_if = "Option::is_none")]
+    pub value_boolean: Option<bool>,
 }
 
 /// Main StructureDefinition resource.

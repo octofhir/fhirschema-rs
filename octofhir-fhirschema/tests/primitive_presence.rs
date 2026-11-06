@@ -53,3 +53,44 @@ async fn a_required_choice_with_only_extensions_is_present() {
             .any(|e| e.message.as_deref() == Some("Required element 'occurrence' is missing"))
     );
 }
+
+#[tokio::test]
+async fn a_reference_with_only_an_extension_is_present() {
+    let schemas: HashMap<_, _> = get_schemas(FhirVersion::R4)
+        .iter()
+        .map(|(name, schema)| (name.clone(), schema.clone()))
+        .collect();
+    let validator = FhirValidator::from_schemas(schemas, None);
+    let observation = |performer: serde_json::Value| {
+        json!({
+            "resourceType": "Observation",
+            "status": "final",
+            "code": { "text": "x" },
+            "performer": [performer]
+        })
+    };
+    let reference_errors = |result: &octofhir_fhirschema::types::ValidationResult| {
+        result
+            .errors
+            .iter()
+            .filter(|e| {
+                e.message
+                    .as_deref()
+                    .is_some_and(|m| m.contains("Reference must have"))
+            })
+            .count()
+    };
+    let absent = observation(json!({ "extension": [{
+        "url": "http://hl7.org/fhir/StructureDefinition/data-absent-reason",
+        "valueCode": "unknown"
+    }] }));
+    let result = validator
+        .validate(&absent, vec!["Observation".to_owned()])
+        .await;
+    assert_eq!(reference_errors(&result), 0, "{:#?}", result.errors);
+    // With nothing at all, it is still an empty reference.
+    let result = validator
+        .validate(&observation(json!({})), vec!["Observation".to_owned()])
+        .await;
+    assert_eq!(reference_errors(&result), 1, "{:#?}", result.errors);
+}

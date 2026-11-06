@@ -1,4 +1,4 @@
-use crate::types::StructureDefinitionElement;
+use crate::types::{StructureDefinitionElement, StructureDefinitionType};
 use std::collections::HashSet;
 
 pub fn is_choice_element(element: &StructureDefinitionElement) -> bool {
@@ -26,6 +26,19 @@ fn capitalize(s: &str) -> String {
     let mut chars: Vec<char> = s.chars().collect();
     chars[0] = chars[0].to_uppercase().next().unwrap();
     chars.into_iter().collect()
+}
+
+/// `elementdefinition-type-must-support` on a type of a choice: which of its types mustSupport
+/// asks for.
+const TYPE_MUST_SUPPORT: &str =
+    "http://hl7.org/fhir/StructureDefinition/elementdefinition-type-must-support";
+
+fn type_must_support(type_def: &StructureDefinitionType) -> bool {
+    type_def.extension.as_ref().is_some_and(|extensions| {
+        extensions.iter().any(|extension| {
+            extension.url == TYPE_MUST_SUPPORT && extension.value_boolean == Some(true)
+        })
+    })
 }
 
 fn canonical_to_name(url: &str) -> String {
@@ -65,6 +78,9 @@ pub fn expand_choice_element(
     parent_element.binding = None; // Remove binding from parent
     expanded.push(parent_element);
 
+    // With types marked, mustSupport covers those alone; without, it covers the whole choice.
+    let types_marked = type_info.iter().any(type_must_support);
+
     // Create typed elements
     for type_def in type_info {
         let type_name = capitalize(&canonical_to_name(&type_def.code));
@@ -74,6 +90,9 @@ pub fn expand_choice_element(
         typed_element.type_info = Some(vec![type_def.clone()]);
         typed_element.choice_of = Some(field_name.clone());
         typed_element.choices = None;
+        if types_marked {
+            typed_element.must_support = Some(type_must_support(type_def));
+        }
 
         // Remove binding if it exists, it will be handled specially
         if element.binding.is_some() {
@@ -89,7 +108,7 @@ pub fn expand_choice_element(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::StructureDefinitionType;
+    use crate::types::StructureDefinitionExtension;
 
     #[test]
     fn test_is_choice_element_with_x_suffix() {
@@ -152,6 +171,55 @@ mod tests {
             "string"
         );
         assert_eq!(canonical_to_name("dateTime"), "dateTime");
+    }
+
+    fn typed(code: &str, must_support: Option<bool>) -> StructureDefinitionType {
+        StructureDefinitionType {
+            code: code.to_string(),
+            profile: None,
+            target_profile: None,
+            extension: must_support.map(|value| {
+                vec![StructureDefinitionExtension {
+                    url: TYPE_MUST_SUPPORT.to_string(),
+                    value_string: None,
+                    value_canonical: None,
+                    value_url: None,
+                    value_boolean: Some(value),
+                }]
+            }),
+        }
+    }
+
+    #[test]
+    fn must_support_covers_the_marked_types_of_a_choice() {
+        // US Core 6.1.0 smoking status: value[x] is mustSupport, CodeableConcept alone is marked.
+        let element = StructureDefinitionElement {
+            path: "Observation.value[x]".to_string(),
+            must_support: Some(true),
+            type_info: Some(vec![
+                typed("CodeableConcept", Some(true)),
+                typed("Quantity", None),
+                typed("string", Some(false)),
+            ]),
+            ..Default::default()
+        };
+        let expanded = expand_choice_element(&element).unwrap();
+        assert_eq!(expanded[0].must_support, Some(true));
+        assert_eq!(expanded[1].must_support, Some(true));
+        assert_eq!(expanded[2].must_support, Some(false));
+        assert_eq!(expanded[3].must_support, Some(false));
+    }
+
+    #[test]
+    fn must_support_without_marks_covers_every_type() {
+        let element = StructureDefinitionElement {
+            path: "Observation.value[x]".to_string(),
+            must_support: Some(true),
+            type_info: Some(vec![typed("Quantity", None), typed("string", None)]),
+            ..Default::default()
+        };
+        let expanded = expand_choice_element(&element).unwrap();
+        assert!(expanded.iter().all(|e| e.must_support == Some(true)));
     }
 
     #[test]

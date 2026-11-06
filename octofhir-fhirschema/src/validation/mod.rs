@@ -1859,12 +1859,17 @@ impl FhirValidator {
             return;
         };
 
-        // Basic structure check - must have reference, identifier, or display
+        // Basic structure check - must have reference, identifier, or display, unless an
+        // extension stands in for them, as data-absent-reason does.
         let has_reference = obj.get("reference").is_some_and(|v| v.is_string());
         let has_identifier = obj.contains_key("identifier");
         let has_display = obj.get("display").is_some_and(|v| v.is_string());
+        let has_extension = obj
+            .get("extension")
+            .and_then(JsonValue::as_array)
+            .is_some_and(|extensions| !extensions.is_empty());
 
-        if !has_reference && !has_identifier && !has_display {
+        if !has_reference && !has_identifier && !has_display && !has_extension {
             errors.push(ValidationError {
                 error_type: FhirSchemaErrorCode::CardinalityViolation.to_string(),
                 path: self.path_to_vec(path),
