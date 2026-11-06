@@ -1224,6 +1224,8 @@ impl FhirValidator {
             return;
         };
 
+        self.validate_single_choices(obj, &schema.elements, errors, path);
+
         // Check required elements
         for required in &schema.required {
             if !Self::present(obj, required)
@@ -1445,6 +1447,7 @@ impl FhirValidator {
                 // Validate slicing if defined
                 if let Some(slicing) = &element.slicing {
                     self.validate_slicing(arr, slicing, errors, path);
+                    self.validate_slice_contents(arr, slicing, errors, path, root);
                 }
 
                 // Validate each item. `null` is only valid in parallel primitive-extension
@@ -1733,6 +1736,43 @@ impl FhirValidator {
         }
     }
 
+    /// A choice holds one type at a time.
+    fn validate_single_choices(
+        &self,
+        obj: &serde_json::Map<String, JsonValue>,
+        elements: &HashMap<String, CompiledElement>,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        for (name, element) in elements {
+            let Some(choices) = &element.choices else {
+                continue;
+            };
+            let present: Vec<&str> = choices
+                .iter()
+                .filter(|choice| Self::present(obj, choice))
+                .map(String::as_str)
+                .collect();
+            if present.len() > 1 {
+                errors.push(ValidationError {
+                    error_type: FhirSchemaErrorCode::CardinalityViolation.to_string(),
+                    path: self.path_to_vec(path),
+                    message: Some(format!(
+                        "Choice '{name}' holds more than one type: {}",
+                        present.join(", ")
+                    )),
+                    value: None,
+                    expected: None,
+                    got: None,
+                    schema_path: None,
+                    constraint_key: None,
+                    constraint_expression: None,
+                    constraint_severity: None,
+                });
+            }
+        }
+    }
+
     /// The children `element` requires of `value`, a missing object being another error.
     fn validate_required_children(
         &self,
@@ -1809,6 +1849,8 @@ impl FhirValidator {
             });
             return;
         }
+
+        self.validate_single_choices(obj, children, errors, path);
 
         // Validate each property
         for (key, val) in obj {
@@ -2867,6 +2909,44 @@ impl FhirValidator {
                 compiled::SliceClassification::Indeterminate(matched_slices)
             }
             _ => compiled::SliceClassification::Ambiguous(matched_slices),
+        }
+    }
+
+    /// Each item against what its slice says of it, beyond what the element says of every item.
+    fn validate_slice_contents(
+        &self,
+        items: &[JsonValue],
+        slicing: &compiled::CompiledSlicing,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+        root: &HashMap<String, CompiledElement>,
+    ) {
+        for (index, item) in items.iter().enumerate() {
+            let compiled::SliceClassification::Matched(name) =
+                self.classify_slice(item, &slicing.slices)
+            else {
+                continue;
+            };
+            let Some(content) = slicing.slices.get(&name).and_then(|s| s.content.as_deref()) else {
+                continue;
+            };
+            let mut found = Vec::new();
+            self.validate_element_value(
+                item,
+                content,
+                &mut found,
+                &format!("{path}[{index}]"),
+                root,
+            );
+            for error in found {
+                // The element's own check of the item says the same of what they share.
+                let repeated = errors
+                    .iter()
+                    .any(|e| e.path == error.path && e.message == error.message);
+                if !repeated {
+                    errors.push(error);
+                }
+            }
         }
     }
 

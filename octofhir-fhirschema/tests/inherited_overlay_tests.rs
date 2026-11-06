@@ -651,3 +651,81 @@ async fn a_reference_holds_nothing_else() {
         Some("Unknown element 'noSuchElement'")
     );
 }
+
+/// US Core's blood pressure says of `component:systolic` that its `valueQuantity` has a unit.
+#[tokio::test]
+async fn an_item_is_held_to_what_its_slice_says() {
+    let mut schemas = overlays();
+    schemas.insert(
+        "Trace".to_string(),
+        parse(json!({
+            "url": "http://example.org/StructureDefinition/TraceBase",
+            "name": "Trace", "type": "Trace", "kind": "resource", "class": "resource",
+            "elements": {
+                "step": {
+                    "array": true,
+                    "elements": {"kind": {"type": "string"}, "note": {"type": "string"}},
+                    "slicing": {
+                        "discriminator": [{"type": "value", "path": "kind"}],
+                        "rules": "open",
+                        "slices": {
+                            "first": {
+                                "match": {"kind": "first"},
+                                "schema": {"required": ["note"]}
+                            }
+                        }
+                    }
+                }
+            }
+        })),
+    );
+    let validator = FhirValidator::from_schemas(schemas, None);
+    let check = async |step: Value| {
+        let resource = json!({"resourceType": "Trace", "step": [step]});
+        validator
+            .validate(&resource, vec!["Trace".to_string()])
+            .await
+    };
+    assert!(check(json!({"kind": "first", "note": "a"})).await.valid);
+    assert!(check(json!({"kind": "second"})).await.valid);
+    let missing = check(json!({"kind": "first"})).await;
+    assert_eq!(
+        missing.errors[0].message.as_deref(),
+        Some("Required element 'note' is missing"),
+        "{:?}",
+        missing.errors
+    );
+}
+
+#[tokio::test]
+async fn a_choice_holds_one_type() {
+    let mut schemas = overlays();
+    schemas.insert(
+        "Trace".to_string(),
+        parse(json!({
+            "url": "http://example.org/StructureDefinition/TraceBase",
+            "name": "Trace", "type": "Trace", "kind": "resource", "class": "resource",
+            "elements": {
+                "value": {"choices": ["valueString", "valueBoolean"]},
+                "valueString": {"type": "string", "choiceOf": "value"},
+                "valueBoolean": {"type": "boolean", "choiceOf": "value"}
+            }
+        })),
+    );
+    let validator = FhirValidator::from_schemas(schemas, None);
+    let check = async |value: Value| validator.validate(&value, vec!["Trace".to_string()]).await;
+    assert!(
+        check(json!({"resourceType": "Trace", "valueString": "a"}))
+            .await
+            .valid
+    );
+    let both =
+        check(json!({"resourceType": "Trace", "valueString": "a", "valueBoolean": true})).await;
+    assert!(!both.valid);
+    assert!(
+        both.errors[0]
+            .message
+            .as_deref()
+            .is_some_and(|message| message.starts_with("Choice 'value' holds more than one type"))
+    );
+}

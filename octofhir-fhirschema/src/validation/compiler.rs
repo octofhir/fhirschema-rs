@@ -516,7 +516,10 @@ impl SchemaCompiler {
         });
 
         // Compile slicing if present
-        let slicing = element.slicing.as_ref().map(|s| self.compile_slicing(s));
+        let mut slicing = element.slicing.as_ref().map(|s| self.compile_slicing(s));
+        if let (Some(compiled), Some(source)) = (slicing.as_mut(), element.slicing.as_ref()) {
+            Box::pin(self.compile_slice_contents(element, source, compiled, visiting, depth)).await;
+        }
 
         required.sort();
         required.dedup();
@@ -623,6 +626,39 @@ impl SchemaCompiler {
     }
 
     /// Compile slicing definition
+    /// The content of each slice: the sliced element with the slice's schema over it.
+    /// Extensions are slices too, and are checked by their definitions. A slice that does not
+    /// compile keeps what the slicing itself checks.
+    async fn compile_slice_contents(
+        &self,
+        element: &FhirSchemaElement,
+        slicing: &FhirSchemaSlicing,
+        compiled: &mut CompiledSlicing,
+        visiting: &HashSet<String>,
+        depth: usize,
+    ) {
+        if element.type_name.as_deref() == Some("Extension") {
+            return;
+        }
+        let Some(slices) = &slicing.slices else {
+            return;
+        };
+        for (name, slice) in slices {
+            let Some(schema) = &slice.schema else {
+                continue;
+            };
+            let mut base = element.clone();
+            base.slicing = None;
+            let mut merged = self.merge_elements(&base, schema);
+            merged.slicing = None;
+            merged.array = Some(false);
+            let content = Box::pin(self.expand_element(name, &merged, visiting, depth + 1)).await;
+            if let (Ok(content), Some(target)) = (content, compiled.slices.get_mut(name)) {
+                target.content = Some(Box::new(content));
+            }
+        }
+    }
+
     fn compile_slicing(&self, slicing: &FhirSchemaSlicing) -> CompiledSlicing {
         // Compile discriminators
         let discriminators = slicing
@@ -670,6 +706,7 @@ impl SchemaCompiler {
                             min: slice_def.min,
                             max: slice_def.max,
                             schema,
+                            content: None,
                         };
                         (name.clone(), compiled_slice)
                     })

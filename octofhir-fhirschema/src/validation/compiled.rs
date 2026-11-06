@@ -401,6 +401,8 @@ pub struct CompiledSlice {
     pub max: Option<i32>,
     /// Schema for items in this slice (nested element definition)
     pub schema: Option<Box<CompiledElement>>,
+    /// What an item of this slice has to be: the sliced element with the slice over it
+    pub content: Option<Box<CompiledElement>>,
 }
 
 /// Result of classifying an array item against slices

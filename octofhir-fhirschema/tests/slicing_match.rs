@@ -40,6 +40,7 @@ fn binding_slice(name: &str, value_set: &str) -> CompiledSlice {
         min: Some(1),
         max: None,
         schema: Some(Box::new(schema)),
+        content: None,
     }
 }
 
@@ -79,6 +80,7 @@ fn slices_told_apart_by_binding_alone_are_indeterminate_without_terminology() {
             min: None,
             max: None,
             schema: None,
+            content: None,
         },
     );
     assert_eq!(
