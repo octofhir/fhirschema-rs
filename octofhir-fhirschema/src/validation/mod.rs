@@ -249,6 +249,16 @@ impl SchemaProvider for InMemorySchemaProvider {
     }
 }
 
+/// What a Reference may hold, in every FHIR version.
+const REFERENCE_ELEMENTS: [&str; 6] = [
+    "id",
+    "extension",
+    "reference",
+    "type",
+    "identifier",
+    "display",
+];
+
 /// Error codes for FHIR Schema validation (following FS001-FS011 pattern)
 #[derive(Debug, Clone, PartialEq)]
 pub enum FhirSchemaErrorCode {
@@ -1525,6 +1535,7 @@ impl FhirValidator {
                 } else {
                     &element.children
                 };
+                self.validate_required_children(value, element, children, errors, path);
                 self.validate_complex(value, children, errors, path, root);
             }
             CompiledTypeInfo::Reference => {
@@ -1722,6 +1733,36 @@ impl FhirValidator {
         }
     }
 
+    /// The children `element` requires of `value`, a missing object being another error.
+    fn validate_required_children(
+        &self,
+        value: &JsonValue,
+        element: &CompiledElement,
+        children: &HashMap<String, CompiledElement>,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+    ) {
+        let JsonValue::Object(obj) = value else {
+            return;
+        };
+        for required in &element.required {
+            if !Self::present(obj, required) && !self.has_choice_variant(obj, required, children) {
+                errors.push(ValidationError {
+                    error_type: FhirSchemaErrorCode::CardinalityViolation.to_string(),
+                    path: self.path_to_vec(path),
+                    message: Some(format!("Required element '{required}' is missing")),
+                    value: None,
+                    expected: None,
+                    got: None,
+                    schema_path: None,
+                    constraint_key: None,
+                    constraint_expression: None,
+                    constraint_severity: None,
+                });
+            }
+        }
+    }
+
     /// Validate complex type with children
     fn validate_complex(
         &self,
@@ -1858,6 +1899,24 @@ impl FhirValidator {
             });
             return;
         };
+
+        for key in obj.keys() {
+            let name = key.strip_prefix('_').unwrap_or(key);
+            if !REFERENCE_ELEMENTS.contains(&name) {
+                errors.push(ValidationError {
+                    error_type: FhirSchemaErrorCode::UnknownElement.to_string(),
+                    path: self.path_to_vec(&format!("{path}.{key}")),
+                    message: Some(format!("Unknown element '{key}'")),
+                    value: None,
+                    expected: None,
+                    got: None,
+                    schema_path: None,
+                    constraint_key: None,
+                    constraint_expression: None,
+                    constraint_severity: None,
+                });
+            }
+        }
 
         // Basic structure check - must have reference, identifier, or display, unless an
         // extension stands in for them, as data-absent-reason does.

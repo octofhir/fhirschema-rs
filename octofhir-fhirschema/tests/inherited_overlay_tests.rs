@@ -532,3 +532,122 @@ fn slices_keep_their_children_apart_from_the_sliced_element() {
         );
     }
 }
+
+const TRACE: &str = "http://example.org/StructureDefinition/Trace";
+
+fn overlays() -> HashMap<String, FhirSchema> {
+    let mut schemas = schemas();
+    schemas.insert(
+        "Reference".to_string(),
+        parse(json!({
+            "url": "http://hl7.org/fhir/StructureDefinition/Reference",
+            "name": "Reference", "type": "Reference",
+            "kind": "complex-type", "class": "type", "base": ELEMENT,
+            "elements": {
+                "reference": {"type": "string"},
+                "display": {"type": "string"}
+            }
+        })),
+    );
+    schemas.insert(
+        "Trace".to_string(),
+        parse(json!({
+            "url": "http://example.org/StructureDefinition/TraceBase",
+            "name": "Trace", "type": "Trace", "kind": "resource", "class": "resource",
+            "elements": {
+                "target": {"type": "Reference", "array": true},
+                "form": {"type": "canonical"}
+            }
+        })),
+    );
+    schemas.insert(
+        TRACE.to_string(),
+        parse(json!({
+            "url": TRACE, "name": "TraceProfile", "type": "Trace",
+            "kind": "resource", "class": "profile", "derivation": "constraint",
+            "base": "http://example.org/StructureDefinition/TraceBase",
+            "elements": {
+                "target": {"elements": {"reference": {"short": "What it points at"}}},
+                "form": {"elements": {"extension": {"type": "Extension", "array": true}}}
+            }
+        })),
+    );
+    schemas
+}
+
+/// US Core Provenance says something of `target.reference`, and of nothing else in it.
+#[tokio::test]
+async fn an_overlay_on_a_reference_keeps_its_other_elements() {
+    let validator = FhirValidator::from_schemas(overlays(), None);
+    let resource = json!({"resourceType": "Trace", "target": [{"display": "A patient"}]});
+    let result = validator
+        .validate(&resource, vec!["Trace".to_string(), TRACE.to_string()])
+        .await;
+    assert!(result.valid, "{:?}", result.errors);
+}
+
+/// US Core QuestionnaireResponse slices `questionnaire.extension`; the element stays a string.
+#[tokio::test]
+async fn an_overlay_on_a_primitive_leaves_it_a_primitive() {
+    let validator = FhirValidator::from_schemas(overlays(), None);
+    let resource = json!({"resourceType": "Trace", "form": "http://example.org/form"});
+    let result = validator
+        .validate(&resource, vec!["Trace".to_string(), TRACE.to_string()])
+        .await;
+    assert!(result.valid, "{:?}", result.errors);
+}
+
+/// US Core Patient requires `identifier.system`, in the element and not at the root.
+#[tokio::test]
+async fn a_required_child_of_an_element_is_enforced() {
+    let mut schemas = overlays();
+    schemas.insert(
+        "Trace".to_string(),
+        parse(json!({
+            "url": "http://example.org/StructureDefinition/TraceBase",
+            "name": "Trace", "type": "Trace", "kind": "resource", "class": "resource",
+            "elements": {
+                "step": {
+                    "array": true, "required": ["name"],
+                    "elements": {"name": {"type": "string"}, "note": {"type": "string"}}
+                }
+            }
+        })),
+    );
+    let validator = FhirValidator::from_schemas(schemas, None);
+    let check = async |step: Value| {
+        let resource = json!({"resourceType": "Trace", "step": [step]});
+        validator
+            .validate(&resource, vec!["Trace".to_string()])
+            .await
+    };
+    assert!(check(json!({"name": "a"})).await.valid);
+    let missing = check(json!({"note": "b"})).await;
+    assert!(!missing.valid);
+    assert_eq!(
+        missing.errors[0].message.as_deref(),
+        Some("Required element 'name' is missing")
+    );
+}
+
+#[tokio::test]
+async fn a_reference_holds_nothing_else() {
+    let validator = FhirValidator::from_schemas(overlays(), None);
+    let check = async |target: Value| {
+        let resource = json!({"resourceType": "Trace", "target": [target]});
+        validator
+            .validate(&resource, vec!["Trace".to_string()])
+            .await
+    };
+    assert!(
+        check(json!({"reference": "Patient/1", "_display": {"id": "d"}}))
+            .await
+            .valid
+    );
+    let unknown = check(json!({"reference": "Patient/1", "noSuchElement": true})).await;
+    assert!(!unknown.valid);
+    assert_eq!(
+        unknown.errors[0].message.as_deref(),
+        Some("Unknown element 'noSuchElement'")
+    );
+}

@@ -65,6 +65,8 @@ pub struct CompiledElement {
     pub is_array: bool,
     /// Minimum cardinality
     pub min: i32,
+    /// Children that must be present in each value of this element
+    pub required: Vec<String>,
     /// Maximum cardinality (None = unbounded)
     pub max: Option<i32>,
     /// Nested elements (for complex types, inlined from type schema)
@@ -119,6 +121,7 @@ impl Default for CompiledElement {
             type_info: CompiledTypeInfo::Complex,
             is_array: false,
             min: 0,
+            required: Vec::new(),
             max: None,
             children: HashMap::new(),
             element_reference: None,

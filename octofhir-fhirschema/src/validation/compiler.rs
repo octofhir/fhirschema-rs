@@ -437,12 +437,15 @@ impl SchemaCompiler {
         }
         let type_info = self.determine_type_info(element);
         let mut children = HashMap::new();
+        let mut required = element.required.clone().unwrap_or_default();
 
         // Expand nested elements based on type
         match &type_info {
             CompiledTypeInfo::BackboneElement | CompiledTypeInfo::Complex => {
+                // An overlay on a Reference (`target.reference`) leaves it its other elements.
                 if let Some(type_name) = &element.type_name
-                    && Self::should_expand_named_type(type_name)
+                    && (Self::should_expand_named_type(type_name)
+                        || (type_name == "Reference" && element.elements.is_some()))
                 {
                     if let Some(nested) = &element.elements {
                         if let Some(type_schema) =
@@ -457,8 +460,9 @@ impl SchemaCompiler {
                             // Element): merge it over the type's whole chain,
                             // so an inherited element keeps its cardinality.
                             let chain = self.resolve_chain(&type_schema).await?;
-                            let mut merged_children =
-                                self.merge_chain(&chain).elements.unwrap_or_default();
+                            let merged = self.merge_chain(&chain);
+                            required.extend(merged.required.unwrap_or_default());
+                            let mut merged_children = merged.elements.unwrap_or_default();
                             for (key, overlay_child) in nested {
                                 if let Some(base_child) = merged_children.get(key) {
                                     merged_children.insert(
@@ -485,10 +489,11 @@ impl SchemaCompiler {
                     {
                         // Never await another root's in-flight cache entry:
                         // concurrent A -> B and B -> A must not deadlock.
-                        children = self
+                        let compiled = self
                             .compile_loaded(&type_schema, visiting, depth + 1)
-                            .await?
-                            .elements;
+                            .await?;
+                        required.extend(compiled.required.iter().cloned());
+                        children = compiled.elements;
                     }
                 } else if let Some(nested) = &element.elements {
                     children =
@@ -513,11 +518,14 @@ impl SchemaCompiler {
         // Compile slicing if present
         let slicing = element.slicing.as_ref().map(|s| self.compile_slicing(s));
 
+        required.sort();
+        required.dedup();
         Ok(CompiledElement {
             name: name.to_string(),
             type_info,
             is_array: element.array.unwrap_or(false),
             min: element.min.unwrap_or(0),
+            required,
             max: element.max,
             children,
             element_reference: element.element_reference.clone(),
@@ -540,6 +548,12 @@ impl SchemaCompiler {
 
     /// Determine the type info for an element
     fn determine_type_info(&self, element: &FhirSchemaElement) -> CompiledTypeInfo {
+        // A primitive stays one whatever its overlay says: what a profile constrains in it
+        // (`questionnaire.extension`) lives in `_questionnaire`.
+        if let Some(ptype) = element.type_name.as_deref().and_then(PrimitiveType::parse) {
+            return CompiledTypeInfo::Primitive(ptype);
+        }
+
         // Check for inline elements first (BackboneElement)
         if element.elements.is_some() {
             return CompiledTypeInfo::BackboneElement;
