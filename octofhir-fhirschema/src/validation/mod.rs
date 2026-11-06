@@ -1518,6 +1518,22 @@ impl FhirValidator {
         path: &str,
         root: &HashMap<String, CompiledElement>,
     ) {
+        if let Some(pattern) = &element.pattern
+            && !Self::deep_partial_match(value, pattern)
+        {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::InvalidValue.to_string(),
+                path: self.path_to_vec(path),
+                message: Some(format!("Value does not match the required value {pattern}")),
+                value: Some(value.clone()),
+                expected: Some(pattern.clone()),
+                got: None,
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
+        }
         match &element.type_info {
             CompiledTypeInfo::Primitive(ptype) => {
                 self.validate_primitive(value, *ptype, errors, path);

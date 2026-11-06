@@ -729,3 +729,37 @@ async fn a_choice_holds_one_type() {
             .is_some_and(|message| message.starts_with("Choice 'value' holds more than one type"))
     );
 }
+
+/// IPS fixes `DiagnosticReport.status`; a value that differs is an error, not only a slice miss.
+#[tokio::test]
+async fn fixed_and_pattern_values_hold_outside_slices_too() {
+    let mut schemas = overlays();
+    schemas.insert(
+        "Trace".to_string(),
+        parse(json!({
+            "url": "http://example.org/StructureDefinition/TraceBase",
+            "name": "Trace", "type": "Trace", "kind": "resource", "class": "resource",
+            "elements": {
+                "status": {"type": "code", "pattern": {"type": "code", "value": "final"}},
+                "code": {
+                    "pattern": {"type": "CodeableConcept", "value": {"coding": [{"code": "x"}]}},
+                    "elements": {
+                        "coding": {"array": true, "elements": {"code": {"type": "code"}}}
+                    }
+                }
+            }
+        })),
+    );
+    let validator = FhirValidator::from_schemas(schemas, None);
+    let check = async |value: Value| validator.validate(&value, vec!["Trace".to_string()]).await;
+    let good = json!({"resourceType": "Trace", "status": "final",
+        "code": {"coding": [{"code": "y"}, {"code": "x"}]}});
+    assert!(check(good).await.valid);
+    assert!(
+        !check(json!({"resourceType": "Trace", "status": "other"}))
+            .await
+            .valid
+    );
+    let other = json!({"resourceType": "Trace", "code": {"coding": [{"code": "y"}]}});
+    assert!(!check(other).await.valid);
+}
