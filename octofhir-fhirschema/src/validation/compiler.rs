@@ -38,6 +38,10 @@ impl std::fmt::Display for CompileError {
 
 impl std::error::Error for CompileError {}
 
+/// How deep types and overlays expand. FHIR elements nest far less than this; a cycle gets here,
+/// and each level costs stack.
+const MAX_EXPANSION_DEPTH: usize = 32;
+
 /// Schema compiler with caching
 pub struct SchemaCompiler {
     /// Schema provider for loading raw schemas
@@ -429,7 +433,7 @@ impl SchemaCompiler {
         visiting: &HashSet<String>,
         depth: usize,
     ) -> Result<CompiledElement, CompileError> {
-        if depth >= 128 {
+        if depth >= MAX_EXPANSION_DEPTH {
             return Err(CompileError {
                 message: format!("Recursive or excessively deep inline element expansion: {name}"),
                 schema_name: element.type_name.clone(),
