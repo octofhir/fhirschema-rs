@@ -2,11 +2,24 @@ use crate::types::{FhirSchema, ValidationContext};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-// Precompiled schema constants - use precompiled JSON files
+// Precompiled schemas. `OCTOFHIR_FHIR_VERSIONS` at build time can leave versions out (see
+// build.rs); a version left out is an empty map.
+#[cfg(fhirschema_r4)]
 pub static R4_SCHEMAS: &[u8] = include_bytes!("../precompiled_schemas/r4_schemas.json");
+#[cfg(not(fhirschema_r4))]
+pub static R4_SCHEMAS: &[u8] = b"{}";
+#[cfg(fhirschema_r4b)]
 pub static R4B_SCHEMAS: &[u8] = include_bytes!("../precompiled_schemas/r4b_schemas.json");
+#[cfg(not(fhirschema_r4b))]
+pub static R4B_SCHEMAS: &[u8] = b"{}";
+#[cfg(fhirschema_r5)]
 pub static R5_SCHEMAS: &[u8] = include_bytes!("../precompiled_schemas/r5_schemas.json");
+#[cfg(not(fhirschema_r5))]
+pub static R5_SCHEMAS: &[u8] = b"{}";
+#[cfg(fhirschema_r6)]
 pub static R6_SCHEMAS: &[u8] = include_bytes!("../precompiled_schemas/r6_schemas.json");
+#[cfg(not(fhirschema_r6))]
+pub static R6_SCHEMAS: &[u8] = b"{}";
 
 // Lazy-loaded deserialized schemas
 static R4_SCHEMA_MAP: LazyLock<HashMap<String, FhirSchema>> = LazyLock::new(|| {

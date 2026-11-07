@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.42 — 2026-11-07
+
+- `OCTOFHIR_FHIR_VERSIONS` at build time (`R4`, or `R4,R5`) embeds only those versions, for
+  builds where size matters, such as WebAssembly. Without it all four are in, as before. A version
+  left out has an empty schema map.
+
+## 0.3.41 — 2026-11-06
+
+- `fixed[x]` and `pattern[x]` are checked outside slices too; the content of slices is checked;
+  required children of elements are checked; two types of one choice are refused; unknown
+  elements inside a Reference are refused, and `Reference.display` of an overlay is kept; a
+  primitive with an overlay is no longer asked to be an object.
+- Expansion stops at 32 levels.
+
 ## 0.3.38 — 2026-11-06
 
 - A slice discriminator reaches into required nested slices: the R4 `bp` profile fixes

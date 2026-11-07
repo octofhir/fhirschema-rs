@@ -1,13 +1,13 @@
 [package]
 name = "octofhir-fhirschema"
-version = "0.3.41"
+version = "0.3.42"
 edition = "2024"
 authors = ["OctoFHIR Team<funyloony@gmail.com>"]
 description = "FHIR schema conversion and validation library"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/octofhir/fhirschema-rs"
 keywords = ["fhir", "healthcare", "schema", "validation"]
-include = ["src/**/*", "precompiled_schemas/**/*", "Cargo.toml", "README.md", "LICENSE*"]
+include = ["build.rs", "src/**/*", "precompiled_schemas/**/*", "Cargo.toml", "README.md", "LICENSE*"]
 categories = ["science"]
 
 [features]
