@@ -4,17 +4,22 @@ use octofhir_fhir_model::{
     ConstraintId, ExecutableExpression, FhirPathEvaluator, JsonVariables, NodeId, PreparedResource,
 };
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(super) type PlanCache = moka::future::Cache<String, Arc<ExecutableExpression>>;
 type Key = (NodeId, ConstraintId, u32);
 
+enum Slot {
+    Ready(Option<Result<bool, String>>),
+    Pending(usize),
+}
+
 pub(super) struct ConstraintRun {
     resource: PreparedResource,
     native: bool,
     preparation_error: Option<String>,
-    results: HashMap<Key, bool>,
+    results: Option<HashMap<Key, bool>>,
     types: HashMap<String, u32>,
     plans: HashMap<String, Result<Arc<ExecutableExpression>, String>>,
 }
@@ -24,6 +29,7 @@ impl ConstraintRun {
         evaluator: &dyn FhirPathEvaluator,
         source: Arc<Value>,
         variables: &JsonVariables,
+        reuse_results: bool,
     ) -> Self {
         let (resource, native, preparation_error) =
             match evaluator.prepare_resource(source.clone(), variables).await {
@@ -39,7 +45,7 @@ impl ConstraintRun {
             resource,
             native,
             preparation_error,
-            results: HashMap::new(),
+            results: reuse_results.then(HashMap::new),
             types: HashMap::new(),
             plans: HashMap::new(),
         }
@@ -65,7 +71,7 @@ impl ConstraintRun {
                 })
                 .collect();
         };
-        let type_id = match typ {
+        let type_id = match typ.filter(|_| self.results.is_some()) {
             None => 0,
             Some(name) => {
                 let next = self.types.len() as u32 + 1;
@@ -80,14 +86,14 @@ impl ConstraintRun {
         let mut entries = Vec::with_capacity(constraints.len());
         let mut pending = Vec::new();
         let mut pending_keys = Vec::new();
-        let mut seen = HashSet::new();
+        let mut batch_positions = HashMap::new();
         for constraint in constraints {
             if constraint.severity == ConstraintSeverity::Warning {
-                entries.push(None);
+                entries.push(Slot::Ready(None));
                 continue;
             }
             if let Some(error) = &self.preparation_error {
-                entries.push(Some(Err(error.clone())));
+                entries.push(Slot::Ready(Some(Err(error.clone()))));
                 continue;
             }
             let expression = constraint.expression.as_str();
@@ -100,78 +106,79 @@ impl ConstraintRun {
                     .map_err(|error| error.to_string());
                 self.plans.insert(expression.to_owned(), plan);
             }
-            match &self.plans[expression] {
-                Err(error) => entries.push(Some(Err(error.clone()))),
-                Ok(plan) => {
-                    let key = (node, plan.id(), type_id);
-                    entries.push(Some(Ok(key)));
-                    if !self.results.contains_key(&key) && seen.insert(key) {
-                        pending.push(plan.clone());
-                        pending_keys.push(key);
-                    }
+            let plan = match &self.plans[expression] {
+                Err(error) => {
+                    entries.push(Slot::Ready(Some(Err(error.clone()))));
+                    continue;
                 }
+                Ok(plan) => plan,
+            };
+            let id = plan.id();
+            if let Some(known) = self
+                .results
+                .as_ref()
+                .and_then(|results| results.get(&(node, id, type_id)))
+            {
+                entries.push(Slot::Ready(Some(Ok(*known))));
+                continue;
+            }
+            // Most batches have only a few plans. Reuse the positions in that
+            // short batch, with indexed lookup for unusually large groups.
+            let next = pending.len();
+            let position = if constraints.len() <= 8 {
+                pending_keys
+                    .iter()
+                    .position(|key| *key == id)
+                    .unwrap_or(next)
+            } else {
+                *batch_positions.entry(id).or_insert(next)
+            };
+            entries.push(Slot::Pending(position));
+            if position == next {
+                pending.push(plan.clone());
+                pending_keys.push(id);
             }
         }
-        let mut errors = HashMap::new();
-        if !pending.is_empty() {
-            let evaluated = if self.native {
-                evaluator
-                    .evaluate_prepared_constraints(
-                        &self.resource,
-                        node,
-                        data,
-                        typ,
-                        variables,
-                        &pending,
-                    )
-                    .await
-            } else {
-                let expressions: Vec<_> = pending.iter().map(|p| p.expression()).collect();
-                evaluator
-                    .evaluate_constraints_shared_context_typed(
-                        arc_hint.unwrap_or_else(|| Arc::new(data.clone())),
-                        typ,
-                        variables,
-                        &expressions,
-                    )
-                    .await
-            };
-            match evaluated {
-                Ok(values) if values.len() == pending_keys.len() => {
-                    for (key, result) in pending_keys.into_iter().zip(values) {
-                        match result {
-                            Ok(satisfied) => {
-                                self.results.insert(key, satisfied);
-                            }
-                            Err(error) => {
-                                errors.insert(key, error.to_string());
-                            }
-                        }
-                    }
-                }
-                result => {
-                    let message = match result {
-                        Err(error) => error.to_string(),
-                        Ok(_) => "Evaluator returned an incorrect constraint result count".into(),
-                    };
-                    for key in pending_keys {
-                        errors.insert(key, message.clone());
-                    }
+        let evaluated = if pending.is_empty() {
+            Ok(Vec::new())
+        } else if self.native {
+            evaluator
+                .evaluate_prepared_constraints(&self.resource, node, data, typ, variables, &pending)
+                .await
+        } else {
+            let expressions: Vec<_> = pending.iter().map(|plan| plan.expression()).collect();
+            evaluator
+                .evaluate_constraints_shared_context_typed(
+                    arc_hint.unwrap_or_else(|| Arc::new(data.clone())),
+                    typ,
+                    variables,
+                    &expressions,
+                )
+                .await
+        };
+        let evaluated = match evaluated {
+            Ok(values) if values.len() == pending.len() => Ok(values),
+            Ok(_) => Err("Evaluator returned an incorrect constraint result count".to_owned()),
+            Err(error) => Err(error.to_string()),
+        };
+        if let (Some(results), Ok(values)) = (&mut self.results, &evaluated) {
+            for (id, value) in pending_keys.into_iter().zip(values) {
+                if let Ok(satisfied) = value {
+                    results.insert((node, id, type_id), *satisfied);
                 }
             }
         }
         entries
             .into_iter()
-            .map(|entry| {
-                entry.map(|entry| match entry {
-                    Err(error) => Err(error),
-                    Ok(key) => self.results.get(&key).copied().ok_or_else(|| {
-                        errors
-                            .get(&key)
-                            .cloned()
-                            .unwrap_or_else(|| "Constraint evaluation failed".into())
-                    }),
-                })
+            .map(|entry| match entry {
+                Slot::Ready(value) => value,
+                Slot::Pending(position) => Some(match &evaluated {
+                    Ok(values) => values[position]
+                        .as_ref()
+                        .copied()
+                        .map_err(ToString::to_string),
+                    Err(error) => Err(error.clone()),
+                }),
             })
             .collect()
     }
@@ -188,14 +195,27 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
-    struct LegacyEvaluator {
+    struct BatchOnlyEvaluator {
         compiled: AtomicUsize,
         evaluated: AtomicUsize,
         short_batch: bool,
+        expected_source: Option<Arc<Value>>,
     }
 
     #[async_trait]
-    impl FhirPathEvaluator for LegacyEvaluator {
+    impl FhirPathEvaluator for BatchOnlyEvaluator {
+        async fn prepare_resource(
+            &self,
+            source: Arc<Value>,
+            variables: &JsonVariables,
+        ) -> ModelResult<Option<PreparedResource>> {
+            if let Some(expected) = &self.expected_source {
+                assert!(Arc::ptr_eq(expected, &source));
+                assert!(Arc::ptr_eq(expected, &variables["rootResource"]));
+            }
+            Ok(None)
+        }
+
         async fn evaluate(&self, _: &str, _: Arc<Value>) -> ModelResult<EvaluationResult> {
             unreachable!("Validation must use the existing batch interface")
         }
@@ -262,12 +282,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_batch_keeps_duplicate_slots_and_memoizes_by_declared_type() {
-        let evaluator = LegacyEvaluator::default();
+    async fn shared_validation_prepares_the_original_json_allocation() {
+        let source = Arc::new(serde_json::json!({"resourceType": "Patient"}));
+        let evaluator = Arc::new(BatchOnlyEvaluator {
+            expected_source: Some(source.clone()),
+            ..Default::default()
+        });
+        let validator = super::super::FhirValidator::from_schemas(
+            crate::get_schemas(crate::FhirVersion::R4).clone(),
+            Some(evaluator),
+        );
+        assert!(
+            validator
+                .validate_shared(&source, vec!["Patient".into()])
+                .await
+                .valid
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_context_batch_keeps_duplicate_slots_and_memoizes_by_declared_type() {
+        let evaluator = BatchOnlyEvaluator::default();
         let cache = PlanCache::new(16);
         let source = Arc::new(serde_json::json!("2000-01-02"));
         let vars = JsonVariables::new();
-        let mut run = ConstraintRun::new(&evaluator, source.clone(), &vars).await;
+        let mut run = ConstraintRun::new(&evaluator, source.clone(), &vars, true).await;
         let mut constraints: Vec<_> = [
             "ok", "ok", "false", "error", "error", "invalid", "invalid", "warning",
         ]
@@ -317,14 +356,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_legacy_batch_is_reported_for_every_duplicate() {
-        let evaluator = LegacyEvaluator {
+    async fn malformed_shared_context_batch_is_reported_for_every_duplicate() {
+        let evaluator = BatchOnlyEvaluator {
             short_batch: true,
             ..Default::default()
         };
         let source = Arc::new(serde_json::json!({}));
         let vars = JsonVariables::new();
-        let mut run = ConstraintRun::new(&evaluator, source.clone(), &vars).await;
+        let mut run = ConstraintRun::new(&evaluator, source.clone(), &vars, true).await;
         let result = run
             .evaluate(
                 &evaluator,
@@ -342,8 +381,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn one_schema_resolves_duplicate_slots_without_a_resource_memo() {
+        let evaluator = BatchOnlyEvaluator::default();
+        let cache = PlanCache::new(16);
+        let source = Arc::new(serde_json::json!({}));
+        let vars = JsonVariables::new();
+        let mut run = ConstraintRun::new(&evaluator, source.clone(), &vars, false).await;
+        let result = run
+            .evaluate(
+                &evaluator,
+                &cache,
+                &source,
+                None,
+                &vars,
+                &[constraint("ok"), constraint("false"), constraint("ok")],
+                Some(source.clone()),
+            )
+            .await;
+        assert_eq!(result, [Some(Ok(true)), Some(Ok(false)), Some(Ok(true))]);
+        assert!(run.results.is_none());
+        assert_eq!(evaluator.compiled.load(Ordering::Relaxed), 2);
+        assert_eq!(evaluator.evaluated.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
     async fn concurrent_validations_share_one_handle_compilation() {
-        let evaluator = Arc::new(LegacyEvaluator::default());
+        let evaluator = Arc::new(BatchOnlyEvaluator::default());
         let cache = PlanCache::new(16);
         let mut tasks = Vec::new();
         for _ in 0..8 {
@@ -352,7 +415,8 @@ mod tests {
             tasks.push(tokio::spawn(async move {
                 let source = Arc::new(serde_json::json!({}));
                 let vars = JsonVariables::new();
-                let mut run = ConstraintRun::new(evaluator.as_ref(), source.clone(), &vars).await;
+                let mut run =
+                    ConstraintRun::new(evaluator.as_ref(), source.clone(), &vars, true).await;
                 let result = run
                     .evaluate(
                         evaluator.as_ref(),

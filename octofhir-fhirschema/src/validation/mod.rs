@@ -29,7 +29,9 @@ use async_trait::async_trait;
 use octofhir_fhir_model::FhirPathEvaluator;
 use regex::Regex;
 use serde_json::Value as JsonValue;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
@@ -507,6 +509,17 @@ impl FhirValidator {
             .await
     }
 
+    /// Validate an already shared resource. FHIRPath preparation can retain
+    /// this allocation as `%rootResource` directly.
+    pub async fn validate_shared(
+        &self,
+        resource: &Arc<JsonValue>,
+        schema_names: Vec<String>,
+    ) -> ValidationResult {
+        self.validate_shared_with_known_references(resource, schema_names, None)
+            .await
+    }
+
     /// Validate a resource, treating a set of references as already existing.
     ///
     /// `known_references` is a set of literal `Type/id` reference strings that
@@ -523,8 +536,35 @@ impl FhirValidator {
         known_references: Option<&std::collections::HashSet<String>>,
     ) -> ValidationResult {
         let mut visited = HashSet::new();
-        self.validate_impl(resource, schema_names, known_references, 0, &mut visited)
-            .await
+        self.validate_impl(
+            resource,
+            None,
+            schema_names,
+            known_references,
+            0,
+            &mut visited,
+        )
+        .await
+    }
+
+    /// Validate an already shared resource with the reference handling of
+    /// [Self::validate_with_known_references].
+    pub async fn validate_shared_with_known_references(
+        &self,
+        resource: &Arc<JsonValue>,
+        schema_names: Vec<String>,
+        known_references: Option<&HashSet<String>>,
+    ) -> ValidationResult {
+        let mut visited = HashSet::new();
+        self.validate_impl(
+            resource,
+            Some(resource),
+            schema_names,
+            known_references,
+            0,
+            &mut visited,
+        )
+        .await
     }
 
     /// Core validation, parameterized by recursion `depth` and the set of
@@ -534,6 +574,7 @@ impl FhirValidator {
     async fn validate_impl(
         &self,
         resource: &JsonValue,
+        shared_resource: Option<&Arc<JsonValue>>,
         schema_names: Vec<String>,
         known_references: Option<&std::collections::HashSet<String>>,
         depth: usize,
@@ -549,28 +590,38 @@ impl FhirValidator {
             && self.reference_resolver.is_some()
             && depth < self.max_reference_depth;
 
-        // Prepare constraint variables once (includes %rootResource)
-        let variables = Self::prepare_constraint_variables(resource);
-        // Walk the same immutable allocation indexed by the prepared evaluator.
-        let resource_arc = variables["rootResource"].clone();
-        let resource = resource_arc.as_ref();
-
         // Memo of FHIRPath constraint results for this resource, shared across
         // every schema in `schema_names`. Overlapping profiles (base type +
         // meta.profile snapshot) repeat the same invariants at the same paths;
         // this evaluates each `(node, constraint, declared type)` once. Errors are still
         // emitted per schema, so output is unchanged.
-        let mut constraint_cache = match &self.fhirpath_evaluator {
-            Some(evaluator) => Some(
-                prepared::ConstraintRun::new(evaluator.as_ref(), resource_arc.clone(), &variables)
-                    .await,
-            ),
-            None => None,
+        let mut variables = HashMap::new();
+        let mut constraint_cache = None;
+        let resource = if let Some(evaluator) = &self.fhirpath_evaluator {
+            // Walk the same immutable allocation indexed by the evaluator and
+            // supply it as %rootResource for invariants such as ref-1.
+            let root = shared_resource
+                .cloned()
+                .unwrap_or_else(|| Arc::new(resource.clone()));
+            variables.insert("rootResource".to_string(), root.clone());
+            constraint_cache = Some(
+                prepared::ConstraintRun::new(
+                    evaluator.as_ref(),
+                    root,
+                    &variables,
+                    schema_names.len() > 1,
+                )
+                .await,
+            );
+            variables["rootResource"].as_ref()
+        } else {
+            resource
         };
+        let check_constraints = constraint_cache.is_some() || self.terminology_service.is_some();
 
         // Start FHIRPath expressions at the resource's resourceType (e.g. "Patient",
         // "Parameters") so issue.expression matches the FHIRPath spec.
-        let root_path: std::string::String = resource
+        let mut root_path: std::string::String = resource
             .get("resourceType")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
@@ -601,15 +652,17 @@ impl FhirValidator {
                     }
 
                     // Phase 2: Constraint validation (async)
-                    self.validate_constraints_recursive(
-                        resource,
-                        &compiled,
-                        &variables,
-                        &mut errors,
-                        &root_path,
-                        &mut constraint_cache,
-                    )
-                    .await;
+                    if check_constraints {
+                        self.validate_constraints_recursive(
+                            resource,
+                            &compiled,
+                            &variables,
+                            &mut errors,
+                            &mut root_path,
+                            &mut constraint_cache,
+                        )
+                        .await;
+                    }
                 }
                 Err(e) => {
                     // An unresolvable profile canonical (e.g. a `meta.profile`
@@ -653,8 +706,14 @@ impl FhirValidator {
         // schemas were validated — but only when at least one schema compiled,
         // matching the previous behavior of running inside the schema loop.
         if any_schema_compiled {
-            self.validate_extensions_recursive(resource, &mut errors, &root_path)
-                .await;
+            let mut base_extension = None;
+            self.validate_extensions_recursive(
+                resource,
+                &mut errors,
+                &mut root_path,
+                &mut base_extension,
+            )
+            .await;
         }
 
         // Phase 3b: QuestionnaireResponse-against-Questionnaire validation.
@@ -955,7 +1014,7 @@ impl FhirValidator {
     /// mismatch here.
     async fn reference_conforms_to_target(
         &self,
-        body: &JsonValue,
+        body: &Arc<JsonValue>,
         targets: &[String],
         depth: usize,
         visited: &mut HashSet<String>,
@@ -993,9 +1052,15 @@ impl FhirValidator {
             // so the target's own targetProfiles are checked too (bounded by
             // max_reference_depth via `collect_target_profiles`).
             checked_any_loadable = true;
-            let result =
-                Box::pin(self.validate_impl(body, vec![target.clone()], None, depth + 1, visited))
-                    .await;
+            let result = Box::pin(self.validate_impl(
+                body,
+                Some(body),
+                vec![target.clone()],
+                None,
+                depth + 1,
+                visited,
+            ))
+            .await;
 
             if result.errors.is_empty() {
                 return true;
@@ -1110,21 +1175,14 @@ impl FhirValidator {
                 continue;
             }
 
-            let display_key = self.choice_display_key(key, elements);
-            let element_path = if path.is_empty() {
-                display_key.clone()
-            } else {
-                format!("{}.{}", path, display_key)
-            };
-
-            // Resolve the element: direct match, else a choice-type variant.
-            let element = elements.get(key).or_else(|| {
-                elements
-                    .values()
-                    .find(|el| el.choices.as_ref().is_some_and(|c| c.contains(key)))
-            });
-            let Some(element) = element else {
+            let Some(element) = Self::element_for_key(elements, key) else {
                 continue;
+            };
+            let display_key = Self::choice_display_key(key, elements);
+            let element_path = if path.is_empty() {
+                display_key.into_owned()
+            } else {
+                format!("{path}.{display_key}")
             };
 
             self.collect_element_reference_checks(child, element, root, &element_path, out);
@@ -1190,16 +1248,6 @@ impl FhirValidator {
         }
     }
 
-    /// Prepare constraint variables map for FHIRPath evaluation.
-    ///
-    /// Creates a variables map containing `%rootResource` which is required
-    /// for evaluating constraints like `ref-1` that reference contained resources.
-    fn prepare_constraint_variables(root_resource: &JsonValue) -> HashMap<String, Arc<JsonValue>> {
-        let mut variables = HashMap::with_capacity(1);
-        variables.insert("rootResource".to_string(), Arc::new(root_resource.clone()));
-        variables
-    }
-
     /// Validate resource against compiled schema
     fn validate_resource(
         &self,
@@ -1228,9 +1276,7 @@ impl FhirValidator {
 
         // Check required elements
         for required in &schema.required {
-            if !Self::present(obj, required)
-                && !self.has_choice_variant(obj, required, &schema.elements)
-            {
+            if !Self::required_element_present(obj, required, &schema.elements) {
                 errors.push(ValidationError {
                     error_type: FhirSchemaErrorCode::CardinalityViolation.to_string(),
                     path: self.path_to_vec(path),
@@ -1284,69 +1330,67 @@ impl FhirValidator {
                 continue;
             }
 
-            // Translate choice variants (e.g. valueBoolean → value.ofType(boolean)) for
-            // FHIRPath-style location strings. Lookup uses raw key; path uses display.
-            let display_key = self.choice_display_key(key, &schema.elements);
-            let element_path = if path.is_empty() {
-                display_key.clone()
+            self.validate_object_field(
+                key,
+                value,
+                obj,
+                &schema.elements,
+                errors,
+                path,
+                &schema.elements,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_object_field(
+        &self,
+        key: &str,
+        value: &JsonValue,
+        obj: &serde_json::Map<String, JsonValue>,
+        elements: &HashMap<String, CompiledElement>,
+        errors: &mut Vec<ValidationError>,
+        path: &str,
+        root: &HashMap<String, CompiledElement>,
+    ) {
+        let element = Self::element_for_key(elements, key);
+        let display_key = Self::choice_display_key(key, elements);
+        let element_path = if path.is_empty() {
+            display_key.into_owned()
+        } else {
+            format!("{path}.{display_key}")
+        };
+
+        if let Some(element) = element {
+            // Only array values can need a parallel primitive extension array.
+            let underscore_arr = if value.is_array() && element.is_array {
+                obj.get(&format!("_{key}"))
+                    .and_then(JsonValue::as_array)
+                    .map(Vec::as_slice)
             } else {
-                format!("{}.{}", path, display_key)
+                None
             };
-
-            // Parallel primitive-extension array (`_key`) — used to allow `null`
-            // entries in the value array that are filled by an Element extension.
-            let underscore_arr = obj
-                .get(&format!("_{}", key))
-                .and_then(|v| v.as_array())
-                .map(|v| v.as_slice());
-
-            if let Some(element) = schema.elements.get(key) {
-                self.validate_element_with_underscore(
-                    value,
-                    element,
-                    underscore_arr,
-                    errors,
-                    &element_path,
-                    &schema.elements,
-                );
-            } else {
-                // Check if this is a choice type variant (e.g., valueString for value[x])
-                let is_choice_variant = schema
-                    .elements
-                    .values()
-                    .any(|el| el.choices.as_ref().is_some_and(|c| c.contains(key)));
-
-                if is_choice_variant {
-                    // Validate against the choice variant's element (locate by stem).
-                    if let Some(stem_element) = schema
-                        .elements
-                        .values()
-                        .find(|el| el.choices.as_ref().is_some_and(|c| c.contains(key)))
-                    {
-                        self.validate_element_with_underscore(
-                            value,
-                            stem_element,
-                            underscore_arr,
-                            errors,
-                            &element_path,
-                            &schema.elements,
-                        );
-                    }
-                } else {
-                    errors.push(ValidationError {
-                        error_type: FhirSchemaErrorCode::UnknownElement.to_string(),
-                        path: self.path_to_vec(&element_path),
-                        message: Some(format!("Unknown element '{}'", key)),
-                        value: None,
-                        expected: None,
-                        got: None,
-                        schema_path: None,
-                        constraint_key: None,
-                        constraint_expression: None,
-                        constraint_severity: None,
-                    });
-                }
-            }
+            self.validate_element_with_underscore(
+                value,
+                element,
+                underscore_arr,
+                errors,
+                &element_path,
+                root,
+            );
+        } else {
+            errors.push(ValidationError {
+                error_type: FhirSchemaErrorCode::UnknownElement.to_string(),
+                path: self.path_to_vec(&element_path),
+                message: Some(format!("Unknown element '{key}'")),
+                value: None,
+                expected: None,
+                got: None,
+                schema_path: None,
+                constraint_key: None,
+                constraint_expression: None,
+                constraint_severity: None,
+            });
         }
     }
 
@@ -1760,23 +1804,30 @@ impl FhirValidator {
         errors: &mut Vec<ValidationError>,
         path: &str,
     ) {
+        let mut primitive_siblings = None;
         for (name, element) in elements {
             let Some(choices) = &element.choices else {
                 continue;
             };
-            let present: Vec<&str> = choices
+            let primitive_siblings = primitive_siblings.get_or_insert_with(|| {
+                obj.keys()
+                    .filter_map(|key| key.strip_prefix('_'))
+                    .collect::<Vec<_>>()
+            });
+            let mut present = choices
                 .iter()
-                .filter(|choice| Self::present(obj, choice))
                 .map(String::as_str)
-                .collect();
-            if present.len() > 1 {
+                .filter(|choice| obj.contains_key(*choice) || primitive_siblings.contains(choice));
+            if let (Some(first), Some(second)) = (present.next(), present.next()) {
+                let mut names = format!("{first}, {second}");
+                for variant in present {
+                    names.push_str(", ");
+                    names.push_str(variant);
+                }
                 errors.push(ValidationError {
                     error_type: FhirSchemaErrorCode::CardinalityViolation.to_string(),
                     path: self.path_to_vec(path),
-                    message: Some(format!(
-                        "Choice '{name}' holds more than one type: {}",
-                        present.join(", ")
-                    )),
+                    message: Some(format!("Choice '{name}' holds more than one type: {names}")),
                     value: None,
                     expected: None,
                     got: None,
@@ -1802,7 +1853,7 @@ impl FhirValidator {
             return;
         };
         for required in &element.required {
-            if !Self::present(obj, required) && !self.has_choice_variant(obj, required, children) {
+            if !Self::required_element_present(obj, required, children) {
                 errors.push(ValidationError {
                     error_type: FhirSchemaErrorCode::CardinalityViolation.to_string(),
                     path: self.path_to_vec(path),
@@ -1877,60 +1928,11 @@ impl FhirValidator {
                 continue;
             }
 
-            let display_key = self.choice_display_key(key, children);
-            let element_path = format!("{}.{}", path, display_key);
-
-            let underscore_arr = obj
-                .get(&format!("_{}", key))
-                .and_then(|v| v.as_array())
-                .map(|v| v.as_slice());
-
-            if let Some(element) = children.get(key) {
-                self.validate_element_with_underscore(
-                    val,
-                    element,
-                    underscore_arr,
-                    errors,
-                    &element_path,
-                    root,
-                );
-            } else {
-                // Check for choice type variants
-                let is_choice = children
-                    .values()
-                    .any(|el| el.choices.as_ref().is_some_and(|c| c.contains(key)));
-
-                if is_choice {
-                    if let Some(stem_element) = children
-                        .values()
-                        .find(|el| el.choices.as_ref().is_some_and(|c| c.contains(key)))
-                    {
-                        self.validate_element_with_underscore(
-                            val,
-                            stem_element,
-                            underscore_arr,
-                            errors,
-                            &element_path,
-                            root,
-                        );
-                    }
-                    continue;
-                }
-                if !is_choice && key != "extension" && key != "id" {
-                    errors.push(ValidationError {
-                        error_type: FhirSchemaErrorCode::UnknownElement.to_string(),
-                        path: self.path_to_vec(&element_path),
-                        message: Some(format!("Unknown element '{}'", key)),
-                        value: None,
-                        expected: None,
-                        got: None,
-                        schema_path: None,
-                        constraint_key: None,
-                        constraint_expression: None,
-                        constraint_severity: None,
-                    });
-                }
+            // Complex objects can carry Element fields that were not inlined.
+            if matches!(key.as_str(), "extension" | "id") && !children.contains_key(key) {
+                continue;
             }
+            self.validate_object_field(key, val, obj, children, errors, path, root);
         }
     }
 
@@ -2102,19 +2104,37 @@ impl FhirValidator {
         }
     }
 
-    /// Check if a choice type variant exists
-    fn has_choice_variant(
-        &self,
+    /// Choice stems are schema metadata. Only the explicitly listed keys can
+    /// satisfy their cardinality in JSON.
+    fn required_element_present(
         obj: &serde_json::Map<String, JsonValue>,
-        element_name: &str,
+        name: &str,
         elements: &HashMap<String, CompiledElement>,
     ) -> bool {
-        if let Some(element) = elements.get(element_name)
-            && let Some(choices) = &element.choices
+        match elements
+            .get(name)
+            .and_then(|element| element.choices.as_ref())
         {
-            return choices.iter().any(|choice| Self::present(obj, choice));
+            Some(choices) => choices.iter().any(|choice| Self::present(obj, choice)),
+            None => Self::present(obj, name),
         }
-        false
+    }
+
+    fn element_for_key<'a>(
+        elements: &'a HashMap<String, CompiledElement>,
+        key: &str,
+    ) -> Option<&'a CompiledElement> {
+        match elements.get(key) {
+            Some(element) => element.choices.is_none().then_some(element),
+            // Older schemas may list an exact variant on the stem without an
+            // expanded element definition for that variant.
+            None => elements.values().find(|element| {
+                element
+                    .choices
+                    .as_ref()
+                    .is_some_and(|choices| choices.iter().any(|choice| choice == key))
+            }),
+        }
     }
 
     /// Whether an element is present: its value, or for a primitive its `_name` sibling alone
@@ -2182,26 +2202,14 @@ impl FhirValidator {
         } else {
             format!("{}._{}", parent_path, sibling)
         };
+        let display_key = Self::choice_display_key(sibling, elements);
         let display_path = if parent_path.is_empty() {
-            self.choice_display_key(sibling, elements)
+            display_key.into_owned()
         } else {
-            format!(
-                "{}.{}",
-                parent_path,
-                self.choice_display_key(sibling, elements)
-            )
+            format!("{parent_path}.{display_key}")
         };
 
-        // Find the sibling element: direct lookup, then choice variant.
-        let element_opt: Option<&CompiledElement> = elements.get(sibling).or_else(|| {
-            elements.values().find(|el| {
-                el.choices
-                    .as_ref()
-                    .is_some_and(|c| c.iter().any(|k| k == sibling))
-            })
-        });
-
-        let Some(element) = element_opt else {
+        let Some(element) = Self::element_for_key(elements, sibling) else {
             errors.push(ValidationError {
                 error_type: FhirSchemaErrorCode::UnknownElement.to_string(),
                 path: self.path_to_vec(&underscore_path),
@@ -2357,32 +2365,27 @@ impl FhirValidator {
         }
     }
 
-    /// FHIRPath display for a choice variant element: `valueBoolean` →
-    /// `value.ofType(boolean)`. Returns the input key unchanged if it isn't a
-    /// choice variant of any element in `elements`.
-    fn choice_display_key(
-        &self,
-        key: &str,
-        elements: &HashMap<std::string::String, CompiledElement>,
-    ) -> std::string::String {
-        for el in elements.values() {
-            if let Some(choices) = el.choices.as_ref()
-                && choices.iter().any(|c| c == key)
-                && let Some(suffix) = key.strip_prefix(el.name.as_str())
-                && !suffix.is_empty()
+    /// Format an explicitly listed choice variant for diagnostic paths.
+    fn choice_display_key<'a>(
+        key: &'a str,
+        elements: &HashMap<String, CompiledElement>,
+    ) -> Cow<'a, str> {
+        // FHIR JSON separates the stem and type with the first uppercase byte
+        // of the suffix. Try each possible boundary against the schema.
+        for (index, byte) in key.bytes().enumerate().skip(1) {
+            if byte.is_ascii_uppercase()
+                && let Some(stem) = elements.get(&key[..index])
+                && stem
+                    .choices
+                    .as_ref()
+                    .is_some_and(|choices| choices.iter().any(|choice| choice == key))
             {
-                let mut chars = suffix.chars();
-                if let Some(first) = chars.next() {
-                    let lower_first = first.to_ascii_lowercase();
-                    let mut lower_type: std::string::String =
-                        std::string::String::with_capacity(suffix.len());
-                    lower_type.push(lower_first);
-                    lower_type.push_str(chars.as_str());
-                    return format!("{}.ofType({})", el.name, lower_type);
-                }
+                let (name, suffix) = key.split_at(index);
+                let first = byte.to_ascii_lowercase() as char;
+                return Cow::Owned(format!("{name}.ofType({first}{})", &suffix[1..]));
             }
         }
-        key.to_string()
+        Cow::Borrowed(key)
     }
 
     /// Get JSON type name for error messages
@@ -2463,14 +2466,13 @@ impl FhirValidator {
     /// This walks through the compiled schema and evaluates constraints at each level:
     /// - Schema-level constraints on the resource itself
     /// - Element-level constraints on each field
-    #[async_recursion::async_recursion]
     async fn validate_constraints_recursive(
         &self,
         data: &JsonValue,
         schema: &CompiledSchema,
         variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
-        path: &str,
+        path: &mut String,
         cache: &mut Option<prepared::ConstraintRun>,
     ) {
         // Validate schema-level constraints. `data` is the resource root, which
@@ -2495,50 +2497,78 @@ impl FhirValidator {
             return;
         };
 
+        self.validate_child_constraints::<true>(
+            obj,
+            &schema.elements,
+            variables,
+            errors,
+            path,
+            cache,
+        )
+        .await;
+    }
+
+    async fn validate_child_constraints<const RESOURCE_ROOT: bool>(
+        &self,
+        obj: &serde_json::Map<String, JsonValue>,
+        elements: &HashMap<String, CompiledElement>,
+        variables: &HashMap<String, Arc<JsonValue>>,
+        errors: &mut Vec<ValidationError>,
+        path: &mut String,
+        cache: &mut Option<prepared::ConstraintRun>,
+    ) {
+        let parent_len = path.len();
         for (key, value) in obj {
-            if key == "resourceType" || key == "fhir_comments" || key.starts_with('_') {
+            if key.starts_with('_')
+                || (RESOURCE_ROOT && matches!(key.as_str(), "resourceType" | "fhir_comments"))
+            {
                 continue;
             }
-
-            if let Some(element) = schema.elements.get(key) {
-                let element_path = if path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{}.{}", path, key)
-                };
-
-                self.validate_element_constraints(
-                    value,
-                    element,
-                    variables,
-                    errors,
-                    &element_path,
-                    cache,
-                )
-                .await;
+            let Some(element) = elements
+                .get(key)
+                .filter(|element| element.choices.is_none())
+            else {
+                continue;
+            };
+            let check_invariants = cache.is_some() && !element.constraints.is_empty();
+            let check_binding = self.terminology_service.is_some()
+                && element
+                    .binding
+                    .as_ref()
+                    .is_some_and(|binding| binding.strength == BindingStrength::Required);
+            if element.children.is_empty() && !check_invariants && !check_binding {
+                continue;
             }
+            if !RESOURCE_ROOT || parent_len > 0 {
+                path.push('.');
+            }
+            path.push_str(key);
+            self.validate_element_constraints(value, element, variables, errors, path, cache)
+                .await;
+            path.truncate(parent_len);
         }
     }
 
     /// Validate constraints for an element value.
-    #[async_recursion::async_recursion]
     async fn validate_element_constraints(
         &self,
         value: &JsonValue,
         element: &compiled::CompiledElement,
         variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
-        path: &str,
+        path: &mut String,
         cache: &mut Option<prepared::ConstraintRun>,
     ) {
         // Handle arrays
         if let JsonValue::Array(arr) = value {
+            let parent_len = path.len();
             for (i, item) in arr.iter().enumerate() {
-                let item_path = format!("{}[{}]", path, i);
+                write!(path, "[{i}]").unwrap();
                 self.validate_single_element_constraints(
-                    item, element, variables, errors, &item_path, cache,
+                    item, element, variables, errors, path, cache,
                 )
                 .await;
+                path.truncate(parent_len);
             }
         } else {
             self.validate_single_element_constraints(
@@ -2556,7 +2586,7 @@ impl FhirValidator {
         element: &compiled::CompiledElement,
         variables: &HashMap<String, Arc<JsonValue>>,
         errors: &mut Vec<ValidationError>,
-        path: &str,
+        path: &mut String,
         cache: &mut Option<prepared::ConstraintRun>,
     ) {
         // Validate element-level constraints
@@ -2575,128 +2605,148 @@ impl FhirValidator {
         // Validate required ValueSet bindings via the terminology service.
         self.validate_binding(value, element, errors, path).await;
 
-        // Recurse into children for complex types
         if let JsonValue::Object(obj) = value {
-            for (key, child_value) in obj {
-                if key.starts_with('_') {
-                    continue;
-                }
-
-                if let Some(child_element) = element.children.get(key) {
-                    let child_path = format!("{}.{}", path, key);
-                    self.validate_element_constraints(
-                        child_value,
-                        child_element,
-                        variables,
-                        errors,
-                        &child_path,
-                        cache,
-                    )
-                    .await;
-                }
-            }
+            self.validate_child_constraints::<false>(
+                obj,
+                &element.children,
+                variables,
+                errors,
+                path,
+                cache,
+            )
+            .await;
         }
     }
 
-    /// Walk the resource JSON and validate every Extension against the
-    /// StructureDefinition referenced by `extension.url`. Each Extension's
-    /// `value[x]` choice is checked against the profile's allowed choice
-    /// variants; mismatches emit `WrongType` errors. Missing/unresolvable
-    /// profiles are silently ignored to avoid noise when packages are partial.
+    /// Walk the JSON, including primitive siblings, to validate Extension.value[x].
     #[async_recursion::async_recursion]
     async fn validate_extensions_recursive(
         &self,
         value: &JsonValue,
         errors: &mut Vec<ValidationError>,
-        path: &str,
+        path: &mut String,
+        base_extension: &mut Option<Option<SharedCompiledSchema>>,
     ) {
+        let parent_len = path.len();
         match value {
             JsonValue::Object(obj) => {
-                if let Some(JsonValue::Array(exts)) = obj.get("extension") {
-                    for (i, ext) in exts.iter().enumerate() {
-                        let ext_path = format!("{}.extension[{}]", path, i);
-                        self.validate_one_extension(ext, errors, &ext_path).await;
+                for field in ["extension", "modifierExtension"] {
+                    if let Some(JsonValue::Array(exts)) = obj.get(field) {
+                        for (i, ext) in exts.iter().enumerate() {
+                            write!(path, ".{field}[{i}]").unwrap();
+                            self.validate_one_extension(ext, errors, path, base_extension)
+                                .await;
+                            path.truncate(parent_len);
+                        }
                     }
                 }
-                for (k, v) in obj {
-                    let child_path = if path.is_empty() {
-                        k.clone()
-                    } else if k.starts_with('_') {
-                        // Underscore-prefixed fields live alongside their
-                        // primitive sibling — keep them in the path verbatim
-                        // so nested extension expressions are unambiguous.
-                        format!("{}.{}", path, k)
-                    } else {
-                        format!("{}.{}", path, k)
-                    };
-                    self.validate_extensions_recursive(v, errors, &child_path)
+                for (key, child) in obj {
+                    if !child.is_object() && !child.is_array() {
+                        continue;
+                    }
+                    if parent_len > 0 {
+                        path.push('.');
+                    }
+                    path.push_str(key);
+                    self.validate_extensions_recursive(child, errors, path, base_extension)
                         .await;
+                    path.truncate(parent_len);
                 }
             }
             JsonValue::Array(arr) => {
                 for (i, item) in arr.iter().enumerate() {
-                    let item_path = format!("{}[{}]", path, i);
-                    self.validate_extensions_recursive(item, errors, &item_path)
+                    if !item.is_object() && !item.is_array() {
+                        continue;
+                    }
+                    write!(path, "[{i}]").unwrap();
+                    self.validate_extensions_recursive(item, errors, path, base_extension)
                         .await;
+                    path.truncate(parent_len);
                 }
             }
             _ => {}
         }
     }
 
-    /// Validate a single Extension object against its profile's `value[x]`
-    /// choice constraint. Pulls the profile via the configured SchemaProvider.
     async fn validate_one_extension(
         &self,
         ext: &JsonValue,
         errors: &mut Vec<ValidationError>,
         path: &str,
+        base_extension: &mut Option<Option<SharedCompiledSchema>>,
     ) {
         let JsonValue::Object(obj) = ext else { return };
-        let Some(url) = obj.get("url").and_then(|v| v.as_str()) else {
+        let Some(url) = obj.get("url").and_then(JsonValue::as_str) else {
             return;
         };
-
-        // Profile not loadable (unknown URL, registry incomplete, transport
-        // failure) — bail silently rather than emit noise. Catalog coverage is
-        // owned by the SchemaProvider implementation.
-        let Ok(compiled) = self.compiler.compile(url).await else {
-            return;
-        };
-
-        // Find the value[x] element in the profile. The element is keyed as
-        // `"value"` (FHIR choice stem) and carries `choices: Some([...])` with
-        // the allowed `valueXxx` variants.
-        let Some(value_element) = compiled.elements.get("value") else {
-            return;
-        };
-        if value_element.choices.is_none() {
+        let value_fields = obj
+            .keys()
+            .filter(|key| key.strip_prefix('_').unwrap_or(key).starts_with("value"))
+            .take(2)
+            .count();
+        if value_fields == 0 {
             return;
         }
-        let allowed: &[std::string::String] = value_element.choices.as_deref().unwrap_or(&[]);
 
-        // Identify which valueXxx key the extension uses, if any.
-        let mut used: Option<&str> = None;
-        for k in obj.keys() {
-            if k.starts_with("value") && k.len() > "value".len() {
-                used = Some(k.as_str());
-                break;
+        let profile = self.compiler.compile(url).await.ok();
+        let compiled = match profile.as_ref() {
+            Some(schema)
+                if schema
+                    .elements
+                    .get("value")
+                    .is_some_and(|value| value.choices.is_some()) =>
+            {
+                schema
             }
-        }
-        let Some(used_key) = used else { return };
+            _ => {
+                if base_extension.is_none() {
+                    *base_extension = Some(self.compiler.compile("Extension").await.ok());
+                }
+                let Some(Some(schema)) = base_extension else {
+                    return;
+                };
+                schema
+            }
+        };
+        let Some(allowed) = compiled
+            .elements
+            .get("value")
+            .and_then(|value| value.choices.as_ref())
+        else {
+            return;
+        };
 
-        if !allowed.iter().any(|a| a == used_key) {
+        if value_fields > 1 {
+            self.validate_single_choices(obj, &compiled.elements, errors, path);
+        }
+        for key in obj.keys() {
+            let field = key.strip_prefix('_').unwrap_or(key);
+            if !field.starts_with("value") {
+                continue;
+            }
+            let is_complex_sibling = key.starts_with('_')
+                && compiled.elements.get(field).is_some_and(|element| {
+                    !matches!(
+                        element.type_info,
+                        CompiledTypeInfo::Primitive(_) | CompiledTypeInfo::Unspecified
+                    )
+                });
+            if field != "value"
+                && !is_complex_sibling
+                && allowed.iter().any(|allowed| allowed == field)
+            {
+                continue;
+            }
             let allowed_list = allowed.join(", ");
             errors.push(ValidationError {
                 error_type: FhirSchemaErrorCode::WrongType.to_string(),
-                path: self.path_to_vec(&format!("{}.{}", path, used_key)),
+                path: self.path_to_vec(&format!("{path}.{key}")),
                 message: Some(format!(
-                    "Extension {} does not allow {}; allowed value[x]: [{}]",
-                    url, used_key, allowed_list
+                    "Extension {url} does not allow {key}; allowed value[x]: [{allowed_list}]"
                 )),
                 value: None,
                 expected: Some(JsonValue::String(allowed_list)),
-                got: Some(JsonValue::String(used_key.to_string())),
+                got: Some(JsonValue::String(key.clone())),
                 schema_path: None,
                 constraint_key: None,
                 constraint_expression: None,

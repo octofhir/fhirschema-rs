@@ -247,13 +247,7 @@ impl SchemaCompiler {
         // Merge elements
         if let Some(overlay_elements) = &overlay.elements {
             let mut merged_elements = result.elements.unwrap_or_default();
-            for (key, element) in overlay_elements {
-                if let Some(base_element) = merged_elements.get(key) {
-                    merged_elements.insert(key.clone(), self.merge_elements(base_element, element));
-                } else {
-                    merged_elements.insert(key.clone(), element.clone());
-                }
-            }
+            self.merge_element_maps(&mut merged_elements, overlay_elements);
             result.elements = Some(merged_elements);
         }
 
@@ -281,6 +275,33 @@ impl SchemaCompiler {
         }
 
         result
+    }
+
+    fn merge_element_maps(
+        &self,
+        base: &mut HashMap<String, FhirSchemaElement>,
+        overlay: &HashMap<String, FhirSchemaElement>,
+    ) {
+        for (stem, element) in overlay {
+            if element.choices.is_some()
+                && let Some(variants) = base.get(stem).and_then(|base| base.choices.clone())
+            {
+                // Older schemas can list variants without a reverse choiceOf
+                // link. Preserve their membership before replacing the list.
+                for variant in variants {
+                    if let Some(element) = base.get_mut(&variant) {
+                        element.choice_of.get_or_insert_with(|| stem.clone());
+                    }
+                }
+            }
+        }
+        for (key, element) in overlay {
+            if let Some(base_element) = base.get_mut(key) {
+                *base_element = self.merge_elements(base_element, element);
+            } else {
+                base.insert(key.clone(), element.clone());
+            }
+        }
     }
 
     /// Merge two elements
@@ -328,6 +349,9 @@ impl SchemaCompiler {
         // valueXxx variant is accepted.
         if overlay.choices.is_some() {
             result.choices = overlay.choices.clone();
+        }
+        if overlay.choice_of.is_some() {
+            result.choice_of = overlay.choice_of.clone();
         }
 
         // Overlay slicing: a profile slicing an element its base declares
@@ -380,13 +404,7 @@ impl SchemaCompiler {
         // Merge nested elements
         if let Some(overlay_nested) = &overlay.elements {
             let mut nested = result.elements.unwrap_or_default();
-            for (key, element) in overlay_nested {
-                if let Some(base_element) = nested.get(key) {
-                    nested.insert(key.clone(), self.merge_elements(base_element, element));
-                } else {
-                    nested.insert(key.clone(), element.clone());
-                }
-            }
+            self.merge_element_maps(&mut nested, overlay_nested);
             result.elements = Some(nested);
         }
 
@@ -417,6 +435,14 @@ impl SchemaCompiler {
         let mut result = HashMap::new();
 
         for (name, element) in elements {
+            // An overlay can narrow a choice without redeclaring the inherited
+            // concrete elements it disallows.
+            if let Some(stem) = element.choice_of.as_deref()
+                && let Some(allowed) = elements.get(stem).and_then(|stem| stem.choices.as_ref())
+                && !allowed.contains(name)
+            {
+                continue;
+            }
             let compiled = self.expand_element(name, element, visiting, depth).await?;
             result.insert(name.clone(), compiled);
         }
@@ -467,16 +493,7 @@ impl SchemaCompiler {
                             let merged = self.merge_chain(&chain);
                             required.extend(merged.required.unwrap_or_default());
                             let mut merged_children = merged.elements.unwrap_or_default();
-                            for (key, overlay_child) in nested {
-                                if let Some(base_child) = merged_children.get(key) {
-                                    merged_children.insert(
-                                        key.clone(),
-                                        self.merge_elements(base_child, overlay_child),
-                                    );
-                                } else {
-                                    merged_children.insert(key.clone(), overlay_child.clone());
-                                }
-                            }
+                            self.merge_element_maps(&mut merged_children, nested);
                             children = Box::pin(self.expand_elements(
                                 Some(&merged_children),
                                 visiting,

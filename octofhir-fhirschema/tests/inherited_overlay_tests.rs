@@ -3,10 +3,12 @@
 //! `extension` from Element) keeps that element's base cardinality: the
 //! overlay is merged over the type's whole inheritance chain.
 
+use octofhir_fhirschema::InMemoryTerminologyService;
 use octofhir_fhirschema::types::FhirSchema;
 use octofhir_fhirschema::validation::FhirValidator;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 const ELEMENT: &str = "http://hl7.org/fhir/StructureDefinition/Element";
 const SQL_QUERY: &str = "http://example.org/StructureDefinition/SQLQuery";
@@ -728,6 +730,183 @@ async fn a_choice_holds_one_type() {
             .as_deref()
             .is_some_and(|message| message.starts_with("Choice 'value' holds more than one type"))
     );
+
+    let primitive_sibling = check(json!({
+        "resourceType": "Trace", "_valueString": {"id": "example"}, "valueBoolean": true
+    }))
+    .await;
+    assert_eq!(
+        primitive_sibling.errors[0].message.as_deref(),
+        Some("Choice 'value' holds more than one type: valueString, valueBoolean")
+    );
+    for key in ["value", "valueFoo", "valuestring", "_value", "_valueFoo"] {
+        let outcome = check(json!({"resourceType": "Trace", (key): {"id": "example"}})).await;
+        assert!(!outcome.valid, "{key} should be rejected");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.path.last() == Some(&json!(key)))
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_narrowed_choice_rejects_inherited_variants() {
+    let base = "http://example.org/StructureDefinition/TraceBase";
+    let mut schemas = overlays();
+    schemas.insert(
+        base.to_string(),
+        parse(json!({
+            "url": base, "name": "TraceBase", "type": "Trace", "kind": "resource", "class": "resource",
+            "required": ["value"],
+            "elements": {
+                "value": {"choices": ["valueString", "valueBoolean"]},
+                "valueString": {"type": "string", "choiceOf": "value"},
+                "valueBoolean": {"type": "boolean"}
+            }
+        })),
+    );
+    schemas.insert(
+        "NarrowTrace".to_string(),
+        parse(json!({
+            "url": "http://example.org/StructureDefinition/NarrowTrace",
+            "name": "NarrowTrace", "type": "Trace", "kind": "resource", "class": "profile",
+            "base": base,
+            "elements": {"value": {"choices": ["valueString"]}}
+        })),
+    );
+    let validator = FhirValidator::from_schemas(schemas, None);
+    let check = async |field: Value| {
+        validator
+            .validate(&field, vec!["NarrowTrace".to_owned()])
+            .await
+    };
+    assert!(
+        check(json!({"resourceType": "Trace", "valueString": "valid"}))
+            .await
+            .valid
+    );
+    let bare = check(json!({"resourceType": "Trace", "value": "invalid"})).await;
+    assert!(
+        bare.errors
+            .iter()
+            .any(|error| error.message.as_deref() == Some("Required element 'value' is missing"))
+    );
+    for (key, value) in [
+        ("valueBoolean", json!(true)),
+        ("_valueBoolean", json!({"id": "example"})),
+    ] {
+        let result =
+            check(json!({"resourceType": "Trace", "valueString": "valid", (key): value})).await;
+        assert!(!result.valid);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.path.last() == Some(&json!(key)))
+        );
+    }
+}
+
+#[tokio::test]
+async fn required_bindings_are_checked_with_only_terminology_enabled() {
+    let value_set = "http://example.org/ValueSet/trace-status";
+    let mut schemas = overlays();
+    schemas.insert(
+        "Trace".to_string(),
+        parse(json!({
+            "url": "http://example.org/StructureDefinition/TraceBase",
+            "name": "Trace", "type": "Trace", "kind": "resource", "class": "resource",
+            "elements": {"status": {"type": "code", "binding": {
+                "strength": "required", "valueSet": value_set
+            }}}
+        })),
+    );
+    let mut terminology = InMemoryTerminologyService::new();
+    terminology.add_code(value_set, "active", None, None);
+    let validator =
+        FhirValidator::from_schemas(schemas, None).with_terminology_service(Arc::new(terminology));
+    let outcome = validator
+        .validate(
+            &json!({"resourceType": "Trace", "status": "unknown"}),
+            vec!["Trace".to_string()],
+        )
+        .await;
+    assert!(!outcome.valid);
+    assert_eq!(outcome.errors[0].path, [json!("Trace"), json!("status")]);
+    assert_eq!(outcome.errors[0].expected, Some(json!(value_set)));
+}
+
+#[tokio::test]
+async fn extension_profile_errors_keep_paths_in_primitive_siblings_and_arrays() {
+    let mut schemas = schemas();
+    schemas.insert(
+        SQL_TEXT.to_string(),
+        parse(json!({
+            "url": SQL_TEXT,
+            "name": "SqlText", "type": "Extension", "kind": "complex-type", "class": "profile",
+            "elements": {"value": {"choices": ["valueBoolean"]}}
+        })),
+    );
+    let validator = FhirValidator::from_schemas(schemas, None);
+    let extension = json!({"url": SQL_TEXT, "valueString": "text"});
+    let outcome = validator
+        .validate(
+            &json!({
+                "resourceType": "Library",
+                "_status": {"extension": [extension]},
+                "content": [
+                    {"contentType": "text/plain"},
+                    {"extension": [extension]}
+                ]
+            }),
+            vec!["Library".to_string()],
+        )
+        .await;
+    let paths: Vec<_> = outcome
+        .errors
+        .into_iter()
+        .filter(|error| {
+            error
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("does not allow valueString"))
+        })
+        .map(|error| error.path)
+        .collect();
+    assert_eq!(
+        json!(paths),
+        json!([
+            ["Library", "_status", "extension[0]", "valueString"],
+            ["Library", "content[1]", "extension[0]", "valueString"]
+        ])
+    );
+}
+
+#[tokio::test]
+async fn extension_choices_check_all_fields_and_fall_back_to_the_base_schema() {
+    let validator = FhirValidator::from_schemas(schemas(), None);
+    let url = "http://example.org/StructureDefinition/unknown-extension";
+    let check = async |extension: Value| {
+        validator
+            .validate(
+                &json!({"resourceType": "Library", "content": [{"extension": [extension]}]}),
+                vec!["Library".to_owned()],
+            )
+            .await
+    };
+    assert!(check(json!({"url": url, "valueString": "ok"})).await.valid);
+    for key in ["value", "valueZzz", "_valueZzz"] {
+        let outcome = check(json!({"url": url, "valueString": "ok", (key): "invalid"})).await;
+        assert!(!outcome.valid);
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.path.last() == Some(&json!(key)))
+        );
+    }
 }
 
 /// IPS fixes `DiagnosticReport.status`; a value that differs is an error, not only a slice miss.
